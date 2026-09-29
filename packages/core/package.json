@@ -1,0 +1,25 @@
+{
+  "name": "@preorder/core",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "wallets": "ts-node src/scripts/wallets.ts",
+    "balance": "ts-node src/scripts/balance.ts",
+    "lifecycle": "ts-node src/scripts/lifecycle.ts"
+  },
+  "dependencies": {
+    "@meteora-ag/cp-amm-sdk": "1.5.0",
+    "@meteora-ag/dynamic-bonding-curve-sdk": "1.5.13",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.99.0",
+    "bn.js": "^5.2.5",
+    "dotenv": "^18.0.4"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.2.0",
+    "@types/node": "^22.20.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

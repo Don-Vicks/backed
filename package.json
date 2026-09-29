@@ -1,0 +1,9 @@
+{
+  "name": "preorder-curves",
+  "private": true,
+  "scripts": {
+    "core:wallets": "pnpm --filter @preorder/core wallets",
+    "core:balance": "pnpm --filter @preorder/core balance",
+    "core:lifecycle": "pnpm --filter @preorder/core lifecycle"
+  }
+}
