@@ -9,6 +9,7 @@ import { send } from '../tx'
 import { MAX_MAKER_SHARE, scoreSignals, trustTier, type TrustResult, type TrustTierName } from '../trust'
 import { buildCreateCampaignTx, dbcClient, getUsdcMint } from '../chain'
 import { saveCampaign } from '../store'
+import { repoRoot } from '../paths'
 import type { Campaign } from '../engine'
 
 const arg = (name: string) => {
@@ -19,7 +20,7 @@ const arg = (name: string) => {
 async function main() {
   const file = arg('campaign')
   if (!file) throw new Error('usage: --campaign <file.json> [--tier A|B|C]')
-  const campaign: Campaign = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), '../..', file), 'utf8'))
+  const campaign: Campaign = JSON.parse(fs.readFileSync(path.join(repoRoot(), file), 'utf8'))
   const connection = getConnection()
   const w = loadWallets()
 

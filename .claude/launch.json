@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backed-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "/Users/donvicks/Library/Application Support/Claude/scratch-workspaces/826d2b4c-864d-4eb0-9371-ae02d2f1a4cb/cc89c9ae-3384-4234-805a-249163f26b93/scratch-2026-09-29-fa7928/preorder-curves/apps/web", "dev", "--port", "3100"],
+      "port": 3100
+    }
+  ]
+}

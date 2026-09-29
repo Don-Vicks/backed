@@ -47,6 +47,8 @@ export type Campaign = {
   name: string
   symbol: string
   uri: string // metadata JSON (name, image, description)
+  description?: string
+  image?: string
   plan: TierPlan
   dropBot: {
     startFeeBps: number // fee at launch, for bots rushing the drop

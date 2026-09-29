@@ -1,8 +1,9 @@
 import path from 'path'
 import dotenv from 'dotenv'
+import { repoRoot } from './paths'
 import { Connection, PublicKey } from '@solana/web3.js'
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') })
+dotenv.config({ path: path.join(repoRoot(), '.env'), quiet: true })
 
 export type NetworkName = 'devnet' | 'mainnet'
 
@@ -37,8 +38,23 @@ export function getNetwork(): NetworkConfig {
   }
 }
 
+// Public RPC endpoints drop connections now and then (ECONNRESET, "fetch failed").
+// Retry network-level failures a few times; HTTP errors are left to web3.js.
+const retryingFetch: typeof fetch = async (input, init) => {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await fetch(input, init)
+    } catch (e) {
+      lastError = e
+      await new Promise((r) => setTimeout(r, 300 * 2 ** attempt))
+    }
+  }
+  throw lastError
+}
+
 export function getConnection(): Connection {
-  return new Connection(getNetwork().rpcUrl, 'confirmed')
+  return new Connection(getNetwork().rpcUrl, { commitment: 'confirmed', fetch: retryingFetch })
 }
 
 export function explorerTx(sig: string): string {

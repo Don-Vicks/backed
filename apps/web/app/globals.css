@@ -134,3 +134,9 @@
     @apply font-sans;
   }
 }
+/* Wallet adapter modal, themed with brand tokens */
+.wallet-adapter-modal-wrapper { background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); font-family: var(--font-inter), sans-serif; }
+.wallet-adapter-modal-title { color: var(--foreground); }
+.wallet-adapter-modal-button-close { background: var(--secondary); }
+.wallet-adapter-button { font-family: var(--font-inter), sans-serif; }
+.wallet-adapter-modal-list .wallet-adapter-button:not([disabled]):hover { background: var(--accent); }

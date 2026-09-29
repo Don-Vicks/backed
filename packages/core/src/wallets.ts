@@ -3,12 +3,13 @@ import os from 'os'
 import path from 'path'
 import { Keypair } from '@solana/web3.js'
 import { getNetwork } from './network'
+import { repoRoot } from './paths'
 
 export const WALLET_ROLES = ['platform', 'maker', 'backer1', 'backer2', 'backer3'] as const
 export type WalletRole = (typeof WALLET_ROLES)[number]
 
 export function keysDir(): string {
-  return path.resolve(__dirname, '../../../keys', getNetwork().name)
+  return path.join(repoRoot(), 'keys', getNetwork().name)
 }
 
 function keyPath(name: string): string {
