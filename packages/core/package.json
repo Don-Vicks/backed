@@ -6,7 +6,10 @@
   "scripts": {
     "wallets": "ts-node src/scripts/wallets.ts",
     "balance": "ts-node src/scripts/balance.ts",
-    "lifecycle": "ts-node src/scripts/lifecycle.ts"
+    "lifecycle": "ts-node src/scripts/lifecycle.ts",
+    "test": "node -r ts-node/register --test src/__tests__/*.test.ts",
+    "launch": "ts-node src/scripts/launch.ts",
+    "trust": "ts-node src/scripts/trust.ts"
   },
   "dependencies": {
     "@meteora-ag/cp-amm-sdk": "1.5.0",
@@ -14,6 +17,7 @@
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
     "bn.js": "^5.2.5",
+    "decimal.js": "^10.6.0",
     "dotenv": "^18.0.4"
   },
   "devDependencies": {

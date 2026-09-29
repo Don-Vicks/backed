@@ -1,0 +1,15 @@
+{
+  "name": "Hackathon Hoodie",
+  "symbol": "HOOD",
+  "uri": "https://example.com/hoodie.json",
+  "plan": {
+    "tiers": [
+      { "units": 2, "startPrice": 4 },
+      { "units": 3, "startPrice": 5 }
+    ],
+    "finalPrice": 6,
+    "makerSharePct": 10
+  },
+  "dropBot": { "startFeeBps": 5000, "windowSec": 600 },
+  "normalFeeBps": 100
+}

@@ -4,6 +4,8 @@
   "scripts": {
     "core:wallets": "pnpm --filter @preorder/core wallets",
     "core:balance": "pnpm --filter @preorder/core balance",
-    "core:lifecycle": "pnpm --filter @preorder/core lifecycle"
+    "core:lifecycle": "pnpm --filter @preorder/core lifecycle",
+    "core:launch": "pnpm --filter @preorder/core launch",
+    "core:test": "pnpm --filter @preorder/core test"
   }
 }

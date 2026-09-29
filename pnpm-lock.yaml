@@ -25,6 +25,9 @@ importers:
       bn.js:
         specifier: ^5.2.5
         version: 5.2.5
+      decimal.js:
+        specifier: ^10.6.0
+        version: 10.6.0
       dotenv:
         specifier: ^18.0.4
         version: 18.0.4
