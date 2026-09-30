@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Coins } from "lucide-react";
@@ -158,6 +159,11 @@ export function MakerPanel({ c, run, busy }: { c: CampaignWithLive; run: RunTx; 
         </Button>
       </div>
       {live.status === "funding" && <p className="mt-2 text-xs text-muted-foreground">Your budget unlocks when the goal is reached.</p>}
+      {live.status === "reselling" && (
+        <Button asChild variant="ghost" className="mt-2 w-full">
+          <Link href={`/c/${c.pool}/orders`}>View orders to ship</Link>
+        </Button>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api, useSignAndSend, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
+import { ShippingForm } from "@/components/shipping-form";
 import { explorerAccount, short, units, usd } from "@/lib/format";
 import type { CampaignWithLive } from "@/lib/types";
 
@@ -192,6 +193,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const [amount, setAmount] = useState("10");
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [shipFor, setShipFor] = useState<string | null>(null); // burn signature awaiting shipping details
 
   const usdcAmount = Number(amount);
   const debouncedAmount = useDebounced(usdcAmount, 350);
@@ -214,7 +216,8 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     setBusy(kind);
     try {
       const built = await api<BuiltTx>("/api/tx", { kind, pool: c.pool, wallet: publicKey.toBase58(), ...extra });
-      await signAndSend(built, label);
+      const signature = await signAndSend(built, label);
+      if (kind === "redeem") setShipFor(signature);
       refresh();
     } catch (e) {
       if (e instanceof Error && !/cancelled|rejected|failed:/i.test(e.message)) toast.error(e.message);
@@ -287,6 +290,8 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
           <Button className="mt-4 w-full" onClick={graduate} disabled={!!busy}>{busy === "migrate" ? "Graduating…" : "Graduate now"}</Button>
         </div>
       )}
+
+      {shipFor && publicKey && <ShippingForm pool={c.pool} wallet={publicKey.toBase58()} signature={shipFor} productName={c.campaign.name} />}
 
       {live.status === "reselling" && <ResalePanel c={c} run={run} busy={busy} vouchers={vouchers} />}
 
