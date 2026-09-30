@@ -21,6 +21,7 @@ export type CampaignLive = {
   unitsSold: number
   tierIndex: number // which early-bird tier the price is in
   resalePool: string | null
+  makerBudgetWithdrawn: boolean // DBC migrationFeeWithdrawStatus, creator bit = 0b10
 }
 
 const toNum = (bn: BN, decimals: number) => Number(bn.toString()) / 10 ** decimals
@@ -51,6 +52,7 @@ export async function readCampaignLive(connection: Connection, record: CampaignR
     priceUsdc: price,
     unitsSold: migrated ? record.campaign.plan.tiers.reduce((a, t) => a + t.units, 0) : toNum(new BN(mint.supply.toString()).sub(s.baseReserve), VOUCHER_DECIMALS),
     tierIndex,
+    makerBudgetWithdrawn: (Number((s as { migrationFeeWithdrawStatus?: number }).migrationFeeWithdrawStatus ?? 0) & 0b10) !== 0,
     resalePool: migrated ? resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint)).toBase58() : null,
   }
 }

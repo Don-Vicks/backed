@@ -1,10 +1,17 @@
 import BN from "bn.js";
 import { PublicKey } from "@solana/web3.js";
 import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { buildBuyTx, buildMakerWithdrawTx, buildRedeemTx, buildSellBackTx, getCampaign } from "@preorder/core";
+import { buildBuyTx, buildMakerClaimTx, buildMakerWithdrawTx, buildRedeemTx, buildResaleSwapTx, buildSellBackTx, getCampaign } from "@preorder/core";
 import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, serialize } from "@/lib/server";
 
-type Body = { kind: "buy" | "sell" | "redeem" | "withdraw"; pool: string; wallet: string; usdc?: number; ref?: string };
+type Body = {
+  kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "resaleBuy" | "resaleSell";
+  pool: string;
+  wallet: string;
+  usdc?: number;
+  vouchers?: number;
+  ref?: string;
+};
 
 // Unsigned transactions for the connected wallet to sign and send.
 export async function POST(req: Request) {
@@ -31,6 +38,16 @@ export async function POST(req: Request) {
     } else if (body.kind === "withdraw") {
       if (wallet.toBase58() !== record.maker) throw new BadRequest("Only the maker can withdraw the budget");
       tx = await buildMakerWithdrawTx(conn, wallet, pool);
+    } else if (body.kind === "claim") {
+      if (wallet.toBase58() !== record.maker) throw new BadRequest("Only the maker can claim maker fees");
+      tx = await buildMakerClaimTx(conn, record);
+      if (!tx) throw new BadRequest("Nothing to claim yet");
+    } else if (body.kind === "resaleBuy") {
+      if (!(body.usdc && body.usdc > 0)) throw new BadRequest("Enter an amount");
+      tx = await buildResaleSwapTx(conn, record, wallet, "buy", body.usdc);
+    } else if (body.kind === "resaleSell") {
+      if (!(body.vouchers && body.vouchers > 0)) throw new BadRequest("Enter an amount");
+      tx = await buildResaleSwapTx(conn, record, wallet, "sell", body.vouchers);
     } else {
       throw new BadRequest("Unknown transaction kind");
     }

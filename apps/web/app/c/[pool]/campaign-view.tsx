@@ -18,6 +18,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, useSignAndSend, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
+import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { explorerAccount, short, units, usd } from "@/lib/format";
 import type { CampaignWithLive } from "@/lib/types";
 
@@ -127,7 +128,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
       <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:self-start">
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="flex items-baseline justify-between">
-            <span className="text-sm text-muted-foreground">Price now</span>
+            <span className="text-sm text-muted-foreground">{live.status === "reselling" ? "Final pre-order price" : "Price now"}</span>
             <span className="font-mono text-3xl tabular-nums">{usd(live.priceUsdc)}</span>
           </div>
           <Progress className="mt-4" value={Math.min(100, live.progress * 100)} aria-label={`${Math.round(live.progress * 100)}% funded`} />
@@ -205,9 +206,10 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["campaign", c.pool] });
     queryClient.invalidateQueries({ queryKey: ["balances", c.pool] });
+    queryClient.invalidateQueries({ queryKey: ["resale", c.pool] });
   };
 
-  async function run(kind: "buy" | "sell" | "redeem" | "withdraw", label: string, extra: Record<string, unknown> = {}) {
+  async function run(kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "resaleBuy" | "resaleSell", label: string, extra: Record<string, unknown> = {}) {
     if (!publicKey) return setVisible(true);
     setBusy(kind);
     try {
@@ -286,15 +288,9 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
         </div>
       )}
 
-      {live.status === "reselling" && isMaker && (
-        <div className="rounded-xl border border-border bg-card p-5">
-          <p className="font-heading text-2xl">You’re funded</p>
-          <p className="mt-1 text-sm text-muted-foreground">Withdraw your {c.campaign.plan.makerSharePct}% production budget.</p>
-          <Button className="mt-4 w-full" onClick={() => run("withdraw", "Withdraw production budget")} disabled={!!busy}>
-            {busy === "withdraw" ? "Withdrawing…" : "Withdraw budget"}
-          </Button>
-        </div>
-      )}
+      {live.status === "reselling" && <ResalePanel c={c} run={run} busy={busy} vouchers={vouchers} />}
+
+      {isMaker && <MakerPanel c={c} run={run} busy={busy} />}
 
       {publicKey && vouchers > 0 && (
         <div className="rounded-xl border border-border bg-card p-5">
