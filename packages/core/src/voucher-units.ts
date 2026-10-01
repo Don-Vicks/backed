@@ -69,3 +69,12 @@ export function planUnitsBuy(wantRaw: bigint, remainingRaw: bigint): UnitsBuyMod
   }
   return wantRaw + VOUCHER_RAW_PER_UNIT > remainingRaw ? 'sweep' : 'exactOut'
 }
+
+// The fewest vouchers a sweep accepts: everything left less slippage, but never fewer than the units
+// asked for while the curve has them. A buy that lands between build and send and eats into those
+// units makes the sweep fail instead of leaving the backer a fraction they cannot redeem.
+export function sweepMinOut(wantRaw: bigint, remainingRaw: bigint, slippageBps: number): bigint {
+  const slipped = (remainingRaw * BigInt(10_000 - slippageBps)) / BigInt(10_000)
+  const want = wantRaw < remainingRaw ? wantRaw : remainingRaw
+  return want > slipped ? want : slipped
+}

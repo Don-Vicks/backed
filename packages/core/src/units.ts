@@ -15,7 +15,7 @@ import {
 import { dbcClient } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import { chainUnixTime } from './unlock'
-import { UnitsError, checkUnits, maxUnitsLeft, planUnitsBuy, topUpRaw, unitsToRaw, type UnitsBuyMode } from './voucher-units'
+import { UnitsError, checkUnits, maxUnitsLeft, planUnitsBuy, sweepMinOut, topUpRaw, unitsToRaw, type UnitsBuyMode } from './voucher-units'
 
 // Slippage on the USDC a units buy may spend (ExactOut) or the vouchers it must get (sweep).
 export const UNITS_SLIPPAGE_BPS = 100
@@ -74,7 +74,7 @@ export type UnitsPlan = {
   amountOut: BN // vouchers delivered
   amountIn: BN // expected USDC spent, fee included
   maxAmountIn: BN // ExactOut: the most the transaction may spend. Sweep: what it offers (the unspent rest stays)
-  minAmountOut: BN // sweep only: the fewest vouchers it accepts; ExactOut delivers amountOut or fails
+  minAmountOut: BN // sweep only: the fewest vouchers it accepts (at least the units asked for); ExactOut delivers amountOut or fails
   fee: BN
   remaining: BN // vouchers left on the curve before this buy
   slippageBps: number
@@ -88,13 +88,14 @@ export function planUnits(curve: CurveState, wantRaw: bigint, opts: UnitsQuoteOp
   const remaining = sweep.outputAmount
   const mode = planUnitsBuy(wantRaw, toBig(remaining))
   if (mode === 'sweep') {
-    // Offer the sweep cost plus slippage; DBC stops at the goal and takes only what it needs.
+    // Offer the sweep cost plus slippage; DBC stops at the goal and takes only what it needs. The
+    // minimum out never drops below the units asked for, so a front-run fails it (sweepMinOut).
     return {
       mode,
       amountOut: remaining,
       amountIn: sweep.includedFeeInputAmount,
       maxAmountIn: sweep.includedFeeInputAmount.muln(BPS + slippageBps).divn(BPS).addn(1),
-      minAmountOut: remaining.muln(BPS - slippageBps).divn(BPS),
+      minAmountOut: toBN(sweepMinOut(wantRaw, toBig(remaining), slippageBps)),
       fee: sweep.tradingFee.add(sweep.protocolFee).add(sweep.referralFee),
       remaining,
       slippageBps,

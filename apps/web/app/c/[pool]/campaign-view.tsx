@@ -20,7 +20,7 @@ import { api, useSignAndSend, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { ShippingForm } from "@/components/shipping-form";
-import { explorerAccount, short, units, usd } from "@/lib/format";
+import { explorerAccount, short, units, unitsDown, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
 import type { CampaignWithLive } from "@/lib/types";
@@ -295,6 +295,8 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     retry: false,
   });
   const topUp = topUpEnabled ? topUpData ?? null : null;
+  // Near the goal a top-up takes everything left (it would strand less than one unit otherwise).
+  const topUpLabel = topUp?.completesGoal ? `Back the last ${unitsDown(topUp.vouchers)}` : `Top up to ${held.whole + 1}`;
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["campaign", c.pool] });
@@ -302,9 +304,15 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     queryClient.invalidateQueries({ queryKey: ["resale", c.pool] });
   };
 
-  async function run(kind: "buy" | "buyUnits" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell", label: string, extra: Record<string, unknown> = {}) {
+  // `busyKey` tells apart two buttons that send the same kind (backing units and topping up).
+  async function run(
+    kind: "buy" | "buyUnits" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell",
+    label: string,
+    extra: Record<string, unknown> = {},
+    busyKey: string = kind,
+  ) {
     if (!publicKey) return setVisible(true);
-    setBusy(kind);
+    setBusy(busyKey);
     try {
       const built = await api<BuiltTx>("/api/tx", { kind, pool: c.pool, wallet: publicKey.toBase58(), ...extra });
       const signature = await signAndSend(built, label);
@@ -349,7 +357,8 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              run("buyUnits", `Back ${unitCount} unit${unitCount === 1 ? "" : "s"} of ${c.campaign.name}`, { units: unitCount, ref });
+              const what = unitsQuote?.completesGoal ? `the last ${unitsDown(unitsQuote.vouchers)}` : `${unitCount} unit${unitCount === 1 ? "" : "s"}`;
+              run("buyUnits", `Back ${what} of ${c.campaign.name}`, { units: unitCount, ref });
             }}
           >
             <Label htmlFor="units">Pre-order units</Label>
@@ -376,7 +385,11 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
                 </Button>
               </div>
               <Button type="submit" className="flex-1" disabled={!!busy || !unitsValid || (!!unitsQuoteData && unitCount > maxUnits)}>
-                {busy === "buyUnits" ? "Backing…" : unitsQuote ? `Back ${unitCount} · ${usd(unitsQuote.usdc)}` : `Back ${unitsValid ? unitCount : ""}`}
+                {busy === "buyUnits"
+                  ? "Backing…"
+                  : unitsQuote
+                    ? `Back ${unitsQuote.completesGoal ? `the last ${unitsDown(unitsQuote.vouchers)}` : unitCount} · ${usd(unitsQuote.usdc)}`
+                    : `Back ${unitsValid ? unitCount : ""}`}
               </Button>
             </div>
             <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
@@ -387,7 +400,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
                   ≈ <span className="font-mono text-foreground">{usd(unitsQuote.usdc)}</span> · fee{" "}
                   <span className={`font-mono ${unitsQuote.feePct > 5 ? "text-primary" : ""}`}>{unitsQuote.feePct.toFixed(1)}%</span>
                   {unitsQuote.feePct > 5 && " (launch fee still high)"} · at most <span className="font-mono">{usd(unitsQuote.maxUsdc)}</span>
-                  {unitsQuote.completesGoal && <> · completes the goal with {units(unitsQuote.vouchers)} vouchers</>}
+                  {unitsQuote.completesGoal && <> · completes the goal with {unitsDown(unitsQuote.vouchers)} vouchers</>}
                 </>
               ) : unitsQuoteError && debouncedUnits === unitCount ? (
                 <span className="text-destructive">{unitsQuoteError.message}</span>
@@ -455,8 +468,10 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
                 + <span className="font-mono">{held.fraction.toFixed(6).replace(/0+$/, "")}</span> of a voucher, not redeemable alone
               </span>
               {live.status === "funding" && (
-                <Button size="sm" variant="secondary" onClick={() => run("buyUnits", `Top up to ${held.whole + 1}`, { topUp: true, ref })} disabled={!!busy}>
-                  {busy === "buyUnits" ? "Topping up…" : `Top up to ${held.whole + 1}${topUp ? ` · ${usd(topUp.usdc)}` : ""}`}
+                <Button size="sm" variant="secondary" onClick={() => run("buyUnits", topUpLabel, { topUp: true, ref }, "topUp")} disabled={!!busy}>
+                  {busy === "topUp"
+                    ? "Topping up…"
+                    : `${topUpLabel}${topUp ? ` · ${usd(topUp.usdc)}` : ""}${topUp?.completesGoal ? " (completes the goal)" : ""}`}
                 </Button>
               )}
             </div>

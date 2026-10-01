@@ -53,7 +53,7 @@ export async function POST(req: Request) {
       // A bad, self or unusable referral is dropped: it must never block the buy.
       const referral = await unitsReferral(conn, new PublicKey(record.usdcMint), body.ref, wallet);
       const opts = { referral, slippageBps: body.slippageBps };
-      const built = body.topUp ? await buildTopUpTx(conn, wallet, pool, baseMint, opts) : await buildBuyUnitsTx(conn, wallet, pool, body.units as number, opts);
+      const built = body.topUp === true ? await buildTopUpTx(conn, wallet, pool, baseMint, opts) : await buildBuyUnitsTx(conn, wallet, pool, body.units as number, opts);
       tx = built.tx;
       quote = built.quote;
     } else if (body.kind === "buy") {

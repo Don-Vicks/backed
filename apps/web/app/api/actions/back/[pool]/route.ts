@@ -16,6 +16,7 @@ import {
   type UnitsQuote,
 } from "@preorder/core";
 import { PublicKey } from "@solana/web3.js";
+import { unitsDown } from "@/lib/format";
 import { connection, finalizeForWallet, publicOrigin } from "@/lib/server";
 
 // CAIP-2 ids; a local validator has no fixed genesis hash, so it uses the Wallet Standard name.
@@ -36,9 +37,6 @@ function headers() {
     "Content-Type": "application/json",
   };
 }
-
-// Vouchers as people read them: 2, 1.5, or 2 for the 1.999998 a last buy can take.
-const vouchers = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: headers() });
 
@@ -98,7 +96,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
   const label = (n: 1 | 2) => {
     const q = quotes[n];
     if (!q) return `Back ${n}`;
-    return q.completesGoal ? `Back the last ${vouchers(q.vouchers)} · $${q.usdc.toFixed(2)}` : `Back ${n} · $${q.usdc.toFixed(2)}`;
+    return q.completesGoal ? `Back the last ${unitsDown(q.vouchers)} · $${q.usdc.toFixed(2)}` : `Back ${n} · $${q.usdc.toFixed(2)}`;
   };
   const quick = ([1, 2] as const).filter((n) => quotes[n] || maxUnits === undefined);
 
@@ -158,7 +156,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/actions/back/[p
       const tx = await finalizeForWallet(built.tx, wallet);
       const q = built.quote;
       const message = q.completesGoal
-        ? `Backed the last ${vouchers(q.vouchers)} units of ${record.campaign.name} for about $${q.usdc.toFixed(2)}. The goal is reached.`
+        ? `Backed the last ${unitsDown(q.vouchers)} units of ${record.campaign.name} for about $${q.usdc.toFixed(2)}. The goal is reached.`
         : `Backed ${q.vouchers} unit${q.vouchers === 1 ? "" : "s"} of ${record.campaign.name} for about $${q.usdc.toFixed(2)}. Your vouchers are in your wallet.`;
       return json({
         type: "transaction",

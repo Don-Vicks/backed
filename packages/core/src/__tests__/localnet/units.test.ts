@@ -1,6 +1,7 @@
 // Back by whole units end to end on the local validator (mainnet DBC binary): ExactOut delivers
 // exactly N vouchers, its maximumAmountIn guards against a front-run, a fractional balance tops up to
-// a whole voucher, and the last whole-unit buy sweeps the 0.000001 dust so the goal is reached.
+// a whole voucher, the last whole-unit buy sweeps the 0.000001 dust so the goal is reached, and a
+// front-run never shrinks that last buy below the units asked for.
 import { before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import BN from 'bn.js'
@@ -186,10 +187,18 @@ test('a near-goal buyUnits sweeps the rest and completes the pool (progress = 1)
   await assert.rejects(quoteBuyUnits(conn, pool, 1), (e: unknown) => e instanceof UnitsError && e.status === 409 && /goal/.test(e.message))
 })
 
-test('whole-unit buys alone reach the goal of a fresh campaign', { skip, timeout: 120_000 }, async () => {
-  const small: Campaign = { ...campaign, name: 'Units Cap', symbol: 'UCAP', plan: { tiers: [{ units: 2, startPrice: 3 }, { units: 2, startPrice: 4 }], finalPrice: 5, makerSharePct: 10 } }
+// A fresh 2 + 2 unit campaign, for tests that need the whole curve to themselves.
+const smallPlan = { tiers: [{ units: 2, startPrice: 3 }, { units: 2, startPrice: 4 }], finalPrice: 5, makerSharePct: 10 }
+
+async function createSmall(small: Campaign) {
   const built = await buildCreateCampaignTx({ connection: conn, campaign: small, tier: 'A', platform: platform.publicKey, maker: maker.publicKey, usdcMint })
-  await send(conn, built.tx, [...neededSigners(built.tx, [maker, platform]), ...built.extraSigners], 'create small campaign')
+  await send(conn, built.tx, [...neededSigners(built.tx, [maker, platform]), ...built.extraSigners], `create ${small.symbol}`)
+  return built
+}
+
+test('whole-unit buys alone reach the goal of a fresh campaign', { skip, timeout: 120_000 }, async () => {
+  const small: Campaign = { ...campaign, name: 'Units Cap', symbol: 'UCAP', plan: smallPlan }
+  const built = await createSmall(small)
   const smallRecord: CampaignRecord = { ...record, pool: built.pool.toBase58(), config: built.config.toBase58(), baseMint: built.baseMint.toBase58(), campaign: small, goalUsdc: built.onChain.goalUsdc, totalUnits: built.onChain.totalUnits }
   const backers = [alice, bob, carol, referrer]
   let buys = 0
@@ -205,4 +214,23 @@ test('whole-unit buys alone reach the goal of a fresh campaign', { skip, timeout
   }
   assert.equal(buys, 4)
   assert.equal((await readCampaignLive(conn, smallRecord)).progress, 1)
+})
+
+test('a front-run before the last buy makes the sweep fail rather than deliver a fraction', { skip, timeout: 120_000 }, async () => {
+  const built = await createSmall({ ...campaign, name: 'Units Race', symbol: 'URACE', plan: smallPlan })
+  await send(conn, (await buildBuyUnitsTx(conn, alice.publicKey, built.pool, 3)).tx, [alice], 'alice backs 3 of 4 units')
+  // Carol's "Back 1" takes the rest (1.00001x left) and must get at least the unit she asked for.
+  const victim = await buildBuyUnitsTx(conn, carol.publicKey, built.pool, 1)
+  assert.equal(victim.plan.mode, 'sweep')
+  assert.ok(victim.plan.minAmountOut.gten(1_000_000), `min out ${victim.plan.minAmountOut}`)
+  // A few cents bought first would leave her about 0.993 of a voucher; the swap fails instead.
+  await send(conn, await buildBuyTx(conn, bob.publicKey, built.pool, 0.03), [bob], 'bob buys $0.03 first')
+  assert.ok(unitsLeftRaw(await readCurve(conn, built.pool)) < BigInt(1_000_000), 'the front-run cut into the last unit')
+  const sim = await simulate(victim.tx, carol)
+  assert.ok(sim.err, 'victim sweep should fail')
+  assert.match((sim.logs ?? []).join('\n'), /ExceededSlippage|slippage/i)
+  // Re-quoted, the buy says plainly that it takes less than a whole voucher.
+  const again = await quoteBuyUnits(conn, built.pool, 1)
+  assert.equal(again.completesGoal, true)
+  assert.ok(again.vouchers < 1, `vouchers ${again.vouchers}`)
 })

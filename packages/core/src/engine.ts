@@ -107,6 +107,8 @@ export function vestingScheduleOverride(env: NodeJS.ProcessEnv = process.env): V
 }
 
 // Raw vouchers added to each curve segment so it sells at least its units (0.00001 voucher per tier).
+// It covers whole-unit (ExactOut) buys. Each USDC-amount buy rounds its output down and can use up
+// to 1 raw of it, so many of those can leave the last backer's sweep a few raw short of whole.
 export const CURVE_MARGIN_RAW = 10
 
 const toRaw = (amount: number, decimals: number) => new Decimal(amount).mul(new Decimal(10).pow(decimals))

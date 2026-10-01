@@ -9,6 +9,7 @@ import {
   maxUnitsLeft,
   planUnitsBuy,
   splitVouchers,
+  sweepMinOut,
   topUpRaw,
   unitsToRaw,
 } from '../voucher-units'
@@ -72,4 +73,15 @@ test('maxUnitsLeft counts whole units left, and 1 while any fraction is left', (
   assert.equal(maxUnitsLeft(raw(2.5)), 2)
   assert.equal(maxUnitsLeft(raw(0.3)), 1)
   assert.equal(maxUnitsLeft(BigInt(0)), 0)
+})
+
+test('a sweep never accepts fewer vouchers than the units asked for', () => {
+  // The common last buy: 1.000019 left, back 1. Slippage alone would accept 0.990018, which a $0.03
+  // front-run turns into an unredeemable 0.993374.
+  assert.equal(sweepMinOut(unitsToRaw(1), raw(1.000019), 100), unitsToRaw(1))
+  assert.equal(sweepMinOut(unitsToRaw(2), raw(2.000018), 500), unitsToRaw(2))
+  // Less left than asked: everything left is the floor.
+  assert.equal(sweepMinOut(unitsToRaw(1), raw(0.3), 100), raw(0.3))
+  // Far more left than asked (a top-up near the goal): slippage on the rest is the tighter bound.
+  assert.equal(sweepMinOut(raw(0.61), raw(1.2), 100), raw(1.188))
 })

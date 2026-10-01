@@ -9,7 +9,7 @@ export async function POST(req: Request) {
     const record = getCampaign(String(body.pool));
     if (!record) throw new BadRequest("Unknown campaign");
     const opts = { slippageBps: body.slippageBps };
-    const quote = body.topUp
+    const quote = body.topUp === true
       ? await quoteTopUp(connection(), record.pool, publicKey(body.wallet), new PublicKey(record.baseMint), opts)
       : await quoteBuyUnits(connection(), record.pool, body.units as number, opts);
     return Response.json(quote);
