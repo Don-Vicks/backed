@@ -24,7 +24,8 @@ export function CampaignList() {
       </div>
     );
   }
-  if (isError) {
+  // A failed poll keeps the last list; only a first load that fails shows the error.
+  if (isError && !data) {
     return (
       <div className="rounded-xl border border-border bg-card p-6">
         <p className="font-medium">Couldn’t load campaigns</p>
@@ -43,10 +44,17 @@ export function CampaignList() {
     );
   }
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {data.campaigns.map((c) => (
-        <CampaignCard key={c.pool} c={c} />
-      ))}
-    </div>
+    <>
+      {isError && (
+        <p role="status" className="mb-4 rounded-lg border border-border bg-muted px-4 py-2 text-sm text-muted-foreground">
+          Live data is delayed. Showing the last update.
+        </p>
+      )}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {data.campaigns.map((c) => (
+          <CampaignCard key={c.pool} c={c} />
+        ))}
+      </div>
+    </>
   );
 }

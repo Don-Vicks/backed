@@ -6,7 +6,7 @@ import path from 'path'
 import type { DatabaseSync } from 'node:sqlite'
 import { getNetwork } from './network'
 import { repoRoot } from './paths'
-import { sealJson, shippingKey } from './seal'
+import { isLegacySealed, openLegacySealed, sealJson, shippingKey } from './seal'
 
 export type Db = DatabaseSync
 
@@ -88,6 +88,42 @@ export const MIGRATIONS: Migration[] = [
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+    `,
+  },
+  {
+    // Memo-bound redemptions: an order has the id its burn's memo names, and its shipping details are
+    // deleted (shipping_ct NULL) once the maker marks it shipped. A pending redemption is a burn its
+    // wallet signed, kept from just before the server sends it until its order is recorded or it is known
+    // not to have landed; its sealed shipping details move to the order unchanged.
+    name: '0002_redemption_flow',
+    sql: `
+      CREATE TABLE redemptions_v2 (
+        signature TEXT PRIMARY KEY,
+        id TEXT UNIQUE,
+        pool TEXT NOT NULL,
+        wallet TEXT NOT NULL,
+        units INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        shipping_ct TEXT,
+        shipped_at TEXT
+      );
+      INSERT INTO redemptions_v2 (signature, pool, wallet, units, created_at, shipping_ct)
+        SELECT signature, pool, wallet, units, created_at, shipping_ct FROM redemptions ORDER BY rowid;
+      DROP TABLE redemptions;
+      ALTER TABLE redemptions_v2 RENAME TO redemptions;
+      CREATE INDEX redemptions_pool ON redemptions(pool, created_at);
+      CREATE TABLE pending_redemptions (
+        id TEXT PRIMARY KEY,
+        pool TEXT NOT NULL,
+        wallet TEXT NOT NULL,
+        units INTEGER NOT NULL,
+        signature TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        last_valid_block_height INTEGER NOT NULL,
+        shipping_ct TEXT NOT NULL
+      );
+      CREATE INDEX pending_redemptions_owner ON pending_redemptions(pool, wallet);
+      CREATE INDEX pending_redemptions_created_at ON pending_redemptions(created_at);
     `,
   },
 ]
@@ -187,19 +223,41 @@ export function setMeta(key: string, value: string, d: Db = db()) {
 // The shipping data of a redemption is sealed to its signature.
 export const redemptionAad = (signature: string) => `redemption:${signature}`
 
-// One-time import of the JSON files the store used before (data/<kind>.<network>.json in DATA_DIR).
+// One-time import of the JSON files the store used before (data/<kind>.<network>.json in DATA_DIR):
+// campaigns, pending creates, token metadata and orders, plus the pending redemptions, faucet claims
+// and rate-limit buckets the JSON-file stores kept.
 // Each file is imported in its own transaction and each row on its own: a row that does not validate
 // is skipped and logged, a file that does not parse is renamed *.failed, and the store opens either way.
 // Imported files are renamed *.imported, except redemptions, which hold plaintext shipping details and
 // are deleted once their rows are sealed in the database (kept as *.failed if any row was skipped).
-// Without a usable SHIPPING_KEY the redemptions file is left in place and imported on a later open.
+// Shipping details sealed by the JSON store (LegacySealed) are opened and re-sealed with sealJson.
+// Without a usable SHIPPING_KEY the files with shipping details are left in place and imported on a
+// later open.
 type LegacyFileReport = { file: string; rows: number; skipped: number[]; error?: string }
-const LEGACY_KINDS = ['campaigns', 'pending', 'metadata', 'redemptions'] as const
+const LEGACY_KINDS = ['campaigns', 'pending', 'metadata', 'redemptions', 'pending-redemptions', 'faucet-claims', 'rate'] as const
 type LegacyKind = (typeof LEGACY_KINDS)[number]
+// Files that are an object keyed by id rather than an array of rows.
+const KEYED_KINDS: LegacyKind[] = ['metadata', 'rate']
+// Files whose rows carry shipping details, so need SHIPPING_KEY to be sealed.
+const SEALED_KINDS: LegacyKind[] = ['redemptions', 'pending-redemptions']
 
 const str = (v: unknown, field: string) => {
   if (typeof v !== 'string' || !v) throw new Error(`missing ${field}`)
   return v
+}
+const num = (v: unknown, field: string) => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`missing ${field}`)
+  return v
+}
+const positiveUnits = (v: unknown) => {
+  if (!Number.isSafeInteger(v) || (v as number) < 1) throw new Error('units must be a positive integer')
+  return v as number
+}
+
+// Shipping details of a legacy row, sealed to `aad`: plaintext (the first JSON store) or LegacySealed.
+function resealShipping(shipping: unknown, pool: string, wallet: string, aad: string, key: Buffer): string {
+  if (!shipping || typeof shipping !== 'object') throw new Error('missing shipping')
+  return sealJson(isLegacySealed(shipping) ? openLegacySealed(shipping, pool, wallet) : shipping, aad, key)
 }
 
 // Inserts one legacy row (INSERT OR IGNORE: an import retried after a crash is a no-op), or throws.
@@ -219,12 +277,38 @@ function legacyRowImporter(t: Db, kind: LegacyKind, key: Buffer | null): (row: a
       insert.run(str(id, 'id'), Date.now(), JSON.stringify(meta))
     }
   }
-  const insert = t.prepare('INSERT OR IGNORE INTO redemptions (signature, pool, wallet, units, created_at, shipping_ct) VALUES (?, ?, ?, ?, ?, ?)')
+  if (kind === 'faucet-claims') {
+    const insert = t.prepare('INSERT INTO faucet_claims (wallet, ip, claimed_at) VALUES (?, ?, ?)')
+    return (c) => void insert.run(str(c?.wallet, 'wallet'), typeof c.ip === 'string' ? c.ip : null, num(c.claimedAt, 'claimedAt'))
+  }
+  if (kind === 'rate') {
+    const insert = t.prepare('INSERT OR IGNORE INTO rate (key, tokens, updated_at) VALUES (?, ?, ?)')
+    return (b, id) => void insert.run(str(id, 'key'), num(b?.tokens, 'tokens'), num(b.updatedAt, 'updatedAt'))
+  }
+  if (kind === 'pending-redemptions') {
+    const insert = t.prepare(
+      'INSERT OR IGNORE INTO pending_redemptions (id, pool, wallet, units, signature, created_at, last_valid_block_height, shipping_ct) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    return (p) => {
+      const signature = str(p?.signature, 'signature')
+      const pool = str(p.pool, 'pool')
+      const wallet = str(p.wallet, 'wallet')
+      const createdAt = Date.parse(str(p.createdAt, 'createdAt'))
+      if (!Number.isFinite(createdAt)) throw new Error('createdAt is not a date')
+      const shipping = resealShipping(p.shipping, pool, wallet, redemptionAad(signature), key!)
+      insert.run(str(p.id, 'id'), pool, wallet, positiveUnits(p.units), signature, createdAt, num(p.lastValidBlockHeight, 'lastValidBlockHeight'), shipping)
+    }
+  }
+  const insert = t.prepare('INSERT OR IGNORE INTO redemptions (signature, id, pool, wallet, units, created_at, shipping_ct, shipped_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
   return (r) => {
     const signature = str(r?.signature, 'signature')
-    if (!Number.isSafeInteger(r.units) || r.units < 1) throw new Error('units must be a positive integer')
-    if (!r.shipping || typeof r.shipping !== 'object') throw new Error('missing shipping')
-    insert.run(signature, str(r.pool, 'pool'), str(r.wallet, 'wallet'), r.units, str(r.createdAt, 'createdAt'), sealJson(r.shipping, redemptionAad(signature), key!))
+    const pool = str(r.pool, 'pool')
+    const wallet = str(r.wallet, 'wallet')
+    const units = positiveUnits(r.units)
+    const shippedAt = typeof r.shippedAt === 'string' ? r.shippedAt : null
+    // Shipped orders kept no shipping details.
+    const shipping = r.shipping === null && shippedAt ? null : resealShipping(r.shipping, pool, wallet, redemptionAad(signature), key!)
+    insert.run(signature, typeof r.id === 'string' && r.id ? r.id : null, pool, wallet, units, str(r.createdAt, 'createdAt'), shipping, shippedAt)
   }
 }
 
@@ -239,7 +323,7 @@ function importLegacyFile(d: Db, kind: LegacyKind, file: string, key: Buffer | n
   let rows: [string | undefined, unknown][]
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
-    if (kind === 'metadata') {
+    if (KEYED_KINDS.includes(kind)) {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected an object')
       rows = Object.entries(parsed)
     } else {
@@ -291,7 +375,7 @@ function importLegacyJson(d: Db) {
     const file = path.join(dataDir(), `${kind}.${net}.json`)
     if (!fs.existsSync(file)) continue
     let key: Buffer | null = null
-    if (kind === 'redemptions') {
+    if (SEALED_KINDS.includes(kind)) {
       try {
         key = shippingKey()
       } catch (e) {

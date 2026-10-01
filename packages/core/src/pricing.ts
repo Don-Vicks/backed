@@ -35,11 +35,16 @@ export type PricingSummary = {
   totalUnits: number // total voucher supply the maker must be able to produce
 }
 
+// DBC takes up to 16 curve segments, but each tier adds 32 bytes to the create transaction and the
+// create flow is sized (and tested) for this many.
+export const MAX_TIERS = 4
+
 export function validatePlan(plan: TierPlan): void {
   if (plan.tiers.length === 0) throw new Error('at least one tier is required')
-  if (plan.tiers.length > 16) throw new Error('DBC supports at most 16 curve segments')
+  if (plan.tiers.length > MAX_TIERS) throw new Error(`at most ${MAX_TIERS} tiers`)
   plan.tiers.forEach((t, i) => {
     if (!(t.units > 0)) throw new Error(`tier ${i + 1}: units must be positive`)
+    if (!Number.isInteger(t.units)) throw new Error(`tier ${i + 1}: units must be whole`)
     if (!(t.startPrice > 0)) throw new Error(`tier ${i + 1}: price must be positive`)
     const next = plan.tiers[i + 1]?.startPrice ?? plan.finalPrice
     if (!(next > t.startPrice)) throw new Error(`tier ${i + 1}: prices must rise from tier to tier and up to the final price`)

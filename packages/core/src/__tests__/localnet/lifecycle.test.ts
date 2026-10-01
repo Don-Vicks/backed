@@ -1,7 +1,9 @@
 // The whole campaign lifecycle against the mainnet DBC and DAMM v2 programs on a local validator
 // (pnpm core:test:localnet): create → back → exit → PartialFill to the goal → graduate → maker
 // withdraws the budget → resale buy and sell → maker claims fees → a backer redeems a voucher.
-// Every step asserts the balances it moves; graduation also asserts the DAMM v2 positions.
+// Every step asserts the balances it moves; graduation also asserts the DAMM v2 positions. The maker
+// pays for the create, the clicking wallet for graduation, and the redemption goes through the memo-bound
+// prepare/submit flow the web app uses.
 // The world comes from seedLocalnet() in a temp PREORDER_ROOT: fresh keys and mint, so it can share
 // a validator with other suites.
 import { test, before } from 'node:test'
@@ -16,19 +18,19 @@ import { getNetwork } from '../../network'
 import { send } from '../../tx'
 import { closeDb } from '../../db'
 import type { Campaign } from '../../engine'
-import type { CampaignRecord } from '../../store'
+import { saveCampaign, type CampaignRecord } from '../../store'
 import {
   buildBuyTx,
   buildCreateCampaignTx,
   buildMakerWithdrawTx,
   buildMigrateTx,
-  buildRedeemTx,
   buildSellBackTx,
+  createCampaignSteps,
   dbcClient,
   resalePoolAddress,
 } from '../../chain'
 import { buildMakerClaimTx, buildResaleSwapTx, readMakerEarnings } from '../../resale'
-import { listRedemptions, saveRedemption, verifyBurn } from '../../redemptions'
+import { getPendingRedemption, listRedemptions, prepareRedemption, submitRedemption, verifyRedeemBurn } from '../../redemptions'
 import { inspectDbcPool, type PoolView } from '../../inspect'
 import { SEED_BACKER_USDC, seedLocalnet, type Seeded } from '../../localnet'
 
@@ -63,7 +65,7 @@ const raw = async (mint: PublicKey, owner: PublicKey) => {
 }
 const usdcOf = (kp: Keypair) => raw(usdcMint, kp.publicKey)
 const vouchersOf = (kp: Keypair) => raw(baseMint, kp.publicKey)
-// The swap builders return a Transaction today and { tx, quote } once swaps carry quote-derived minimums.
+// The curve swap builders return { tx, quote } (the quote's minimum is in the transaction).
 const txOf = (built: Transaction | { tx: Transaction }) => ('tx' in built ? built.tx : built)
 const inspect = (): Promise<PoolView> => inspectDbcPool(conn, pool)
 
@@ -90,11 +92,13 @@ test('seed: wallets, mock USDC with the platform as mint authority, env file', {
   assert.ok(fs.existsSync(path.join(seeded.root, 'keys', 'localnet', 'platform.json')))
 })
 
-test('create: config and pool in one transaction, on the terms the engine computed', { skip }, async () => {
-  // The maker is the payer here, so this signs the same way before and after the maker-pays change.
-  const args = { connection: conn, campaign, tier: 'C' as const, platform: w.maker.publicKey, maker: w.maker.publicKey, usdcMint }
-  const built = await buildCreateCampaignTx(args)
-  const sig = await send(conn, built.tx, [w.maker, ...built.extraSigners], 'create')
+test('create: the maker pays for config and pool, on the terms the engine computed', { skip }, async () => {
+  const platformSol = await conn.getBalance(w.platform.publicKey)
+  const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: 'C', maker: w.maker.publicKey, usdcMint })
+  // One transaction when it fits, else createConfig then createPool; the last one creates the pool.
+  let sig = ''
+  for (const [i, step] of createCampaignSteps(built, w.maker.publicKey).entries()) sig = await send(conn, step.tx, [w.maker, ...step.signers], `create ${i + 1}`)
+  assert.equal(await conn.getBalance(w.platform.publicKey), platformSol, 'the platform key pays nothing')
   pool = built.pool
   baseMint = built.baseMint
   console.log(`    pool ${pool.toBase58()} (pnpm --filter @preorder/core inspect <pool>)`)
@@ -221,21 +225,30 @@ test('claim: one transaction pays the maker curve fees and resale fees', { skip 
   assert.equal(await buildMakerClaimTx(conn, record), null, 'nothing left to claim')
 })
 
-test('redeem: burning one voucher is verified on-chain and recorded once', { skip }, async () => {
+test('redeem: a memo-bound burn is verified on-chain and recorded once', { skip }, async () => {
   const holder = w.backer2
+  saveCampaign(record) // the order is recorded against a listed campaign
   const vouchers = await vouchersOf(holder)
   const supply = (await getMint(conn, baseMint)).supply
   assert.ok(vouchers.gten(USDC), 'backer2 holds a whole voucher')
-  const sig = await send(conn, buildRedeemTx(holder.publicKey, baseMint), [holder], 'backer2 burns 1 voucher')
+  const { id, tx } = await prepareRedemption(conn, record, holder.publicKey)
+  tx.feePayer = holder.publicKey
+  tx.recentBlockhash = (await conn.getLatestBlockhash('confirmed')).blockhash
+  tx.sign(holder)
+  const raw = tx.serialize()
+  const shipping = { name: 'Ada Lovelace', email: 'ada@example.com', address: '12 Analytical Way', country: 'UK' }
+  const { redemption, already } = await submitRedemption(conn, record, raw, id, shipping)
+  assert.equal(already, false)
+  assert.equal(redemption.units, 1)
   assert.equal(vouchers.sub(await vouchersOf(holder)).toString(), String(USDC))
   assert.equal(supply - (await getMint(conn, baseMint)).supply, BigInt(USDC))
+  assert.equal(getPendingRedemption(id), undefined, 'the pending row became the order')
 
-  assert.equal(await verifyBurn(conn, record, sig, holder.publicKey), 1)
-  await assert.rejects(verifyBurn(conn, record, sig, w.backer1.publicKey), /does not burn a whole voucher/)
-  const shipping = { name: 'Ada Lovelace', email: 'ada@example.com', address: '12 Analytical Way', country: 'UK' }
-  const redemption = { pool: record.pool, signature: sig, wallet: holder.publicKey.toBase58(), units: 1, shipping, createdAt: new Date().toISOString() }
-  saveRedemption(redemption)
-  assert.throws(() => saveRedemption(redemption), /already submitted/)
+  // The burn only counts for the redemption it was made for, and only once.
+  const pending = { id: 'AAAAAAAAAAAAAAAA', pool: record.pool, wallet: holder.publicKey.toBase58(), units: 1, shipping: '', createdAt: '', signature: redemption.signature, lastValidBlockHeight: 0 }
+  await assert.rejects(verifyRedeemBurn(conn, record, pending, redemption.signature, w.maker.publicKey), /not made for this redemption/)
+  assert.equal((await submitRedemption(conn, record, raw, id, shipping)).already, true, 'sending it again changes nothing')
   const [listed] = listRedemptions(record.pool)
+  assert.equal(listed.signature, redemption.signature)
   assert.deepEqual(listed.shipping, shipping)
 })

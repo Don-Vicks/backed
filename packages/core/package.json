@@ -12,6 +12,7 @@
     "reconcile": "ts-node src/scripts/reconcile.ts",
     "inspect": "ts-node src/scripts/inspect.ts",
     "seed:localnet": "ts-node src/scripts/seed-localnet.ts",
+    "api-negative": "ts-node src/scripts/api-negative.ts",
     "test:localnet": "LOCALNET=1 node -r ts-node/register --test 'src/__tests__/localnet/**/*.test.ts'"
   },
   "dependencies": {
@@ -23,7 +24,8 @@
     "bs58": "^6.0.0",
     "decimal.js": "^10.6.0",
     "dotenv": "^18.0.4",
-    "tweetnacl": "^1.0.3"
+    "tweetnacl": "^1.0.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/bn.js": "^5.2.0",

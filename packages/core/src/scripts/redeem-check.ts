@@ -1,3 +1,6 @@
+// Redemption through the web API on a graduated campaign (WEB_URL, default http://localhost:3100):
+// prepare, sign and submit with shipping; then the hijack attempts and the maker's orders sign-in.
+//   pnpm --filter @preorder/core exec ts-node src/scripts/redeem-check.ts <pool>
 import bs58 from 'bs58'
 import nacl from 'tweetnacl'
 import { PublicKey, Transaction } from '@solana/web3.js'
@@ -24,19 +27,19 @@ async function main() {
     await send(c, await buildResaleSwapTx(c, record, holder.publicKey, 'buy', 8), [holder], 'buy vouchers on resale to redeem')
   }
   console.log('holder has', (await bal(holder)).toFixed(4), 'vouchers')
-  const built = (await post('/api/tx', { kind: 'redeem', pool, wallet: holder.publicKey.toBase58() })).body
-  const tx = Transaction.from(Buffer.from(built.tx, 'base64')); tx.partialSign(holder)
-  const sig = await c.sendRawTransaction(tx.serialize())
-  await c.confirmTransaction({ signature: sig, blockhash: tx.recentBlockhash!, lastValidBlockHeight: built.lastValidBlockHeight }, 'confirmed')
-  console.log('✓ burned 1 voucher', sig.slice(0, 16))
   const shipping = { name: 'Ada Lovelace', email: 'ada@example.com', address: '12 Analytical Way\nLondon', country: 'UK' }
-  console.log('submit        →', await post('/api/redemptions', { pool, signature: sig, wallet: holder.publicKey.toBase58(), shipping }))
-  console.log('reuse sig     →', await post('/api/redemptions', { pool, signature: sig, wallet: holder.publicKey.toBase58(), shipping }))
-  console.log('wrong wallet  →', (await post('/api/redemptions', { pool, signature: sig, wallet: w.maker.publicKey.toBase58(), shipping })).body)
-  const msg = ordersMessage(pool, new Date().toISOString())
+  const built = (await post('/api/redemptions/prepare', { pool, wallet: holder.publicKey.toBase58(), shipping })).body
+  const tx = Transaction.from(Buffer.from(built.tx, 'base64')); tx.partialSign(holder)
+  const signed = tx.serialize().toString('base64')
+  console.log('submit        →', await post('/api/redemptions/submit', { pool, id: built.id, tx: signed, shipping }))
+  console.log('submit again  →', await post('/api/redemptions/submit', { pool, id: built.id, tx: signed, shipping: { ...shipping, name: 'Mallory' } }))
+  // A hijacker claims the holder's burn for a redemption of their own: only the burn sent for it counts.
+  const forged = (await post('/api/redemptions/prepare', { pool, wallet: holder.publicKey.toBase58(), shipping: { ...shipping, name: 'Mallory' } })).body
+  console.log('hijack        →', await post('/api/redemptions/confirm', { id: forged.id, signature: bs58.encode(tx.signature!) }))
+  const msg = ordersMessage(pool, new Date().toISOString(), new URL(BASE).host)
   const signAs = (kp: typeof w.maker) => bs58.encode(nacl.sign.detached(new TextEncoder().encode(msg), kp.secretKey))
   const asMaker = await post('/api/redemptions/list', { pool, message: msg, signature: signAs(w.maker) })
-  console.log('maker list    →', asMaker.status, asMaker.body.redemptions?.map((r: any) => `${r.shipping.name} ×${r.units}`))
+  console.log('maker list    →', asMaker.status, asMaker.body.redemptions?.map((r: any) => `${r.shipping?.name} ×${r.units}`))
   console.log('non-maker     →', (await post('/api/redemptions/list', { pool, message: msg, signature: signAs(w.backer1) })).status)
 }
 main().catch((e) => { console.error('FAILED', e.stack ?? e); process.exit(1) })

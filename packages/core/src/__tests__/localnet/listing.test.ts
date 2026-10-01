@@ -1,5 +1,6 @@
 // Listing against the real DBC program on a local validator (pnpm core:test:localnet): a campaign
-// built for a maker is listed once its create transaction lands, however the confirm arrives.
+// built for (and paid by) a maker is listed once its create lands, however the confirm arrives, in one
+// transaction or split into createConfig then createPool, and after a resume onto a fresh pool.
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'fs'
@@ -8,10 +9,11 @@ import path from 'path'
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js'
 import { createMint } from '@solana/spl-token'
 import { getNetwork } from '../../network'
-import { buildCreateCampaignTx } from '../../chain'
+import { buildCreateCampaignTx, buildCreatePoolTx, createCampaignSteps } from '../../chain'
+import { MAX_TIERS } from '../../pricing'
 import { send } from '../../tx'
-import { closeDb } from '../../db'
-import { getCampaign, getPending, listCampaigns, savePending, type CampaignRecord } from '../../store'
+import { closeDb, transaction } from '../../db'
+import { deletePending, getCampaign, getPending, listCampaigns, savePending, type CampaignRecord } from '../../store'
 import { confirmListing, reconcilePending } from '../../listing'
 import type { Campaign } from '../../engine'
 
@@ -19,8 +21,8 @@ const skip = process.env.LOCALNET !== '1' && 'set LOCALNET=1 with a validator ru
 const net = getNetwork({ ...process.env, NETWORK: 'localnet' })
 const conn = new Connection(net.rpcUrl, 'confirmed')
 
-// Fresh keys and mint per run: other suites share the validator.
-const payer = Keypair.generate()
+// Fresh keys and mint per run: other suites share the validator. The maker pays for every create.
+const payer = Keypair.generate() // mint authority of the mock USDC only
 const maker = Keypair.generate()
 let usdcMint: PublicKey
 
@@ -39,9 +41,20 @@ async function airdrop(to: PublicKey, sol: number) {
   await conn.confirmTransaction({ signature: sig, ...latest }, 'confirmed')
 }
 
-// Builds a campaign like POST /api/campaigns does and records it as pending; send() lands it.
-async function build(createdAtMs = Date.now()) {
-  const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: 'C', platform: payer.publicKey, maker: maker.publicKey, usdcMint })
+// The worst case POST /api/campaigns accepts: too big for one transaction, so it is split.
+const large: Campaign = {
+  ...campaign,
+  name: 'N'.repeat(32),
+  symbol: 'S'.repeat(10),
+  uri: `https://${'o'.repeat(39)}.app/m/abcdefghij`,
+  plan: { tiers: Array.from({ length: MAX_TIERS }, (_, i) => ({ units: 10, startPrice: 4 + i })), finalPrice: 4 + MAX_TIERS, makerSharePct: 10 },
+}
+
+// Builds a campaign like POST /api/campaigns does and records it as pending; send() lands its steps in
+// order and returns the last signature (the one that creates the pool), sendStep(i) lands one step.
+async function build(createdAtMs = Date.now(), c: Campaign = campaign) {
+  const built = await buildCreateCampaignTx({ connection: conn, campaign: c, tier: 'C', maker: maker.publicKey, usdcMint })
+  const steps = createCampaignSteps(built, maker.publicKey)
   const record: CampaignRecord = {
     pool: built.pool.toBase58(),
     config: built.config.toBase58(),
@@ -50,14 +63,25 @@ async function build(createdAtMs = Date.now()) {
     maker: maker.publicKey.toBase58(),
     createdAt: new Date(createdAtMs).toISOString(),
     createSignature: '',
-    campaign,
+    campaign: c,
     trust: { tier: 'C', score: 0, reasons: [], maxMakerSharePct: 10 },
     goalUsdc: built.onChain.goalUsdc,
     totalUnits: built.onChain.totalUnits,
     fields: built.fields,
   }
   savePending(record, createdAtMs)
-  return { record, send: () => send(conn, built.tx, [payer, ...built.extraSigners, maker], `create ${record.pool.slice(0, 8)}`) }
+  const sendStep = (i: number) => send(conn, steps[i].tx, [maker, ...steps[i].signers], `create ${record.pool.slice(0, 8)} ${i + 1}/${steps.length}`)
+  return {
+    record,
+    built,
+    steps,
+    sendStep,
+    send: async () => {
+      let sig = ''
+      for (let i = 0; i < steps.length; i++) sig = await sendStep(i)
+      return sig
+    },
+  }
 }
 
 before(async () => {
@@ -66,7 +90,7 @@ before(async () => {
   process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'preorder-localnet-listing-'))
   process.env.PLATFORM_FEE_CLAIMER = Keypair.generate().publicKey.toBase58()
   closeDb()
-  await Promise.all([airdrop(payer.publicKey, 5), airdrop(maker.publicKey, 1)])
+  await Promise.all([airdrop(payer.publicKey, 1), airdrop(maker.publicKey, 5)])
   usdcMint = await createMint(conn, payer, payer.publicKey, null, 6)
 })
 
@@ -110,4 +134,38 @@ test('reconcile lists a landed pool nobody confirmed and expires a build that ne
   assert.equal(getCampaign(landed.record.pool)?.createSignature, sig)
   assert.equal(getPending(dead.record.pool), undefined)
   assert.equal(getCampaign(dead.record.pool), undefined)
+})
+
+test('split create: listed with the createPool signature; the createConfig one is not the create', { skip }, async () => {
+  const split = await build(Date.now(), large)
+  assert.equal(split.steps.length, 2)
+  const configSig = await split.sendStep(0)
+  const poolSig = await split.sendStep(1)
+  await assert.rejects(confirmListing(conn, split.record.pool, configSig, { waitMs: 5000 }), /did not create this campaign/)
+  const { record: listed } = await confirmListing(conn, split.record.pool, poolSig)
+  assert.equal(listed.createSignature, poolSig)
+
+  // Without a signature, the pool's own first transaction (createPool) is found.
+  const other = await build(Date.now(), large)
+  const otherSig = await other.send()
+  assert.equal((await confirmListing(conn, other.record.pool)).record.createSignature, otherSig)
+})
+
+test('resume: a split create stopped after createConfig is listed under its new pool', { skip }, async () => {
+  const split = await build(Date.now(), large)
+  await split.sendStep(0)
+  // What POST /api/campaigns/<pool>/resume does: createPool on that config with a fresh mint, and the
+  // pending row moves to the new pool address.
+  const resumed = await buildCreatePoolTx({ connection: conn, config: split.built.config, campaign: large, maker: maker.publicKey, usdcMint })
+  const record = { ...split.record, pool: resumed.pool.toBase58(), baseMint: resumed.baseMint.toBase58() }
+  transaction(() => {
+    savePending(record)
+    deletePending(split.record.pool)
+  })
+  const sig = await send(conn, resumed.tx, [maker, ...resumed.extraSigners], 'resume createPool')
+  const { record: listed } = await confirmListing(conn, record.pool, sig)
+  assert.equal(listed.config, split.record.config)
+  assert.equal(listed.baseMint, resumed.baseMint.toBase58())
+  assert.equal(getPending(split.record.pool), undefined)
+  assert.equal(getCampaign(split.record.pool), undefined, 'the stopped pool is not listed')
 })

@@ -7,13 +7,22 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { Minus, Plus, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
-import { priceTiers, type TierPlan } from "@preorder/core/src/pricing";
+import { MAX_TIERS, priceTiers, type TierPlan } from "@preorder/core/src/pricing";
+import {
+  DEFAULT_DROP_BOT_WINDOW_SEC,
+  DESCRIPTION_MAX_CHARS,
+  DROP_BOT_START_FEE_BPS,
+  DROP_BOT_WINDOWS_SEC,
+  IMAGE_URL_MAX_CHARS,
+  NAME_MAX_BYTES,
+  NORMAL_FEE_BPS,
+} from "@preorder/core/src/campaign-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, useSignAndSend, type BuiltTx } from "@/lib/client";
+import { api, ApiError, ReportedError, useSignAndSendAll, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { confirmLaunch, setPendingLaunch, usePendingLaunch, type PendingLaunch } from "@/lib/pending-launch";
 import { FinishListing } from "./finish-listing";
@@ -22,11 +31,8 @@ import type { Campaign, PreviewResponse } from "@/lib/types";
 
 type TierInput = { units: string; startPrice: string };
 
-const DROP_WINDOWS = [
-  { label: "5 min", sec: 300 },
-  { label: "10 min", sec: 600 },
-  { label: "30 min", sec: 1800 },
-];
+// The launch fee is fixed for every campaign; only the length of the window is the maker's choice.
+const DROP_WINDOWS = DROP_BOT_WINDOWS_SEC.map((sec) => ({ label: `${sec / 60} min`, sec }));
 
 function num(v: string) {
   const n = Number(v);
@@ -37,7 +43,7 @@ export function CreateForm() {
   const router = useRouter();
   const { publicKey } = useWallet();
   const { setVisible } = useWalletModal();
-  const signAndSend = useSignAndSend();
+  const signAndSendAll = useSignAndSendAll();
 
   const [name, setName] = useState("Hackathon Hoodie");
   const [symbol, setSymbol] = useState("HOOD");
@@ -49,9 +55,10 @@ export function CreateForm() {
   ]);
   const [finalPrice, setFinalPrice] = useState("38");
   const [makerShare, setMakerShare] = useState(10);
-  const [dropWindow, setDropWindow] = useState(600);
-  const [verifiedSocial, setVerifiedSocial] = useState(false);
+  const [dropWindow, setDropWindow] = useState<number>(DEFAULT_DROP_BOT_WINDOW_SEC);
   const [launching, setLaunching] = useState(false);
+  // A split create whose config landed but whose pool did not: launching again finishes it on that config.
+  const [resumePool, setResumePool] = useState<string | null>(null);
 
   // The upfront share can never exceed the tier cap; derived, not synced with an effect.
   const [previewCap, setPreviewCap] = useState(10);
@@ -69,8 +76,8 @@ export function CreateForm() {
         finalPrice: num(finalPrice),
         makerSharePct: effectiveShare,
       },
-      dropBot: { startFeeBps: 5000, windowSec: dropWindow },
-      normalFeeBps: 100,
+      dropBot: { startFeeBps: DROP_BOT_START_FEE_BPS, windowSec: dropWindow },
+      normalFeeBps: NORMAL_FEE_BPS,
     }),
     [name, symbol, description, image, tiers, finalPrice, effectiveShare, dropWindow],
   );
@@ -85,7 +92,7 @@ export function CreateForm() {
   }, [campaign.plan]);
 
   // Trust tier + on-chain field mapping from the server (debounced).
-  const previewInput = useDebounced(JSON.stringify({ campaign, maker: publicKey?.toBase58(), verifiedSocial }), 450);
+  const previewInput = useDebounced(JSON.stringify({ campaign, maker: publicKey?.toBase58() }), 450);
   const previewQuery = useQuery({
     queryKey: ["preview", previewInput],
     queryFn: () => api<PreviewResponse & { caps: Record<string, number> }>("/api/preview", JSON.parse(previewInput)),
@@ -131,15 +138,29 @@ export function CreateForm() {
     if (!publicKey) return setVisible(true);
     setLaunching(true);
     try {
-      const { pool, ...built } = await api<BuiltTx & { pool: string }>("/api/campaigns", { campaign, maker: publicKey.toBase58(), verifiedSocial });
+      // One transaction, or two (config, then pool) for larger campaigns; either way one wallet prompt.
+      // A resume is one createPool on the config that already landed (none when the pool exists too).
+      const maker = publicKey.toBase58();
+      const { pool, txs } = resumePool
+        ? await api<{ txs: BuiltTx[]; pool: string }>(`/api/campaigns/${resumePool}/resume`, { maker })
+        : await api<{ txs: BuiltTx[]; pool: string }>("/api/campaigns", { campaign, maker });
+      if (!txs.length) {
+        // The pool was on-chain after all, and the resume listed it.
+        setResumePool(null);
+        router.push(`/c/${pool}`);
+        return;
+      }
+      if (txs.length > 1) toast.info("Two steps in one approval. Your wallet may warn that step 2 will fail: it can’t see the config step 1 creates.");
       autoFinished.current = pool;
-      // Remembered as soon as the RPC accepts the transaction: if it lands but this page loses track, the
-      // banner finishes it. A rejected prompt or a failed preflight never gets here, so nothing is left behind.
+      // Remembered as soon as the RPC accepts the transaction that creates the pool (the last one): if it
+      // lands but this page loses track, the banner finishes it. A rejected prompt or a failed preflight
+      // never gets here, so nothing is left behind.
       const sent = { current: false };
       let pending: PendingLaunch;
       try {
-        const signature = await signAndSend(built, "Launch campaign", {
-          onSent: (signature) => {
+        const signature = await signAndSendAll(txs, resumePool ? "Finish launch" : "Launch campaign", {
+          onSent: (signature, i) => {
+            if (i !== txs.length - 1) return;
             sent.current = true;
             setPendingLaunch({ pool, signature, name: campaign.name, at: Date.now() });
           },
@@ -147,14 +168,20 @@ export function CreateForm() {
         pending = { pool, signature, name: campaign.name, at: Date.now() };
       } catch (e) {
         // Landed but failed: the pool was never created. A confirm timeout keeps it (it may still land).
-        if (sent.current && e instanceof Error && /failed on-chain/i.test(e.message)) setPendingLaunch(null);
+        const cause = e instanceof ReportedError ? e.cause : e;
+        const failedOnChain = cause instanceof Error && /failed on-chain/i.test(cause.message);
+        if (sent.current && failedOnChain) setPendingLaunch(null);
+        // The config landed but the pool did not: launching again finishes it on that config.
+        if (resumePool || (e instanceof ReportedError && e.landed > 0 && (!sent.current || failedOnChain))) setResumePool(pool);
         throw e;
       }
+      setResumePool(null);
       setPendingLaunch(pending);
       setLaunching(false);
       await finishListing(pending);
     } catch (e) {
-      if (!(e instanceof Error && /cancelled|rejected/i.test(e.message))) toast.error(e instanceof Error ? e.message : "Launch failed");
+      if (e instanceof ApiError && e.status === 404) setResumePool(null); // nothing left to resume: start over
+      if (!(e instanceof ReportedError)) toast.error(e instanceof Error ? e.message : "Launch failed");
     } finally {
       setLaunching(false);
     }
@@ -177,7 +204,7 @@ export function CreateForm() {
           <div className="grid gap-4 sm:grid-cols-[1fr_8rem]">
             <div className="grid gap-2">
               <Label htmlFor="name">Product name</Label>
-              <Input id="name" value={name} maxLength={32} autoComplete="off" onChange={(e) => setName(e.target.value)} required />
+              <Input id="name" value={name} maxLength={NAME_MAX_BYTES} autoComplete="off" onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="symbol">Ticker</Label>
@@ -191,13 +218,13 @@ export function CreateForm() {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              maxLength={280}
+              maxLength={DESCRIPTION_MAX_CHARS}
               className="rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="image">Image URL <span className="text-muted-foreground">(optional)</span></Label>
-            <Input id="image" type="url" inputMode="url" placeholder="https://…" value={image} onChange={(e) => setImage(e.target.value)} />
+            <Input id="image" type="url" inputMode="url" placeholder="https://…" maxLength={IMAGE_URL_MAX_CHARS} value={image} onChange={(e) => setImage(e.target.value)} />
           </div>
         </fieldset>
 
@@ -224,7 +251,7 @@ export function CreateForm() {
             <Button
               type="button"
               variant="secondary"
-              disabled={tiers.length >= 4}
+              disabled={tiers.length >= MAX_TIERS}
               onClick={() => setTiers((ts) => [...ts, { units: "10", startPrice: String(num(finalPrice) || 1) }])}
             >
               <Plus aria-hidden="true" /> Add tier
@@ -255,29 +282,36 @@ export function CreateForm() {
                 </Button>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground">Bots that rush the launch pay a 50% fee that falls to 1% over this window.</p>
+            <p className="text-xs text-muted-foreground">Bots that rush the launch pay a {DROP_BOT_START_FEE_BPS / 100}% fee that falls to {NORMAL_FEE_BPS / 100}% over this window.</p>
           </div>
-          <label className="flex items-start gap-3 text-sm">
-            <input type="checkbox" checked={verifiedSocial} onChange={(e) => setVerifiedSocial(e.target.checked)} className="mt-0.5 size-4 accent-primary" />
-            <span>
-              I’ve verified my X account <span className="text-muted-foreground">(demo flag: stands in for a real social check)</span>
-            </span>
-          </label>
         </fieldset>
 
         <div className="flex flex-col gap-2">
           {pendingLaunch && !launching && (
             <FinishListing launch={pendingLaunch} busy={listing} onFinish={() => finishListing(pendingLaunch)} onDiscard={() => setPendingLaunch(null)} />
           )}
-          <Button type="submit" size="lg" disabled={launching || listing || !!pendingLaunch || (!!publicKey && !!blocking)}>
-            {!publicKey ? "Connect wallet to launch" : launching ? "Launching…" : "Launch campaign"}
+          <Button type="submit" size="lg" disabled={launching || listing || !!pendingLaunch || (!!publicKey && !resumePool && !!blocking)}>
+            {!publicKey ? "Connect wallet to launch" : launching ? "Launching…" : resumePool ? "Finish launch" : "Launch campaign"}
           </Button>
+          {resumePool && (
+            <p className="text-sm text-muted-foreground" role="status">
+              Step 1 landed: this campaign’s terms are on-chain. Finish launch creates its pool on them (one more approval); form edits no
+              longer apply.
+            </p>
+          )}
           {publicKey && blocking && <p className="text-sm text-destructive" role="alert">{blocking}</p>}
         </div>
       </form>
 
       <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:self-start" aria-live="polite">
-        <TrustCard preview={preview} loading={previewLoading && !preview} connected={!!publicKey} />
+        <TrustCard
+          preview={preview}
+          loading={previewLoading && !preview}
+          connected={!!publicKey}
+          unavailable={!!preview?.trustUnavailable}
+          error={previewQuery.isError ? previewQuery.error.message : null}
+          retry={() => previewQuery.refetch()}
+        />
         <div className="rounded-xl border border-border bg-card p-5">
           <h2 className="font-heading text-2xl">What backers see</h2>
           {pricing.ok ? (
@@ -308,8 +342,10 @@ export function CreateForm() {
             </ul>
           ) : previewLoading ? (
             <div className="mt-4 grid gap-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-8" />)}</div>
-          ) : (
+          ) : blocking ? (
             <p className="mt-3 text-sm text-muted-foreground">Fix the highlighted inputs to see the config.</p>
+          ) : (
+            <p className="mt-3 text-sm text-muted-foreground">The config preview is unavailable right now.</p>
           )}
         </div>
       </aside>
@@ -326,8 +362,25 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TrustCard({ preview, loading, connected }: { preview: PreviewResponse | null; loading: boolean; connected: boolean }) {
+function TrustCard({
+  preview,
+  loading,
+  connected,
+  unavailable,
+  error,
+  retry,
+}: {
+  preview: PreviewResponse | null;
+  loading: boolean;
+  connected: boolean;
+  unavailable: boolean; // the server's trust lookup failed
+  error: string | null; // the preview request itself failed (e.g. too many requests)
+  retry: () => void;
+}) {
   const trust = preview?.trust;
+  const checkAgain = (
+    <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={retry}>Check again</Button>
+  );
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="flex items-center justify-between">
@@ -340,12 +393,25 @@ function TrustCard({ preview, loading, connected }: { preview: PreviewResponse |
         <p className="mt-2 text-sm text-muted-foreground">Connect your wallet to see your tier. It’s scored from your wallet’s public mainnet history.</p>
       ) : loading ? (
         <div className="mt-3 grid gap-2"><Skeleton className="h-4" /><Skeleton className="h-4 w-2/3" /></div>
+      ) : error && !trust ? (
+        <div className="mt-2 text-sm" role="alert">
+          <p className="text-muted-foreground">{error}</p>
+          {checkAgain}
+        </div>
+      ) : unavailable && !trust ? (
+        <div className="mt-2 text-sm" role="alert">
+          <p className="text-muted-foreground">Your trust check is unavailable right now, so your tier and cap are unknown. Launching needs it.</p>
+          {checkAgain}
+        </div>
       ) : trust ? (
-        <ul className="mt-3 grid gap-1 text-sm text-muted-foreground">
-          {trust.reasons.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
+        <>
+          <ul className="mt-3 grid gap-1 text-sm text-muted-foreground">
+            {trust.reasons.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+          {trust.signals.partial && checkAgain}
+        </>
       ) : null}
     </div>
   );

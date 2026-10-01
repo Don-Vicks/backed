@@ -51,12 +51,12 @@ test('shippingKeyStatus: a malformed key or a missing mainnet key is unusable (h
   assert.equal(shippingKeyStatus({ NETWORK: 'localnet', SHIPPING_KEY: 'short' }).usable, false)
 })
 
-test('shippingKeyStatus: the public dev key is not ok on a deployed devnet, fine locally', () => {
+test('shippingKeyStatus: the public dev key is not usable on a deployed devnet (health fails), fine locally', () => {
   assert.deepEqual(shippingKeyStatus({ NETWORK: 'devnet' }), { ok: true, configured: false, usable: true })
   assert.deepEqual(shippingKeyStatus({ NETWORK: 'localnet', PUBLIC_BASE_URL: 'https://x.test' }), { ok: true, configured: false, usable: true })
   const deployed = shippingKeyStatus({ NETWORK: 'devnet', RAILWAY_PUBLIC_DOMAIN: 'x.up.railway.app' })
   assert.equal(deployed.ok, false)
-  assert.equal(deployed.usable, true, 'still serves')
+  assert.equal(deployed.usable, false, 'real addresses never go under the public dev key')
   const prev = shippingKeyStatus({ NETWORK: 'devnet', SHIPPING_KEY: key.toString('hex'), SHIPPING_KEY_PREVIOUS: 'c2hvcnQ=' })
   assert.equal(prev.ok, false)
   assert.equal(prev.usable, true)

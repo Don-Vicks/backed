@@ -136,20 +136,26 @@ export function getMetadata(id: string): TokenMetadata | undefined {
   return row ? parse<TokenMetadata>(row) : undefined
 }
 
-// Durable token bucket per key (an IP, a wallet): capacity tokens, refilled at refillPerSec.
-// Returns false when the bucket is empty.
+// Durable token bucket per key (an IP on a route, a wallet): capacity tokens, refilled at refillPerSec.
+// Returns false when the bucket is empty. The buckets are a guard, not a record: a store that cannot
+// be read or written fails open (every bucket full) rather than turning each limited request into a 500.
 export function takeRateToken(key: string, capacity: number, refillPerSec: number, now = Date.now()): boolean {
-  return transaction((d) => {
-    const row = d.prepare('SELECT tokens, updated_at FROM rate WHERE key = ?').get(key) as { tokens: number; updated_at: number } | undefined
-    const available = row ? Math.min(capacity, row.tokens + (Math.max(0, now - row.updated_at) / 1000) * refillPerSec) : capacity
-    const ok = available >= 1
-    d.prepare('INSERT INTO rate (key, tokens, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET tokens = excluded.tokens, updated_at = excluded.updated_at').run(
-      key,
-      ok ? available - 1 : available,
-      now,
-    )
-    return ok
-  })
+  try {
+    return transaction((d) => {
+      const row = d.prepare('SELECT tokens, updated_at FROM rate WHERE key = ?').get(key) as { tokens: number; updated_at: number } | undefined
+      const available = row ? Math.min(capacity, row.tokens + (Math.max(0, now - row.updated_at) / 1000) * refillPerSec) : capacity
+      const ok = available >= 1
+      d.prepare('INSERT INTO rate (key, tokens, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET tokens = excluded.tokens, updated_at = excluded.updated_at').run(
+        key,
+        ok ? available - 1 : available,
+        now,
+      )
+      return ok
+    })
+  } catch (e) {
+    console.error(`rate limits not saved: ${e instanceof Error ? e.message : String(e)}`)
+    return true
+  }
 }
 
 // A bucket untouched this long has refilled for any sane limit, so dropping it changes nothing.
@@ -157,8 +163,14 @@ export function pruneRate(olderThanMs: number, now = Date.now()): number {
   return Number(db().prepare('DELETE FROM rate WHERE updated_at < ?').run(now - olderThanMs).changes)
 }
 
+// Faucet claims (devnet/localnet), kept for FAUCET_RETENTION_MS: longer than any faucet window.
 export function recordFaucetClaim(wallet: string, ip: string | null, now = Date.now()) {
   db().prepare('INSERT INTO faucet_claims (wallet, ip, claimed_at) VALUES (?, ?, ?)').run(wallet, ip, now)
+}
+
+// Takes back a claim recorded before a transfer that then provably did not happen.
+export function removeFaucetClaim(wallet: string, claimedAt: number) {
+  db().prepare('DELETE FROM faucet_claims WHERE rowid = (SELECT rowid FROM faucet_claims WHERE wallet = ? AND claimed_at = ? LIMIT 1)').run(wallet, claimedAt)
 }
 
 // Claims since a time, optionally for one wallet or one IP (both unset: all claims).

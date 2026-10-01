@@ -2,16 +2,23 @@
 // Each value is bound to its row through additional authenticated data, so a ciphertext copied
 // into another row fails to open.
 import crypto from 'crypto'
+import fs from 'fs'
+import path from 'path'
 import { getNetwork, isTestNetwork } from './network'
+import { repoRoot } from './paths'
 
 const VERSION = 'v1'
 const IV_BYTES = 12
 let warned = false
 
+// SHIPPING_KEY, or its alias SHIPPING_ENCRYPTION_KEY (SHIPPING_KEY wins when both are set).
+const configuredKey = (env: NodeJS.ProcessEnv) => env.SHIPPING_KEY?.trim() || env.SHIPPING_ENCRYPTION_KEY?.trim() || ''
+
 // SHIPPING_KEY: 32 bytes as 64 hex characters or base64. Required on mainnet. Devnet and localnet fall
-// back to a public, derived dev key (with a warning) so local runs need no setup.
+// back to a public, derived dev key (with a warning) so local runs need no setup; shippingKeyStatus
+// makes a deployed devnet fail its healthcheck without its own key.
 export function shippingKey(env: NodeJS.ProcessEnv = process.env): Buffer {
-  const raw = env.SHIPPING_KEY?.trim()
+  const raw = configuredKey(env)
   if (raw) return parseShippingKey(raw)
   const net = getNetwork(env).name
   if (!isTestNetwork(net)) throw new Error('SHIPPING_KEY must be set on mainnet (32 bytes, hex or base64)')
@@ -25,7 +32,7 @@ export function shippingKey(env: NodeJS.ProcessEnv = process.env): Buffer {
 const devShippingKey = (net: string) => crypto.createHash('sha256').update(`preorder-dev-shipping-key:${net}`).digest()
 
 export function hasShippingKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return !!env.SHIPPING_KEY?.trim()
+  return !!configuredKey(env)
 }
 
 // Keys that may open stored values, in order: SHIPPING_KEY, then SHIPPING_KEY_PREVIOUS (comma-separated,
@@ -50,8 +57,8 @@ export function shippingKeys(env: NodeJS.ProcessEnv = process.env): Buffer[] {
 }
 
 // For /api/health (usable: shipping details can be stored, else the deploy fails its healthcheck) and
-// /api/status (ok). A deployed devnet (public origin set) without its own key is not ok: the dev key
-// is derived from public source, so it is effectively plaintext.
+// /api/status (ok). A deployed devnet (public origin set) without its own key is neither: the dev key
+// is derived from public source, so real backers' addresses would be effectively plaintext.
 export function shippingKeyStatus(env: NodeJS.ProcessEnv = process.env): { ok: boolean; configured: boolean; usable: boolean; error?: string } {
   const configured = hasShippingKey(env)
   try {
@@ -68,7 +75,7 @@ export function shippingKeyStatus(env: NodeJS.ProcessEnv = process.env): { ok: b
   }
   const net = getNetwork(env).name
   const deployed = net !== 'localnet' && !!(env.PUBLIC_BASE_URL?.trim() || env.RAILWAY_PUBLIC_DOMAIN?.trim())
-  if (!configured && deployed) return { ok: false, configured, usable: true, error: `SHIPPING_KEY is not set on a deployed ${net}: the dev key is public` }
+  if (!configured && deployed) return { ok: false, configured, usable: false, error: `SHIPPING_KEY must be set on a deployed ${net}: the dev key is public` }
   return { ok: true, configured, usable: true }
 }
 
@@ -112,4 +119,36 @@ export function openJson<T>(sealed: string, aad: string, key: Buffer = shippingK
   } catch {
     throw new Error('Cannot decrypt sealed value: wrong SHIPPING_KEY or tampered data')
   }
+}
+
+// The format the JSON-file stores used before the database (redemptions and pending redemptions):
+// { v: 1, iv, tag, data } in base64, bound to `<pool>:<wallet>`, under SHIPPING_ENCRYPTION_KEY or, on a
+// local run without one, the key generated into keys/<network>/shipping-key. Only the legacy import
+// reads it; it re-seals each value with sealJson.
+export type LegacySealed = { v: 1; iv: string; tag: string; data: string }
+export const isLegacySealed = (v: unknown): v is LegacySealed =>
+  !!v && typeof v === 'object' && (v as LegacySealed).v === 1 && typeof (v as LegacySealed).data === 'string'
+
+export function legacyShippingKeys(env: NodeJS.ProcessEnv = process.env): Buffer[] {
+  const keys = shippingKeys(env)
+  try {
+    keys.push(parseShippingKey(fs.readFileSync(path.join(repoRoot(), 'keys', getNetwork(env).name, 'shipping-key'), 'utf8').trim()))
+  } catch {
+    // No generated key (or not readable): only the configured keys apply.
+  }
+  return keys.filter((k, i) => keys.findIndex((o) => o.equals(k)) === i)
+}
+
+export function openLegacySealed<T>(stored: LegacySealed, pool: string, wallet: string, keys: Buffer[] = legacyShippingKeys()): T {
+  for (const key of keys) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(stored.iv, 'base64'))
+      decipher.setAAD(Buffer.from(`${pool}:${wallet}`))
+      decipher.setAuthTag(Buffer.from(stored.tag, 'base64'))
+      return JSON.parse(Buffer.concat([decipher.update(Buffer.from(stored.data, 'base64')), decipher.final()]).toString('utf8')) as T
+    } catch {
+      // Try the next key.
+    }
+  }
+  throw new Error('Cannot decrypt legacy sealed value: no configured key opens it')
 }

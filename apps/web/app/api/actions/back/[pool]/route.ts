@@ -1,8 +1,20 @@
 // Solana Action (Blink) for backing a campaign straight from a shared link.
 // Spec: https://solana.com/docs/advanced/actions
-import { buildBuyTx, getCampaign, getNetwork, readCampaignLive } from "@preorder/core";
+import {
+  DEFAULT_SLIPPAGE_BPS,
+  HttpError,
+  buildBuyTx,
+  getCampaign,
+  getNetwork,
+  parseWith,
+  readCampaignLive,
+  resolveReferral,
+  schemas,
+  summarizeBuyQuote,
+  type CampaignLive,
+} from "@preorder/core";
 import { PublicKey } from "@solana/web3.js";
-import { connection, finalizeForWallet, publicOrigin } from "@/lib/server";
+import { connection, errorResponse, finalizeForWallet, logLine, publicOrigin, rateLimit, readJson, requestLog } from "@/lib/server";
 
 // CAIP-2 ids; a local validator has no fixed genesis hash, so it uses the Wallet Standard name.
 const CHAIN_ID = {
@@ -28,6 +40,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 export const OPTIONS = () => new Response(null, { headers: headers() });
 
 export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[pool]">) {
+  const log = requestLog("GET /api/actions/back/[pool]");
   const { pool } = await ctx.params;
   const record = getCampaign(pool);
   if (!record) return json({ message: "Campaign not found" }, 404);
@@ -45,16 +58,16 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
   const refQs = ref ? `&ref=${encodeURIComponent(ref)}` : "";
   const base = `/api/actions/back/${pool}?amount=`;
 
-  let description = record.campaign.description ?? "";
-  let disabled = false;
+  // Live state decides the copy and whether the Blink can be used; if it can't be read, the Blink is
+  // shown disabled rather than offering a buy that may not be possible.
+  const about = record.campaign.description ?? "";
+  let live: CampaignLive | null = null;
   try {
-    const live = await readCampaignLive(connection(), record);
-    const pct = Math.round(live.progress * 100);
-    description = `${pct}% funded · $${live.priceUsdc.toFixed(2)} per unit now, rising as tiers fill. ${description}`.trim();
-    disabled = live.status !== "funding";
-  } catch {
-    // Show the Blink without live numbers if the RPC is slow.
+    live = await readCampaignLive(connection(), record);
+  } catch (e) {
+    logLine("error", { reqId: log.reqId, route: log.route, pool, err: e instanceof Error ? e.message : String(e) });
   }
+  const { description, error } = blinkCopy(live, about);
 
   return json({
     type: "action",
@@ -62,8 +75,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
     title: `Back ${record.campaign.name}`,
     description,
     label: "Back this",
-    disabled,
-    ...(disabled && { error: { message: "This campaign is funded. Vouchers now trade on its resale market." } }),
+    disabled: !!error,
+    ...(error && { error: { message: error } }),
     links: {
       actions: [
         { type: "transaction", label: "Back $10", href: `${base}10${refQs}` },
@@ -79,34 +92,57 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
   });
 }
 
+// What the Blink says in each state; `error` set means it is disabled.
+function blinkCopy(live: CampaignLive | null, about: string): { description: string; error?: string } {
+  if (!live) return { description: about, error: "Live campaign data is unavailable right now. Try again in a moment." };
+  if (live.status === "funded") {
+    return {
+      description: `Goal reached · 100% funded. ${about}`.trim(),
+      error: "This campaign reached its goal. Its resale market opens once it graduates on the campaign page.",
+    };
+  }
+  if (live.status === "reselling") {
+    return { description: `Funded · vouchers now trade on its resale market. ${about}`.trim(), error: "This campaign is funded. Vouchers now trade on its resale market." };
+  }
+  const pct = Math.round(live.progress * 100);
+  return { description: `${pct}% funded · $${live.priceUsdc.toFixed(2)} per unit now, rising as tiers fill. ${about}`.trim() };
+}
+
 export async function POST(req: Request, ctx: RouteContext<"/api/actions/back/[pool]">) {
+  const log = requestLog("POST /api/actions/back/[pool]");
   try {
     const { pool } = await ctx.params;
     const record = getCampaign(pool);
     if (!record) return json({ message: "Campaign not found" }, 404);
+    rateLimit(req, "blink");
     const url = new URL(req.url);
-    const amount = Number(url.searchParams.get("amount"));
-    if (!(amount > 0)) return json({ message: "Enter an amount in USDC" }, 400);
-    const { account } = (await req.json()) as { account: string };
-    let wallet: PublicKey;
+    const amount = parseWith(schemas.blinkAmount, url.searchParams.get("amount") ?? "");
+    const { account: wallet } = await readJson(req, schemas.blinkPost);
+    log.wallet = wallet.toBase58();
+    const conn = connection();
+    let status: CampaignLive["status"];
     try {
-      wallet = new PublicKey(account);
+      status = (await readCampaignLive(conn, record)).status;
     } catch {
-      return json({ message: "Invalid account" }, 400);
+      throw new HttpError("Live campaign data is unavailable right now. Try again in a moment.", 503);
     }
-    const ref = url.searchParams.get("ref");
-    let referral: PublicKey | null = null;
-    if (ref && ref !== account) {
-      const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
-      referral = getAssociatedTokenAddressSync(new PublicKey(record.usdcMint), new PublicKey(ref), true);
+    if (status !== "funding") {
+      throw new HttpError(status === "funded" ? "This campaign reached its goal: backing is closed." : "This campaign is funded. Vouchers now trade on its resale market.", 422);
     }
-    const tx = await finalizeForWallet(await buildBuyTx(connection(), wallet, new PublicKey(pool), amount, referral), wallet);
+    // A bad, self or unusable referral is dropped silently: it must never block the buy.
+    const referral = await resolveReferral(conn, new PublicKey(record.usdcMint), url.searchParams.get("ref"), wallet);
+    const built = await buildBuyTx(conn, wallet, new PublicKey(record.pool), amount, { referral });
+    const tx = await finalizeForWallet(built.tx, wallet);
+    const quote = summarizeBuyQuote(built.quote, DEFAULT_SLIPPAGE_BPS);
+    const message = quote.capped
+      ? `Backed ${record.campaign.name} with $${quote.spentUsdc.toFixed(2)}, the last of the goal; the rest stays in your wallet.`
+      : `Backed ${record.campaign.name} with $${amount}. Your vouchers are in your wallet.`;
     return json({
       type: "transaction",
       transaction: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"),
-      message: `Backed ${record.campaign.name} with $${amount}. Your vouchers are in your wallet.`,
+      message,
     });
   } catch (e) {
-    return json({ message: e instanceof Error ? e.message : "Something went wrong" }, 500);
+    return errorResponse(e, log, { field: "message", headers: headers() });
   }
 }

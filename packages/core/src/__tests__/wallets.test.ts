@@ -102,7 +102,6 @@ test('new configs send partner fees and leftover to PLATFORM_FEE_CLAIMER', async
       connection,
       campaign,
       tier: 'A',
-      platform: fileKey.publicKey,
       maker: Keypair.generate().publicKey,
       usdcMint: Keypair.generate().publicKey,
     })

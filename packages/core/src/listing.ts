@@ -4,12 +4,13 @@
 import bs58 from 'bs58'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-curve-sdk'
+import { HttpError } from './errors'
 import { expirePending, getCampaign, getPending, listPending, promotePending, type CampaignRecord } from './store'
 
 // status: the HTTP status the web app returns; retry: the client should try again shortly.
-export class ListingError extends Error {
+export class ListingError extends HttpError {
   constructor(message: string, readonly status: 400 | 404 | 409, readonly retry = false) {
-    super(message)
+    super(message, status)
   }
 }
 
