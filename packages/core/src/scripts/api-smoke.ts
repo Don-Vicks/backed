@@ -29,13 +29,14 @@ async function main() {
   const campaign = {
     name: 'API Smoke Mug', symbol: 'MUG', uri: '', description: 'Created through the web API.',
     plan: { tiers: [{ units: 2, startPrice: 3 }, { units: 2, startPrice: 4 }], finalPrice: 5, makerSharePct: 10 },
-    dropBot: { startFeeBps: 5000, windowSec: 60 }, normalFeeBps: 100,
+    dropBot: { startFeeBps: 1500, windowSec: 60 }, normalFeeBps: 100,
   }
   const preview = await api<any>('/api/preview', { campaign, maker: w.maker.publicKey.toBase58() })
   console.log(`preview: tier ${preview.trust.tier}, goal ${preview.onChain.goalUsdc.toFixed(4)}, fields ${preview.fields.length}`)
 
-  const created = await api<{ tx: string; lastValidBlockHeight: number; pool: string }>('/api/campaigns', { campaign, maker: w.maker.publicKey.toBase58() })
-  const sig = await signSend(created, w.maker, 'maker signs + sends create')
+  const created = await api<{ txs: { tx: string; lastValidBlockHeight: number }[]; pool: string }>('/api/campaigns', { campaign, maker: w.maker.publicKey.toBase58() })
+  let sig = ''
+  for (const built of created.txs) sig = await signSend(built, w.maker, 'maker signs, pays + sends create')
   await api('/api/campaigns/confirm', { pool: created.pool, signature: sig })
   console.log(`✓ confirmed, pool ${created.pool}`)
 
@@ -63,7 +64,10 @@ async function main() {
     console.log(`  progress ${(live.progress * 100).toFixed(1)}%`)
     if (i > 20) throw new Error('did not fund')
   }
-  console.log(await api('/api/campaigns/' + created.pool + '/migrate', {}))
+  // Graduation is paid by whoever clicks; here backer1. Meteora's keeper may already have done it.
+  const migrate = await api<{ tx?: string; lastValidBlockHeight?: number; already?: boolean }>('/api/campaigns/' + created.pool + '/migrate', { wallet: w.backer1.publicKey.toBase58() })
+  if (migrate.tx) await signSend(migrate as { tx: string; lastValidBlockHeight: number }, w.backer1, 'backer1 pays + sends graduation')
+  else console.log('already graduated by the keeper')
   await finish(created.pool)
 }
 

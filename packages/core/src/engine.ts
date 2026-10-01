@@ -21,7 +21,6 @@ import {
   TokenType,
   convertDecimalToBN,
   convertToLamports,
-  fromDecimalToBN,
   getBaseFeeParams,
   getBaseTokenForSwap,
   getDeltaAmountQuoteUnsigned,
@@ -30,12 +29,12 @@ import {
   getLockedVestingParams,
   getMigratedPoolFeeParams,
   getMigrationBaseToken,
-  getMigrationQuoteAmountFromMigrationQuoteThreshold,
   getSqrtPriceFromPrice,
   getSwapAmountWithBuffer,
   type BaseFeeParams,
   type ConfigParameters,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
+import { checkLaunchFee } from './campaign-input'
 import { priceTiers, type PricingSummary, type TierPlan } from './pricing'
 import { MAX_MAKER_SHARE, type TrustTierName } from './trust'
 
@@ -69,6 +68,12 @@ export type CampaignConfig = {
 const toRaw = (amount: number, decimals: number) => new Decimal(amount).mul(new Decimal(10).pow(decimals))
 const fromRaw = (raw: BN, decimals: number) => new Decimal(raw.toString()).div(new Decimal(10).pow(decimals)).toNumber()
 
+// Quote that moves into the resale pool at graduation: the threshold minus the maker's migration fee,
+// exactly as the program computes it.
+export function migrationQuoteAmount(threshold: BN, makerSharePct: number): BN {
+  return threshold.sub(threshold.muln(makerSharePct).divn(100))
+}
+
 export function campaignToConfig(campaign: Campaign, tier: TrustTierName): CampaignConfig {
   const { plan } = campaign
   if (plan.makerSharePct > MAX_MAKER_SHARE[tier]) {
@@ -76,8 +81,7 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
       `Maker share ${plan.makerSharePct}% is above the ${MAX_MAKER_SHARE[tier]}% cap for trust tier ${tier}`,
     )
   }
-  if (campaign.normalFeeBps < 25) throw new Error('normal fee must be at least 25 bps (DBC minimum)')
-  if (campaign.dropBot.startFeeBps < campaign.normalFeeBps) throw new Error('drop-bot fee must start above the normal fee')
+  checkLaunchFee(campaign)
 
   const pricing = priceTiers(plan)
 
@@ -105,11 +109,11 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
   // Supply: curve units (+ buffer before migration) + resale pool units.
   const swapBase = getBaseTokenForSwap(sqrtStartPrice, sqrtMigrationPrice, curve)
   const swapBaseBuffered = getSwapAmountWithBuffer(swapBase, sqrtStartPrice, curve)
-  const migrationQuote = getMigrationQuoteAmountFromMigrationQuoteThreshold(
-    new Decimal(threshold.toString()),
-    plan.makerSharePct,
-  )
-  const migrationBase = getMigrationBaseToken(fromDecimalToBN(migrationQuote), sqrtMigrationPrice, MigrationOption.MET_DAMM_V2)
+  // The program takes the maker share as floor(threshold·share/100) and migrates the rest, so the
+  // migration quote is rounded up. Flooring it here (as the SDK helper does) left the supply 1 lamport
+  // short for some shares, and createConfig failed with InvalidTokenSupply (6020).
+  const migrationQuote = migrationQuoteAmount(threshold, plan.makerSharePct)
+  const migrationBase = getMigrationBaseToken(migrationQuote, sqrtMigrationPrice, MigrationOption.MET_DAMM_V2)
   const preMigrationTokenSupply = swapBaseBuffered.add(migrationBase)
   const postMigrationTokenSupply = swapBase.add(migrationBase)
 
@@ -163,7 +167,8 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     compoundingFeeBps: migrated.compoundingFeeBps,
     padding: [],
     curve,
-    migrationFee: { feePercentage: plan.makerSharePct, creatorFeePercentage: 100 },
+    // All of the migration fee is the maker's; with no fee there is nothing to split (the SDK rejects 100 of 0).
+    migrationFee: { feePercentage: plan.makerSharePct, creatorFeePercentage: plan.makerSharePct > 0 ? 100 : 0 },
     tokenUpdateAuthority: TokenAuthorityOption.Immutable,
   } as ConfigParameters
 
@@ -183,7 +188,7 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
       dbcValue: `segment ${usd(t.startPrice)} → ${usd(pricing.segments[i].endPrice)}, avg ${usd(pricing.segments[i].averagePrice)}`,
     })),
     { input: 'Funding goal', value: usd(pricing.goalUsdc), dbcField: 'migrationQuoteThreshold', dbcValue: `${onChain.goalUsdc.toFixed(6)} USDC` },
-    { input: 'Maker share', value: `${plan.makerSharePct}% (tier ${tier} cap ${MAX_MAKER_SHARE[tier]}%)`, dbcField: 'migrationFee', dbcValue: `feePercentage ${plan.makerSharePct}, creatorFeePercentage 100` },
+    { input: 'Maker share', value: `${plan.makerSharePct}% (tier ${tier} cap ${MAX_MAKER_SHARE[tier]}%)`, dbcField: 'migrationFee', dbcValue: `feePercentage ${plan.makerSharePct}, creatorFeePercentage ${plan.makerSharePct > 0 ? 100 : 0}` },
     { input: 'Drop-bot window', value: `${campaign.dropBot.startFeeBps / 100}% → ${campaign.normalFeeBps / 100}% over ${campaign.dropBot.windowSec}s`, dbcField: 'baseFee', dbcValue: 'FeeSchedulerExponential' },
     { input: 'Limited edition', value: `${onChain.totalUnits.toFixed(2)} units max`, dbcField: 'tokenSupply + tokenUpdateAuthority', dbcValue: 'fixed post-migration supply, Immutable (no mint)' },
     { input: 'Resale market', value: `${onChain.resaleUnits.toFixed(2)} units + ${usd(pricing.resaleUsdc)} at ${usd(plan.finalPrice)}`, dbcField: 'migrationOption', dbcValue: 'DAMM v2, 2% fee' },

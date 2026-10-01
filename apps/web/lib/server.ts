@@ -10,6 +10,7 @@ import {
   SwapError,
   trustFixture,
   trustRpcUrl,
+  withPriorityFee,
   type TrustResult,
 } from "@preorder/core";
 
@@ -40,11 +41,14 @@ export async function trustFor(wallet: string, verifiedSocial = false): Promise<
   return result;
 }
 
+// Blockhash, fee payer and a compute-unit price (off localnet). Any server-side partialSign comes
+// after this: the priority fee changes the message.
 export async function finalizeForWallet(tx: Transaction, feePayer: PublicKey) {
-  const { blockhash, lastValidBlockHeight } = await connection().getLatestBlockhash("confirmed");
+  const conn = connection();
+  tx.feePayer = feePayer;
+  const [{ blockhash, lastValidBlockHeight }] = await Promise.all([conn.getLatestBlockhash("confirmed"), withPriorityFee(tx, conn)]);
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
-  tx.feePayer = feePayer;
   return tx;
 }
 

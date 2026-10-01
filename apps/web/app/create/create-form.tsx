@@ -7,24 +7,30 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { Minus, Plus, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
-import { priceTiers, type TierPlan } from "@preorder/core/src/pricing";
+import { MAX_TIERS, priceTiers, type TierPlan } from "@preorder/core/src/pricing";
+import {
+  DEFAULT_DROP_BOT_WINDOW_SEC,
+  DESCRIPTION_MAX_CHARS,
+  DROP_BOT_START_FEE_BPS,
+  DROP_BOT_WINDOWS_SEC,
+  IMAGE_URL_MAX_CHARS,
+  NAME_MAX_BYTES,
+  NORMAL_FEE_BPS,
+} from "@preorder/core/src/campaign-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, useSignAndSend, type BuiltTx } from "@/lib/client";
+import { api, useSignAndSendAll, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { units, usd } from "@/lib/format";
 import type { Campaign, PreviewResponse } from "@/lib/types";
 
 type TierInput = { units: string; startPrice: string };
 
-const DROP_WINDOWS = [
-  { label: "5 min", sec: 300 },
-  { label: "10 min", sec: 600 },
-  { label: "30 min", sec: 1800 },
-];
+// The launch fee is fixed for every campaign; only the length of the window is the maker's choice.
+const DROP_WINDOWS = DROP_BOT_WINDOWS_SEC.map((sec) => ({ label: `${sec / 60} min`, sec }));
 
 function num(v: string) {
   const n = Number(v);
@@ -35,7 +41,7 @@ export function CreateForm() {
   const router = useRouter();
   const { publicKey } = useWallet();
   const { setVisible } = useWalletModal();
-  const signAndSend = useSignAndSend();
+  const signAndSendAll = useSignAndSendAll();
 
   const [name, setName] = useState("Hackathon Hoodie");
   const [symbol, setSymbol] = useState("HOOD");
@@ -47,7 +53,7 @@ export function CreateForm() {
   ]);
   const [finalPrice, setFinalPrice] = useState("38");
   const [makerShare, setMakerShare] = useState(10);
-  const [dropWindow, setDropWindow] = useState(600);
+  const [dropWindow, setDropWindow] = useState<number>(DEFAULT_DROP_BOT_WINDOW_SEC);
   const [verifiedSocial, setVerifiedSocial] = useState(false);
   const [launching, setLaunching] = useState(false);
 
@@ -67,8 +73,8 @@ export function CreateForm() {
         finalPrice: num(finalPrice),
         makerSharePct: effectiveShare,
       },
-      dropBot: { startFeeBps: 5000, windowSec: dropWindow },
-      normalFeeBps: 100,
+      dropBot: { startFeeBps: DROP_BOT_START_FEE_BPS, windowSec: dropWindow },
+      normalFeeBps: NORMAL_FEE_BPS,
     }),
     [name, symbol, description, image, tiers, finalPrice, effectiveShare, dropWindow],
   );
@@ -100,8 +106,9 @@ export function CreateForm() {
     if (!publicKey) return setVisible(true);
     setLaunching(true);
     try {
-      const { pool, ...built } = await api<BuiltTx & { pool: string }>("/api/campaigns", { campaign, maker: publicKey.toBase58(), verifiedSocial });
-      const signature = await signAndSend(built, "Launch campaign");
+      // One transaction, or two (config, then pool) for larger campaigns; either way one wallet prompt.
+      const { pool, txs } = await api<{ txs: BuiltTx[]; pool: string }>("/api/campaigns", { campaign, maker: publicKey.toBase58(), verifiedSocial });
+      const signature = await signAndSendAll(txs, "Launch campaign");
       await api("/api/campaigns/confirm", { pool, signature });
       router.push(`/c/${pool}`);
     } catch (e) {
@@ -128,7 +135,7 @@ export function CreateForm() {
           <div className="grid gap-4 sm:grid-cols-[1fr_8rem]">
             <div className="grid gap-2">
               <Label htmlFor="name">Product name</Label>
-              <Input id="name" value={name} maxLength={32} autoComplete="off" onChange={(e) => setName(e.target.value)} required />
+              <Input id="name" value={name} maxLength={NAME_MAX_BYTES} autoComplete="off" onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="symbol">Ticker</Label>
@@ -142,13 +149,13 @@ export function CreateForm() {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              maxLength={280}
+              maxLength={DESCRIPTION_MAX_CHARS}
               className="rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="image">Image URL <span className="text-muted-foreground">(optional)</span></Label>
-            <Input id="image" type="url" inputMode="url" placeholder="https://…" value={image} onChange={(e) => setImage(e.target.value)} />
+            <Input id="image" type="url" inputMode="url" placeholder="https://…" maxLength={IMAGE_URL_MAX_CHARS} value={image} onChange={(e) => setImage(e.target.value)} />
           </div>
         </fieldset>
 
@@ -175,7 +182,7 @@ export function CreateForm() {
             <Button
               type="button"
               variant="secondary"
-              disabled={tiers.length >= 4}
+              disabled={tiers.length >= MAX_TIERS}
               onClick={() => setTiers((ts) => [...ts, { units: "10", startPrice: String(num(finalPrice) || 1) }])}
             >
               <Plus aria-hidden="true" /> Add tier
@@ -206,7 +213,7 @@ export function CreateForm() {
                 </Button>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground">Bots that rush the launch pay a 50% fee that falls to 1% over this window.</p>
+            <p className="text-xs text-muted-foreground">Bots that rush the launch pay a {DROP_BOT_START_FEE_BPS / 100}% fee that falls to {NORMAL_FEE_BPS / 100}% over this window.</p>
           </div>
           <label className="flex items-start gap-3 text-sm">
             <input type="checkbox" checked={verifiedSocial} onChange={(e) => setVerifiedSocial(e.target.checked)} className="mt-0.5 size-4 accent-primary" />

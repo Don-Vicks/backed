@@ -52,7 +52,7 @@ const proofCampaign = (makerSharePct: number): Campaign => ({
     finalPrice: 6,
     makerSharePct,
   },
-  dropBot: { startFeeBps: 5000, windowSec: 60 },
+  dropBot: { startFeeBps: 1500, windowSec: 60 },
   normalFeeBps: 100,
 })
 
@@ -129,12 +129,11 @@ async function main() {
       connection,
       campaign: proofCampaign(s.makerSharePct!),
       tier: s.tier!,
-      platform: w.platform.publicKey,
       maker: w.maker.publicKey,
       usdcMint,
     })
     built.fields.forEach((f) => console.log(`    ${f.input.padEnd(16)} ${f.value.padEnd(38)} → ${f.dbcField}`))
-    const sig = await send(connection, built.tx, [w.platform, ...built.extraSigners, w.maker], 'createConfigAndPool')
+    const sig = await send(connection, built.tx, [w.maker, ...built.extraSigners], 'createConfigAndPool')
     s.config = built.config.toBase58()
     s.baseMint = built.baseMint.toBase58()
     s.pool = built.pool.toBase58()

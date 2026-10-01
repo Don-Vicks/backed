@@ -256,15 +256,23 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     }
   }
 
+  // The clicking wallet pays for graduation. Meteora's keeper may graduate the pool first: the server
+  // then answers `already`, and a send that fails because of it still ends in the resale market.
   async function graduate() {
+    if (!publicKey) return setVisible(true);
     setBusy("migrate");
-    const id = toast.loading("Graduating to the resale market…");
+    const keeperWon = () => toast.success("Graduated by Meteora’s keeper. The resale market is open.");
     try {
-      await api(`/api/campaigns/${c.pool}/migrate`, {});
-      toast.success("Graduated. The resale market is open.", { id });
+      const built = await api<Partial<BuiltTx> & { already?: boolean }>(`/api/campaigns/${c.pool}/migrate`, { wallet: publicKey.toBase58() });
+      if (built.already || !built.tx) keeperWon();
+      else await signAndSend(built as BuiltTx, "Graduate to the resale market");
       refresh();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Graduation failed", { id });
+      const now = await api<{ campaign: CampaignWithLive }>(`/api/campaigns/${c.pool}`).catch(() => null);
+      if (now?.campaign.live?.status === "reselling") {
+        keeperWon();
+        refresh();
+      } else if (e instanceof Error && !/cancelled|rejected|failed:/i.test(e.message)) toast.error(e.message);
     } finally {
       setBusy(null);
     }
@@ -322,7 +330,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
       {live.status === "funded" && (
         <div className="rounded-xl border border-primary/50 bg-card p-5">
           <p className="font-heading text-2xl">Goal reached</p>
-          <p className="mt-1 text-sm text-muted-foreground">Graduate the campaign to fund the maker and open the resale market. The platform pays the fee.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Graduate the campaign to fund the maker and open the resale market. Anyone can do it; your wallet pays the network fee and rent (about 0.033 SOL).</p>
           <Button className="mt-4 w-full" onClick={graduate} disabled={!!busy}>{busy === "migrate" ? "Graduating…" : "Graduate now"}</Button>
         </div>
       )}

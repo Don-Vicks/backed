@@ -3,7 +3,7 @@
 import fs from 'fs'
 import path from 'path'
 import BN from 'bn.js'
-import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js'
+import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js'
 import { createBurnInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import {
   DAMM_V2_MIGRATION_FEE_ADDRESS,
@@ -53,13 +53,13 @@ export function resalePoolAddress(baseMint: PublicKey, usdcMint: PublicKey) {
   return deriveDammV2PoolAddress(DAMM_V2_MIGRATION_FEE_ADDRESS[MIGRATION_FEE_OPTION], baseMint, usdcMint)
 }
 
-// One transaction creates a fresh config AND the pool on it, signed by the platform key.
-// A fresh config per campaign means no one can launch another pool on a campaign's terms.
+// Creates a fresh config AND the pool on it. The maker pays and signs; the platform key never signs
+// (feeClaimer and leftoverReceiver are plain accounts), so a create costs the platform nothing.
+// The server-generated config and mint keys sign too, which is what ties the pool to these terms.
 export async function buildCreateCampaignTx(args: {
   connection: Connection
   campaign: Campaign
   tier: TrustTierName
-  platform: PublicKey
   maker: PublicKey
   usdcMint: PublicKey
 }) {
@@ -74,7 +74,7 @@ export async function buildCreateCampaignTx(args: {
     feeClaimer,
     leftoverReceiver: feeClaimer,
     quoteMint: args.usdcMint,
-    payer: args.platform,
+    payer: args.maker,
     preCreatePoolParam: {
       name: args.campaign.name,
       symbol: args.campaign.symbol,
@@ -85,6 +85,37 @@ export async function buildCreateCampaignTx(args: {
   })
   const pool = deriveDbcPoolAddress(args.usdcMint, baseMint.publicKey, config.publicKey)
   return { tx, extraSigners: [config, baseMint], config: config.publicKey, baseMint: baseMint.publicKey, pool, pricing, onChain, fields }
+}
+
+// Largest create transaction handed to a wallet: the 1232-byte packet limit minus 16 bytes of headroom.
+export const MAX_CREATE_TX_BYTES = 1216
+
+// Wire size of a transaction once every required signature is present.
+export function serializedTxSize(tx: Transaction): number {
+  const message = tx.compileMessage()
+  const signatures = message.header.numRequiredSignatures // < 128, so a 1-byte length prefix
+  return 1 + 64 * signatures + message.serialize().length
+}
+
+export type CreateStep = { tx: Transaction; signers: Keypair[] }
+
+// The create as the wallet signs it: one atomic transaction when config + pool fit (with room for a
+// priority fee), else createConfig then createPool. The wallet signs both at once
+// (signAllTransactions) and the client sends them in that order; each tier adds 32 bytes of curve.
+export function createCampaignSteps(built: { tx: Transaction; config: PublicKey; extraSigners: Keypair[] }, payer: PublicKey): CreateStep[] {
+  const probe = new Transaction().add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }), ...built.tx.instructions)
+  probe.feePayer = payer
+  probe.recentBlockhash = PublicKey.default.toBase58()
+  if (serializedTxSize(probe) <= MAX_CREATE_TX_BYTES) return [{ tx: built.tx, signers: built.extraSigners }]
+  const signs = (ix: Transaction['instructions'][number], key: PublicKey) => ix.keys.some((k) => k.isSigner && k.pubkey.equals(key))
+  const step = (ixs: Transaction['instructions']): CreateStep => ({
+    tx: new Transaction().add(...ixs),
+    signers: built.extraSigners.filter((kp) => ixs.some((ix) => signs(ix, kp.publicKey))),
+  })
+  return [
+    step(built.tx.instructions.filter((ix) => signs(ix, built.config))),
+    step(built.tx.instructions.filter((ix) => !signs(ix, built.config))),
+  ]
 }
 
 // Quote a curve swap against the live pool at the chain's clock, so the fee schedule matches

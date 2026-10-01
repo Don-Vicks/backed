@@ -10,6 +10,6 @@
     "finalPrice": 6,
     "makerSharePct": 10
   },
-  "dropBot": { "startFeeBps": 5000, "windowSec": 600 },
+  "dropBot": { "startFeeBps": 1500, "windowSec": 120 },
   "normalFeeBps": 100
 }

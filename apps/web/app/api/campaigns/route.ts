@@ -1,10 +1,10 @@
 import { randomBytes } from "crypto";
-import { Keypair } from "@solana/web3.js";
 import {
   buildCreateCampaignTx,
+  campaignFromInput,
+  createCampaignSteps,
   getUsdcMint,
   listCampaigns,
-  loadKeypair,
   readCampaignLive,
   saveMetadata,
   savePending,
@@ -24,31 +24,38 @@ export async function GET() {
   }
 }
 
-// Builds the create-campaign transaction for the maker's wallet. The platform (partner) key and the
-// fresh config + mint keys sign here; the maker signs as pool creator in the browser.
+// Builds the create-campaign transaction(s) for the maker's wallet. The maker pays and signs as
+// payer and pool creator; only the fresh config + mint keys sign here, never the platform key. Large
+// campaigns come back as two transactions (createConfig, then createPool) for one signAllTransactions.
 export async function POST(req: Request) {
   try {
     // First, so a misconfigured deploy fails before any RPC call or write.
     const origin = publicOrigin(req);
-    const body = (await req.json()) as { campaign: Campaign; maker: string; verifiedSocial?: boolean };
+    const body = (await req.json()) as { campaign: unknown; maker: string; verifiedSocial?: boolean };
     const maker = publicKey(body.maker, "maker");
-    if (!body.campaign?.name?.trim()) throw new BadRequest("Name the product");
-    const trust = await trustFor(maker.toBase58(), !!body.verifiedSocial);
     // Token metadata lives at our own URL, kept short because every uri byte is in the create tx.
     const metaId = randomBytes(8).toString("base64url").slice(0, 10);
-    const campaign: Campaign = { ...body.campaign, name: body.campaign.name.trim().slice(0, 32), symbol: body.campaign.symbol.trim().toUpperCase().slice(0, 10), uri: `${origin}/m/${metaId}` };
-    saveMetadata(metaId, { name: campaign.name, symbol: campaign.symbol, description: campaign.description ?? "", image: campaign.image ?? "" });
-    const platform = loadKeypair("platform");
+    let campaign: Campaign;
+    try {
+      campaign = campaignFromInput(body.campaign, `${origin}/m/${metaId}`);
+    } catch (e) {
+      throw new BadRequest(e instanceof Error ? e.message : String(e));
+    }
+    const trust = await trustFor(maker.toBase58(), !!body.verifiedSocial);
     const usdcMint = getUsdcMint();
     const conn = connection();
     let built;
     try {
-      built = await buildCreateCampaignTx({ connection: conn, campaign, tier: trust.tier, platform: platform.publicKey, maker, usdcMint });
+      built = await buildCreateCampaignTx({ connection: conn, campaign, tier: trust.tier, maker, usdcMint });
     } catch (e) {
       throw new BadRequest(e instanceof Error ? e.message : String(e));
     }
-    const tx = await finalizeForWallet(built.tx, platform.publicKey);
-    tx.partialSign(platform, ...(built.extraSigners as Keypair[]));
+    const steps = createCampaignSteps(built, maker);
+    for (const step of steps) {
+      await finalizeForWallet(step.tx, maker);
+      step.tx.partialSign(...step.signers);
+    }
+    saveMetadata(metaId, { name: campaign.name, symbol: campaign.symbol, description: campaign.description ?? "", image: campaign.image ?? "" });
     savePending({
       pool: built.pool.toBase58(),
       config: built.config.toBase58(),
@@ -63,7 +70,8 @@ export async function POST(req: Request) {
       totalUnits: built.onChain.totalUnits,
       fields: built.fields,
     });
-    return Response.json({ ...serialize(tx), pool: built.pool.toBase58() });
+    // In order: the wallet signs them all at once and the client sends each after the previous confirms.
+    return Response.json({ txs: steps.map((step) => serialize(step.tx)), pool: built.pool.toBase58() });
   } catch (e) {
     return errorResponse(e);
   }

@@ -33,7 +33,7 @@ const campaign: Campaign = {
   symbol: 'SWAP',
   uri: 'https://example.com/swap.json',
   plan: { tiers: [{ units: 40, startPrice: 4 }, { units: 40, startPrice: 6 }], finalPrice: 8, makerSharePct: 10 },
-  dropBot: { startFeeBps: 500, windowSec: 10 },
+  dropBot: { startFeeBps: 1500, windowSec: 60 },
   normalFeeBps: 100,
 }
 
@@ -86,8 +86,8 @@ before(async () => {
   // Freeze authority on, so a frozen referral account can be tested.
   usdcMint = await createMint(conn, platform, platform.publicKey, platform.publicKey, 6)
   for (const b of [backer1, backer2, backer3]) await fundUsdc(b.publicKey, 2000)
-  const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: 'C', platform: platform.publicKey, maker: maker.publicKey, usdcMint })
-  await send(conn, built.tx, [platform, ...built.extraSigners, maker], 'createConfigAndPool')
+  const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: 'C', maker: maker.publicKey, usdcMint })
+  await send(conn, built.tx, [maker, ...built.extraSigners], 'createConfigAndPool')
   pool = built.pool
   baseMint = built.baseMint
 })

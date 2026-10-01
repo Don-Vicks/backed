@@ -72,3 +72,49 @@ export function useSignAndSend() {
     [connection, publicKey, signTransaction],
   );
 }
+
+// Several server-built transactions that must land in order (a large create: config, then pool).
+// The wallet signs them all in one prompt; each is sent only after the one before it confirms.
+export function useSignAndSendAll() {
+  const { connection } = useConnection();
+  const { signAllTransactions, signTransaction, publicKey } = useWallet();
+
+  return useCallback(
+    async (built: BuiltTx[], label: string) => {
+      if (!publicKey || !signTransaction) throw new Error("Connect a wallet first");
+      const toastId = toast.loading(`${label}: approve in your wallet`);
+      try {
+        const txs = built.map((b) => Transaction.from(fromBase64(b.tx)));
+        const signed = signAllTransactions ? await signAllTransactions(txs) : await sequence(txs.map((tx) => () => signTransaction(tx)));
+        let signature = "";
+        for (const [i, tx] of signed.entries()) {
+          const step = signed.length > 1 ? ` (${i + 1}/${signed.length})` : "";
+          toast.loading(`${label}: sending${step}`, { id: toastId });
+          signature = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
+          toast.loading(`${label}: confirming${step}`, { id: toastId });
+          const result = await connection.confirmTransaction(
+            { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: built[i].lastValidBlockHeight },
+            "confirmed",
+          );
+          if (result.value.err) throw new Error("Transaction failed on-chain");
+        }
+        toast.success(label, {
+          id: toastId,
+          action: { label: "View", onClick: () => window.open(explorerTx(signature), "_blank", "noopener") },
+        });
+        return signature; // the last one, which completes the action
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        toast.error(message.includes("User rejected") ? `${label}: cancelled` : `${label} failed: ${message}`, { id: toastId });
+        throw e;
+      }
+    },
+    [connection, publicKey, signAllTransactions, signTransaction],
+  );
+}
+
+async function sequence<T>(steps: (() => Promise<T>)[]) {
+  const out: T[] = [];
+  for (const step of steps) out.push(await step());
+  return out;
+}

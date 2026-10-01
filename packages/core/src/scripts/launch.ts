@@ -7,7 +7,7 @@ import { explorerAccount, getConnection, getNetwork, trustRpcUrl } from '../netw
 import { loadWallets } from '../wallets'
 import { send } from '../tx'
 import { MAX_MAKER_SHARE, scoreSignals, trustTier, type TrustResult, type TrustTierName } from '../trust'
-import { buildCreateCampaignTx, dbcClient, getUsdcMint } from '../chain'
+import { buildCreateCampaignTx, createCampaignSteps, dbcClient, getUsdcMint } from '../chain'
 import { saveCampaign } from '../store'
 import { repoRoot } from '../paths'
 import type { Campaign } from '../engine'
@@ -34,9 +34,13 @@ async function main() {
   console.log(`Maker trust tier ${trust.tier}: ${trust.reasons.join('; ')}`)
 
   const usdcMint = getUsdcMint()
-  const built = await buildCreateCampaignTx({ connection, campaign, tier: trust.tier, platform: w.platform.publicKey, maker: w.maker.publicKey, usdcMint })
+  const built = await buildCreateCampaignTx({ connection, campaign, tier: trust.tier, maker: w.maker.publicKey, usdcMint })
   console.table(built.fields.map((f) => ({ input: f.input, value: f.value, 'DBC field': f.dbcField })))
-  const sig = await send(connection, built.tx, [w.platform, ...built.extraSigners, w.maker], `create "${campaign.name}" on ${getNetwork().name}`)
+  // The maker pays; a campaign too large for one transaction goes out as createConfig, then createPool.
+  let sig = ''
+  for (const step of createCampaignSteps(built, w.maker.publicKey)) {
+    sig = await send(connection, step.tx, [w.maker, ...step.signers], `create "${campaign.name}" on ${getNetwork().name}`)
+  }
   const threshold = await dbcClient(connection).state.getPoolMigrationQuoteThreshold(built.pool)
 
   saveCampaign({

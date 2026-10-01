@@ -23,7 +23,7 @@ The maker fills in a plain form. `campaignToConfig()` ([`packages/core/src/engin
 | **Early-bird tiers** (units + start price per tier) | `curve[]` segments, `sqrtStartPrice` | Each tier is one curve segment. Liquidity is solved per segment so each tier sells exactly its units. |
 | **Funding goal** | `migrationQuoteThreshold` | Graduation *is* "funded". The goal is derived from the tiers: each tier raises units × √(start price × end price). |
 | **Maker's upfront share** | `migrationFee.feePercentage`, `creatorFeePercentage: 100` | The production budget comes out of the raise at graduation and is withdrawn with `creatorWithdrawMigrationFee`. The maker's trust tier caps it (below). |
-| **Drop-bot window** | `baseFee`: `FeeSchedulerExponential` | Scalpers rushing a drop are the same as snipers. The fee starts at 50% and falls to 1% over 5–30 min. (DBC deprecated the rate limiter for new pools in SDK 1.5.12, so there is no per-buy size limit.) |
+| **Drop-bot window** | `baseFee`: `FeeSchedulerExponential` | Scalpers rushing a drop are the same as snipers. The fee starts at 15% and falls to 1% over 1, 2 or 5 min, the same for every campaign (the server rejects any other fee schedule). (DBC deprecated the rate limiter for new pools in SDK 1.5.12, so there is no per-buy size limit.) |
 | **Limited edition** | `tokenSupply` (fixed), `tokenUpdateAuthority: Immutable` | The supply cap is the production cap, and nobody can mint more. Post-migration supply is set to exactly the curve units plus the resale units, and the program burns the unused swap buffer. |
 | **Price in dollars** | `quoteMint` = USDC, `collectFeeMode: QuoteToken` | Product prices shouldn't move with SOL. All fees are collected in USDC. |
 | **Exit before the goal** | *(DBC sells are always open)* | A backer can sell back any number of vouchers along the curve at any time before graduation. It isn't a refund: it pays the current curve price. |
@@ -33,7 +33,7 @@ The maker fills in a plain form. `campaignToConfig()` ([`packages/core/src/engin
 | **Resale royalties** | `creatorPermanentLockedLiquidityPercentage: 80`, `partnerPermanentLockedLiquidityPercentage: 20` | 100% of resale liquidity is locked forever. Locked positions still earn trading fees, so the maker earns on every resale. |
 | **Curve trading fees** | `creatorTradingFeePercentage: 50`, `dynamicFeeEnabled` | After Meteora's 20% protocol fee, the maker earns half of the curve's trading fees. Both fee streams are claimed in one transaction. |
 | **Affiliate links** | swap `referralTokenAccount` | Share links carry `?ref=<wallet>`. On referred buys, the sharer gets DBC's referral cut (20% of the protocol fee). The buyer pays nothing extra. The ref is checked at each buy: one that is the buyer, malformed, or without a usable USDC account (yet) is dropped, never failing the buy. |
-| **No reused configs** | `createConfigAndPool` (one transaction, platform key = `feeClaimer`) | Each campaign gets its own config, created in the same transaction as its pool. Nobody can launch another pool on a campaign's terms. |
+| **No reused configs** | `createConfigAndPool` (the maker pays; `feeClaimer` = `PLATFORM_FEE_CLAIMER`, which never signs) | Each campaign gets its own fresh config. Config and pool go in one transaction when it fits under the 1232-byte limit with 16 bytes to spare; otherwise (long names with 3–4 tiers) it is split into `createConfig` + `createPool`, signed in one wallet prompt (`signAllTransactions`) and sent in order. |
 
 ### Why we build the curve ourselves
 
@@ -92,8 +92,8 @@ packages/core       All Solana logic, shared by the scripts and the web server
   scripts/          lifecycle proof, launch, API smoke tests
 ```
 
-- **Wallet flow.** The server builds each transaction and the browser wallet signs it. Campaign creation is signed by the platform key (the DBC partner) and the fresh config and mint keys on the server, then by the maker's wallet as pool creator.
-- **Graduation** can be triggered by anyone once the goal is reached, and the platform pays the fee.
+- **Wallet flow.** The server builds each transaction and the browser wallet signs it. Every wallet transaction carries a compute-unit price (p75 of recent fees on its writable accounts, capped by `PRIORITY_FEE_MAX_MICROLAMPORTS`; none on localnet). Campaign creation is paid and signed by the maker's wallet (payer and pool creator); the server only signs with the fresh config and mint keys, never the platform key. The server builds the campaign from an allowlist of fields: name ≤ 32 bytes, ticker `A–Z0–9` ≤ 10, description ≤ 1000, https image ≤ 200, whole units, at most 4 tiers, and the fixed launch fee (15% → 1% over 1, 2 or 5 min).
+- **Graduation** can be triggered by anyone once the goal is reached, and the clicking wallet pays (about 0.033 SOL, mostly rent). The platform-paid path is reserved for an operator sending `Authorization: Bearer $ADMIN_TOKEN`. If Meteora's keeper graduates the pool first, the app says so.
 - **Blinks.** Every campaign URL `/c/<pool>` is also a Solana Action (`/actions.json` maps it to `/api/actions/back/<pool>`). Shared links can show **Back $10 / $25 / custom** buttons in X or any Blink client, and the `?ref=` referral carries through. Funded campaigns return a disabled Action that points to the resale market.
 - **Redemption.** The backer burns one whole voucher. The server checks the burn on-chain (mint, authority, amount, never reused) before accepting shipping details, and the details never go on-chain. The maker views orders by signing a time-stamped message with their wallet.
 
@@ -119,7 +119,7 @@ Other commands:
 
 ```bash
 pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in, config)
-pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): swaps, slippage, referrals
+pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): create (every share, split, maker-paid), graduation, swaps, slippage, referrals
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
@@ -131,7 +131,9 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 
 - **`NETWORK`** (`localnet`, `devnet` or `mainnet`) is the only network switch. The scripts and the server read it at runtime; `next.config.ts` bakes it and the matching browser RPC (`PUBLIC_RPC_URL`, else a keyless default) into the bundle, so **changing it needs a rebuild**. `/api/health` returns 503 if the running server and the build disagree. `NETWORK=mainnet` switches to real USDC and mainnet RPC; the faucet only runs on devnet and localnet.
 - **`PUBLIC_BASE_URL`** is the app's https origin. It goes into immutable on-chain metadata URIs and Blink icons, so it is required off localnet (`RAILWAY_PUBLIC_DOMAIN` is the fallback). Creating a campaign fails fast without it. Creating campaigns from a laptop on devnet therefore needs a public https URL (a tunnel); use localnet for local work.
-- **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching.
+- **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching. Campaign creation never uses the platform key; it signs only the faucet and the admin-only graduation path.
+- **`ADMIN_TOKEN`** unlocks the platform-paid graduation (`POST /api/campaigns/<pool>/migrate` with `Authorization: Bearer …`). Leave it empty to disable that path.
+- **`PRIORITY_FEE_MAX_MICROLAMPORTS`** caps the compute-unit price added to wallet transactions (default 1,000,000).
 - **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history.
 
 ### Deploy (Railway)
