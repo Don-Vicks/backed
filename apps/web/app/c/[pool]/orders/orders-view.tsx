@@ -56,6 +56,7 @@ function Orders({ pool }: { pool: string }) {
   const { publicKey, signMessage } = useWallet();
   const { setVisible } = useWalletModal();
   const [rows, setRows] = useState<Redemption[] | null>(null);
+  const unitCount = rows?.reduce((a, r) => a + r.units, 0) ?? 0;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [signIn, setSignIn] = useState<SignIn | null>(null);
@@ -106,7 +107,7 @@ function Orders({ pool }: { pool: string }) {
   return (
     <div>
       <Button asChild variant="ghost" className="-ml-3"><Link href={`/c/${pool}`}><ArrowLeft aria-hidden="true" /> Back to campaign</Link></Button>
-      <h1 className="mt-4 font-heading text-5xl tracking-tight">Orders to ship</h1>
+      <h1 className="mt-4 font-heading text-4xl tracking-[-0.035em] sm:text-5xl">Orders to ship</h1>
       <p className="mt-2 max-w-xl text-muted-foreground">
         Each order is backed by a voucher burn on-chain. Only the campaign’s maker wallet can see shipping details, and marking an order shipped deletes them.
       </p>
@@ -127,7 +128,7 @@ function Orders({ pool }: { pool: string }) {
         <div className="mt-8">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm text-muted-foreground">
-              <span className="font-mono text-foreground">{rows.reduce((a, r) => a + r.units, 0)}</span> units across {rows.length} orders
+              <span className="font-mono text-foreground">{unitCount}</span> {unitCount === 1 ? "unit" : "units"} across {rows.length} {rows.length === 1 ? "order" : "orders"}
               {rows.some((r) => r.shippedAt) && <>, {rows.filter((r) => r.shippedAt).length} shipped</>}
             </p>
             <Button variant="secondary" onClick={download}><Download aria-hidden="true" /> Download CSV</Button>

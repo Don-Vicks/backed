@@ -100,7 +100,8 @@ export function CreateForm() {
   }, [campaign.plan]);
 
   // Trust tier + on-chain field mapping from the server (debounced).
-  const previewInput = useDebounced(JSON.stringify({ campaign, maker: publicKey?.toBase58() }), 450);
+  const previewKey = JSON.stringify({ campaign, maker: publicKey?.toBase58() });
+  const previewInput = useDebounced(previewKey, 450);
   const previewQuery = useQuery({
     queryKey: ["preview", previewInput],
     queryFn: () => api<PreviewResponse & { caps: Record<string, number> }>("/api/preview", JSON.parse(previewInput)),
@@ -108,6 +109,8 @@ export function CreateForm() {
   });
   const preview = previewQuery.data ?? null;
   const previewLoading = previewQuery.isFetching;
+  // The last config stays on screen while the next one loads: dim it so it doesn't read as current.
+  const previewStale = previewInput !== previewKey || previewQuery.isPlaceholderData;
   const cap = preview?.trust?.maxMakerSharePct ?? 10;
   if (cap !== previewCap) setPreviewCap(cap); // adjust state during render (React-recommended pattern)
 
@@ -392,7 +395,7 @@ export function CreateForm() {
           <h2 className="font-heading text-2xl">On-chain config</h2>
           <p className="text-sm text-muted-foreground">Every input becomes a Meteora DBC setting. It can’t be changed after launch.</p>
           {preview?.fields.length ? (
-            <ul className="mt-4 divide-y divide-border">
+            <ul className={`mt-4 divide-y divide-border transition-opacity ${previewStale ? "opacity-50" : ""}`} aria-busy={previewStale}>
               {preview.fields.map((f) => (
                 <li key={f.input} className="grid grid-cols-[8rem_1fr] gap-3 py-2 text-sm">
                   <span className="text-muted-foreground">{f.input}</span>

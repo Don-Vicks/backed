@@ -140,9 +140,9 @@ export function RedeemPanel({ c, vouchers, onDone }: { c: CampaignWithLive; vouc
 
       {placed > 0 && formKey === null && (
         <div className="rounded-xl border border-primary/50 bg-card p-5">
-          <p className="flex items-center gap-2 font-heading text-2xl">
+          <h2 className="flex items-center gap-2 font-heading text-2xl">
             <CheckCircle2 aria-hidden="true" className="size-5 text-primary" /> Order placed
-          </p>
+          </h2>
           <p className="mt-1 text-sm text-muted-foreground">Your {c.campaign.name} is on the maker’s shipping list.</p>
         </div>
       )}

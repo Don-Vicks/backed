@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { priceTiers, type TierPlan } from "@preorder/core/src/pricing";
 import { usd } from "@/lib/format";
 
@@ -8,6 +9,7 @@ const H = 260;
 const PAD = { left: 56, right: 20, top: 20, bottom: 40 };
 
 export function CurveChart({ plan, unitsSold, graduated = false }: { plan: TierPlan; unitsSold?: number; graduated?: boolean }) {
+  const id = `g${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`; // safe inside url(#…)
   let segments;
   try {
     segments = priceTiers(plan).segments;
@@ -49,18 +51,34 @@ export function CurveChart({ plan, unitsSold, graduated = false }: { plan: TierP
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={label}>
-      <path d={area} className="fill-primary/10" />
+      <defs>
+        {/* Meteora's gradient along the curve: violet where it starts, gold at the goal. */}
+        <linearGradient id={`${id}-line`} x1={x(0)} x2={x(totalUnits)} y1="0" y2="0" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#8664FF" />
+          <stop offset="0.6" stopColor="#F54B00" />
+          <stop offset="1" stopColor="#F5BD00" />
+        </linearGradient>
+        <linearGradient id={`${id}-area`} x1="0" x2="0" y1={PAD.top} y2={y(yLow)} gradientUnits="userSpaceOnUse">
+          <stop stopColor="#F54B00" stopOpacity="0.22" />
+          <stop offset="1" stopColor="#6E45FF" stopOpacity="0.02" />
+        </linearGradient>
+        <linearGradient id={`${id}-sold`} x1="0" x2="0" y1={PAD.top} y2={y(yLow)} gradientUnits="userSpaceOnUse">
+          <stop stopColor="#F54B00" stopOpacity="0.5" />
+          <stop offset="1" stopColor="#6E45FF" stopOpacity="0.12" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill={`url(#${id}-area)`} />
       {sold !== undefined && sold > 0 && (
         <path
           d={`${points.filter(([px]) => px <= x(sold) + 0.01).map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ")} L${x(sold).toFixed(1)},${y(soldPrice!).toFixed(1)} L${x(sold).toFixed(1)},${y(yLow).toFixed(1)} L${x(0).toFixed(1)},${y(yLow).toFixed(1)} Z`}
-          className="fill-primary/25"
+          fill={`url(#${id}-sold)`}
         />
       )}
       {bounds.map((b, i) => (
         <line key={i} x1={x(b)} x2={x(b)} y1={PAD.top} y2={y(yLow)} className="stroke-border" strokeDasharray="4 4" />
       ))}
       <line x1={x(0)} x2={x(totalUnits)} y1={y(yLow)} y2={y(yLow)} className="stroke-border" />
-      <path d={line} fill="none" className="stroke-primary" strokeWidth={2.5} strokeLinejoin="round" />
+      <path d={line} fill="none" stroke={`url(#${id}-line)`} strokeWidth={3} strokeLinejoin="round" strokeLinecap="round" />
       {segments.map((s, i) => {
         const start = segments.slice(0, i).reduce((a, t) => a + t.units, 0);
         return (
@@ -80,7 +98,8 @@ export function CurveChart({ plan, unitsSold, graduated = false }: { plan: TierP
       </text>
       {sold !== undefined && !graduated && (
         <g>
-          <circle cx={x(sold)} cy={y(soldPrice!)} r={6} className="fill-primary stroke-background" strokeWidth={2} />
+          <circle cx={x(sold)} cy={y(soldPrice!)} r={10} className="fill-primary/20" />
+          <circle cx={x(sold)} cy={y(soldPrice!)} r={5} className="fill-foreground stroke-primary" strokeWidth={2.5} />
           <text x={Math.min(x(sold) + 10, W - PAD.right - 4)} y={y(soldPrice!) - 10} textAnchor={x(sold) > W * 0.7 ? "end" : "start"} className="fill-foreground font-mono text-[13px]">
             Now {usd(soldPrice!)}
           </text>

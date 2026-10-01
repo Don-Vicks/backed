@@ -84,7 +84,7 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
       }}
     >
       <div className="flex items-baseline justify-between">
-        <p className="font-heading text-2xl">Resale market</p>
+        <h2 className="font-heading text-2xl">Resale market</h2>
         <p className="font-mono text-2xl tabular-nums">{usd(view.priceUsdc)}</p>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
@@ -179,9 +179,9 @@ export function MakerPanel({ c, run, busy }: { c: CampaignWithLive; run: RunTx; 
 
   return (
     <div className="rounded-xl border border-primary/40 bg-card p-5">
-      <p className="flex items-center gap-2 font-heading text-2xl">
+      <h2 className="flex items-center gap-2 font-heading text-2xl">
         <Coins aria-hidden="true" className="size-5 text-primary" /> Your earnings
-      </p>
+      </h2>
       <dl className="mt-4 grid gap-3 text-sm">
         <div className="flex items-baseline justify-between gap-4">
           <dt className="text-muted-foreground">Production budget ({c.campaign.plan.makerSharePct}%)</dt>
