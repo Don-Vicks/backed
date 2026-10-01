@@ -4,7 +4,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import bs58 from 'bs58'
-import { Keypair } from '@solana/web3.js'
+import { Connection, Keypair } from '@solana/web3.js'
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token'
 
 // Point the repo root at a temp dir before anything reads keys/.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'preorder-wallets-'))
@@ -16,7 +17,7 @@ delete process.env.PLATFORM_FEE_CLAIMER
 delete process.env.USDC_MINT
 
 import { loadKeypair, parseSecretKey, platformFeeClaimer, saveKeypair } from '../wallets'
-import { getUsdcMint, saveMockUsdcMint } from '../chain'
+import { buildCreateCampaignTx, getUsdcMint, saveMockUsdcMint } from '../chain'
 import { MAINNET_USDC } from '../network'
 
 const fileKey = Keypair.generate()
@@ -61,6 +62,18 @@ test('a bad PLATFORM_SECRET_KEY fails without echoing the value', () => {
       (e: Error) => e.message.startsWith('PLATFORM_SECRET_KEY is not a valid secret key') && !e.message.includes('notakey0OIl'),
     )
   })
+  // JSON.parse quotes the bytes around a bad token; none of them may reach the message.
+  const bytes = Array.from(Keypair.generate().secretKey).map((b, i) => (i < 40 ? 200 + (i % 50) : b))
+  for (const bad of [`[${bytes.slice(0, 20).join(',')},x,${bytes.slice(21).join(',')}]`, `[${bytes.join(',')},]`]) {
+    withEnv({ PLATFORM_SECRET_KEY: bad }, () => {
+      assert.throws(
+        () => loadKeypair('platform'),
+        (e: Error) =>
+          e.message === 'PLATFORM_SECRET_KEY is not a valid secret key: secret key is neither a JSON byte array nor base58' &&
+          !/\d{3}/.test(e.message),
+      )
+    })
+  }
 })
 
 test('other roles never read the platform env key', () => {
@@ -74,6 +87,30 @@ test('fee claimer defaults to the platform key and can be overridden', () => {
   const cold = Keypair.generate().publicKey
   withEnv({ PLATFORM_FEE_CLAIMER: cold.toBase58() }, () => assert.ok(platformFeeClaimer().equals(cold)))
   withEnv({ PLATFORM_FEE_CLAIMER: 'nope' }, () => assert.throws(() => platformFeeClaimer(), /not a valid Solana address/))
+})
+
+test('new configs send partner fees and leftover to PLATFORM_FEE_CLAIMER', async () => {
+  const cold = Keypair.generate().publicKey
+  const before = process.env.PLATFORM_FEE_CLAIMER
+  process.env.PLATFORM_FEE_CLAIMER = cold.toBase58()
+  try {
+    const campaign = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../../examples/hoodie.json'), 'utf8'))
+    // Builds offline: the SDK only looks up the quote mint's token program.
+    const connection = new Connection('http://127.0.0.1:1')
+    connection.getAccountInfo = async () => ({ owner: TOKEN_PROGRAM_ID, data: Buffer.alloc(82), executable: false, lamports: 1 })
+    const { tx } = await buildCreateCampaignTx({
+      connection,
+      campaign,
+      tier: 'A',
+      platform: fileKey.publicKey,
+      maker: Keypair.generate().publicKey,
+      usdcMint: Keypair.generate().publicKey,
+    })
+    const createConfig = tx.instructions.find((ix) => ix.keys.some((k) => k.pubkey.equals(cold)))
+    assert.ok(createConfig, 'fee claimer is in the create transaction')
+  } finally {
+    before === undefined ? delete process.env.PLATFORM_FEE_CLAIMER : (process.env.PLATFORM_FEE_CLAIMER = before)
+  }
 })
 
 test('USDC_MINT takes precedence over the mock-mint file off mainnet', () => {

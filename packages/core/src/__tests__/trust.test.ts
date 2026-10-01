@@ -32,4 +32,3 @@ test('TRUST_FIXTURES stand in for mainnet history on localnet only', () => {
   assert.equal(trustFixture('MAKER', { NETWORK: 'mainnet', TRUST_FIXTURES }), null)
   assert.throws(() => trustFixture('MAKER', { NETWORK: 'localnet', TRUST_FIXTURES: '{' }), /not valid JSON/)
 })
-

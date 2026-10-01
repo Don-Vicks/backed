@@ -31,12 +31,15 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
   const { pool } = await ctx.params;
   const record = getCampaign(pool);
   if (!record) return json({ message: "Campaign not found" }, 404);
-  let origin: string;
-  try {
-    origin = publicOrigin(req);
-  } catch (e) {
-    console.error(e);
-    return json({ message: "Something went wrong" }, 500);
+  // The fallback icon needs the public origin; a campaign with its own image does not.
+  let icon = record.campaign.image;
+  if (!icon) {
+    try {
+      icon = `${publicOrigin(req)}/blink-icon.svg`;
+    } catch (e) {
+      console.error(e);
+      return json({ message: "Something went wrong" }, 500);
+    }
   }
   const ref = new URL(req.url).searchParams.get("ref");
   const refQs = ref ? `&ref=${encodeURIComponent(ref)}` : "";
@@ -55,7 +58,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
 
   return json({
     type: "action",
-    icon: record.campaign.image || `${origin}/blink-icon.svg`,
+    icon,
     title: `Back ${record.campaign.name}`,
     description,
     label: "Back this",

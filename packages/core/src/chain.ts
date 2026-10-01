@@ -13,7 +13,7 @@ import {
   deriveDbcPoolAddress,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { getNetwork } from './network'
-import { keysDir } from './wallets'
+import { keysDir, platformFeeClaimer } from './wallets'
 import { MIGRATION_FEE_OPTION, USDC_DECIMALS, VOUCHER_DECIMALS, campaignToConfig, type Campaign } from './engine'
 import type { TrustTierName } from './trust'
 
@@ -62,11 +62,13 @@ export async function buildCreateCampaignTx(args: {
   const { params, pricing, onChain, fields } = campaignToConfig(args.campaign, args.tier)
   const config = Keypair.generate()
   const baseMint = Keypair.generate()
+  // Configs are immutable, so fees and leftover go to the configured claimer from the first campaign.
+  const feeClaimer = platformFeeClaimer()
   const tx = await dbcClient(args.connection).partner.createConfigAndPool({
     ...params,
     config: config.publicKey,
-    feeClaimer: args.platform,
-    leftoverReceiver: args.platform,
+    feeClaimer,
+    leftoverReceiver: feeClaimer,
     quoteMint: args.usdcMint,
     payer: args.platform,
     preCreatePoolParam: {

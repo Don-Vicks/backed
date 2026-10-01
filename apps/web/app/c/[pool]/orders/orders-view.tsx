@@ -19,7 +19,6 @@ type Redemption = {
   shipping: { name: string; email: string; address: string; country: string };
 };
 
-
 function toCsv(rows: Redemption[]) {
   const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
   const header = ["date", "units", "name", "email", "address", "country", "wallet", "burn_signature"];

@@ -27,12 +27,24 @@ export function hasKeypair(name: string): boolean {
   return !!(envName && process.env[envName]?.trim()) || fs.existsSync(keyPath(name))
 }
 
+class SecretKeyError extends Error {}
+
 // A 64-byte secret key as a JSON byte array (solana-keygen format) or base58 (wallet export format).
+// Errors carry fixed messages only: JSON.parse and the decoders quote the input they choke on.
 export function parseSecretKey(raw: string): Keypair {
   const text = raw.trim()
-  const bytes = text.startsWith('[') ? Uint8Array.from(JSON.parse(text) as number[]) : bs58.decode(text)
-  if (bytes.length !== 64) throw new Error(`secret key must be 64 bytes, got ${bytes.length}`)
-  return Keypair.fromSecretKey(bytes)
+  let bytes: Uint8Array
+  try {
+    bytes = text.startsWith('[') ? Uint8Array.from(JSON.parse(text) as number[]) : bs58.decode(text)
+  } catch {
+    throw new SecretKeyError('secret key is neither a JSON byte array nor base58')
+  }
+  if (bytes.length !== 64) throw new SecretKeyError(`secret key must be 64 bytes, got ${bytes.length}`)
+  try {
+    return Keypair.fromSecretKey(bytes)
+  } catch {
+    throw new SecretKeyError('secret key does not match its public key')
+  }
 }
 
 // Deployed servers have no keys/ directory, so the platform key can come from the environment.
@@ -45,8 +57,8 @@ export function loadKeypair(name: string): Keypair {
     try {
       return parseSecretKey(raw)
     } catch (e) {
-      // Never echo the value itself.
-      throw new Error(`${envName} is not a valid secret key: ${e instanceof Error ? e.message : e}`)
+      // Never echo the value itself: only our own fixed messages pass through.
+      throw new Error(`${envName} is not a valid secret key: ${e instanceof SecretKeyError ? e.message : 'invalid'}`)
     }
   }
   return loadKeypairFile(keyPath(name))

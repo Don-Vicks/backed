@@ -30,7 +30,7 @@ Sunset Trade's golden-hour orange on cool blue-slate surfaces: a trading desk at
 
 All foreground/background pairs pass WCAG AA in both modes (checked numerically). Radius: 0.75rem.
 
-### shadcn tokens (applied in `apps/web/app/globals.css`, backup at `globals.css.bak`)
+### shadcn tokens (applied in `apps/web/app/globals.css`)
 ```css
 /* :root (light) */
 --background: oklch(0.98 0.006 250);
