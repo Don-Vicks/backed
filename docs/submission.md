@@ -20,7 +20,7 @@ There's no custom program: every rule is DBC config, DAMM v2 and SPL burns. The 
 https://github.com/Don-Vicks/preorder-curves
 
 **Project Website**
-(the Railway devnet URL once it is live)
+https://web-production-e2262.up.railway.app (devnet; press "Get test USDC" after connecting a wallet)
 
 **Project X Link**
 (optional)
