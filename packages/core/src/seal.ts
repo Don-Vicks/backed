@@ -6,13 +6,33 @@ import fs from 'fs'
 import path from 'path'
 import { getNetwork, isTestNetwork } from './network'
 import { repoRoot } from './paths'
+import { testKeysAutogen } from './wallets'
 
 const VERSION = 'v1'
 const IV_BYTES = 12
 let warned = false
 
-// SHIPPING_KEY, or its alias SHIPPING_ENCRYPTION_KEY (SHIPPING_KEY wins when both are set).
-const configuredKey = (env: NodeJS.ProcessEnv) => env.SHIPPING_KEY?.trim() || env.SHIPPING_ENCRYPTION_KEY?.trim() || ''
+// SHIPPING_KEY, or its alias SHIPPING_ENCRYPTION_KEY (SHIPPING_KEY wins when both are set). With
+// TEST_KEYS_AUTOGEN on devnet/localnet, a random key the server keeps in keys/<network>/shipping-key.
+const configuredKey = (env: NodeJS.ProcessEnv) =>
+  env.SHIPPING_KEY?.trim() || env.SHIPPING_ENCRYPTION_KEY?.trim() || generatedShippingKey(env)
+
+const generatedKeys = new Map<string, string>()
+function generatedShippingKey(env: NodeJS.ProcessEnv): string {
+  if (!testKeysAutogen(env)) return ''
+  const file = path.join(repoRoot(), 'keys', getNetwork(env).name, 'shipping-key')
+  const cached = generatedKeys.get(file)
+  if (cached) return cached
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  try {
+    fs.writeFileSync(file, crypto.randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+  }
+  const key = fs.readFileSync(file, 'utf8').trim()
+  generatedKeys.set(file, key)
+  return key
+}
 
 // SHIPPING_KEY: 32 bytes as 64 hex characters or base64. Required on mainnet. Devnet and localnet fall
 // back to a public, derived dev key (with a warning) so local runs need no setup; shippingKeyStatus
