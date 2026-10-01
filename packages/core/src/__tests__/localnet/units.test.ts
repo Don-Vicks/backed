@@ -13,14 +13,14 @@ import {
   getAccount,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token'
-import { buildBuyTx, buildCreateCampaignTx, createCampaignSteps } from '../../chain'
+import { buildBuyTx, buildCreateCampaignTx, createCampaignSteps, readCurve } from '../../chain'
 import { DROP_BOT_START_FEE_BPS } from '../../campaign-input'
 import type { Campaign } from '../../engine'
 import { readCampaignLive } from '../../live'
 import { getNetwork } from '../../network'
 import type { CampaignRecord } from '../../store'
 import { send } from '../../tx'
-import { buildBuyUnitsTx, buildTopUpTx, quoteBuyUnits, quoteTopUp, readCurve, unitsLeftRaw } from '../../units'
+import { buildBuyUnitsTx, buildTopUpTx, quoteBuyUnits, quoteTopUp, unitsLeftRaw } from '../../units'
 import { SwapError } from '../../errors'
 import { resolveReferral } from '../../swaps'
 import { maxUnitsLeft } from '../../voucher-units'

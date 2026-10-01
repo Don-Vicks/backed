@@ -152,8 +152,12 @@ test('split create: listed with the createPool signature; the createConfig one i
 })
 
 test('resume: a split create stopped after createConfig is listed under its new pool', { skip }, async () => {
-  const split = await build(Date.now(), large)
+  // Older than the reconcile grace period: the landed config keeps it resumable.
+  const split = await build(Date.now() - 60 * 60_000, large)
   await split.sendStep(0)
+  const reconciled = await reconcilePending(conn)
+  assert.ok(reconciled.waiting.includes(split.record.pool), 'waiting, not expired')
+  assert.ok(getPending(split.record.pool))
   // What POST /api/campaigns/<pool>/resume does: createPool on that config with a fresh mint, and the
   // pending row moves to the new pool address.
   const resumed = await buildCreatePoolTx({ connection: conn, config: split.built.config, campaign: large, maker: maker.publicKey, usdcMint })

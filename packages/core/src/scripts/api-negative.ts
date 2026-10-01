@@ -153,6 +153,9 @@ async function main() {
   expect('blink OPTIONS', await call('OPTIONS', blink), 200)
   const g = expect('blink GET: funding', await call('GET', blink), 200)
   if (g.json.disabled) rows.push({ label: 'blink GET: enabled while funding', status: 0, want: [1], note: JSON.stringify(g.json.error) })
+  // The unit buttons carry live prices, from the cached curve read.
+  const priced = (g.json.links?.actions ?? []).filter((a: { label?: string }) => /^Back (1|2) · \$\d/.test(a.label ?? ''))
+  if (priced.length !== 2) rows.push({ label: 'blink GET: priced unit buttons', status: 0, want: [1], note: JSON.stringify(g.json.links?.actions?.map((a: { label?: string }) => a.label)) })
   expect('blink GET: unknown', await call('GET', `/api/actions/back/${stranger}`), 404)
   expect('blink POST: amount "abc"', await call('POST', `${blink}?amount=abc`, { account: pk(backer1) }), 400)
   expect('blink POST: bad account', await call('POST', `${blink}?amount=5`, { account: 'x' }), 400)

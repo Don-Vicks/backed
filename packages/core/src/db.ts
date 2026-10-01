@@ -260,7 +260,8 @@ function resealShipping(shipping: unknown, pool: string, wallet: string, aad: st
   return sealJson(isLegacySealed(shipping) ? openLegacySealed(shipping, pool, wallet) : shipping, aad, key)
 }
 
-// Inserts one legacy row (INSERT OR IGNORE: an import retried after a crash is a no-op), or throws.
+// Inserts one legacy row, or throws. A row already there is skipped (INSERT OR IGNORE, or NOT EXISTS for
+// faucet claims), so an import retried after a crash (rows committed, file not yet renamed) is a no-op.
 function legacyRowImporter(t: Db, kind: LegacyKind, key: Buffer | null): (row: any, id?: string) => void {
   if (kind === 'campaigns') {
     const insert = t.prepare('INSERT OR IGNORE INTO campaigns (pool, config, maker, created_at, data) VALUES (?, ?, ?, ?, ?)')
@@ -278,7 +279,10 @@ function legacyRowImporter(t: Db, kind: LegacyKind, key: Buffer | null): (row: a
     }
   }
   if (kind === 'faucet-claims') {
-    const insert = t.prepare('INSERT INTO faucet_claims (wallet, ip, claimed_at) VALUES (?, ?, ?)')
+    // The table has no key: a claim already there (same wallet, ip and time) is the same claim.
+    const insert = t.prepare(
+      'INSERT INTO faucet_claims (wallet, ip, claimed_at) SELECT ?1, ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM faucet_claims WHERE wallet = ?1 AND ip IS ?2 AND claimed_at = ?3)',
+    )
     return (c) => void insert.run(str(c?.wallet, 'wallet'), typeof c.ip === 'string' ? c.ip : null, num(c.claimedAt, 'claimedAt'))
   }
   if (kind === 'rate') {

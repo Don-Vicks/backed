@@ -5,7 +5,7 @@ import bs58 from 'bs58'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { HttpError } from './errors'
-import { expirePending, getCampaign, getPending, listPending, promotePending, type CampaignRecord } from './store'
+import { PENDING_TTL_MS, expirePending, getCampaign, getPending, listPending, promotePending, type CampaignRecord } from './store'
 
 // status: the HTTP status the web app returns; retry: the client should try again shortly.
 export class ListingError extends HttpError {
@@ -17,10 +17,13 @@ export class ListingError extends HttpError {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const DBC = DYNAMIC_BONDING_CURVE_PROGRAM_ID.toBase58()
 
-export async function poolExists(connection: Connection, pool: string): Promise<boolean> {
-  const info = await connection.getAccountInfo(new PublicKey(pool), 'confirmed')
+// A DBC-owned account at this address: a pool, or a campaign's config.
+async function dbcAccountExists(connection: Connection, address: string): Promise<boolean> {
+  const info = await connection.getAccountInfo(new PublicKey(address), 'confirmed')
   return !!info && info.owner.toBase58() === DBC
 }
+export const poolExists = (connection: Connection, pool: string) => dbcAccountExists(connection, pool)
+export const configExists = (connection: Connection, config: string) => dbcAccountExists(connection, config)
 
 // The pool's oldest successful transaction is the one that created it. One page (1000 signatures)
 // covers a pool that is at most a day old; the reconcile job may look further.
@@ -122,13 +125,15 @@ export function confirmListing(
 }
 
 // A pending pool that is not on-chain this long after its build never will be: the create
-// transaction's blockhash expired long before.
+// transaction's blockhash expired long before. Unless its config landed: a split create (createConfig,
+// then createPool) whose second step failed is finished by POST /api/campaigns/<pool>/resume, so that
+// row waits for the maker until PENDING_TTL_MS.
 export const PENDING_GRACE_MS = 10 * 60_000
 
 export type ReconcileResult = { listed: string[]; expired: string[]; waiting: string[]; failed: { pool: string; error: string }[] }
 
 // Lists pending campaigns whose pool landed (even if the browser never confirmed) and expires the
-// ones that never will.
+// ones that never will. A row whose config landed without its pool stays resumable (waiting).
 export async function reconcilePending(connection: Connection, { graceMs = PENDING_GRACE_MS, now = Date.now() } = {}): Promise<ReconcileResult> {
   const result: ReconcileResult = { listed: [], expired: [], waiting: [], failed: [] }
   for (const { record, createdAtMs } of listPending()) {
@@ -136,11 +141,11 @@ export async function reconcilePending(connection: Connection, { graceMs = PENDI
       if (await poolExists(connection, record.pool)) {
         await confirmListing(connection, record.pool, undefined, { waitMs: 0, maxPages: 10 })
         result.listed.push(record.pool)
-      } else if (now - createdAtMs > graceMs) {
+      } else if (now - createdAtMs <= graceMs || (now - createdAtMs <= PENDING_TTL_MS && (await configExists(connection, record.config)))) {
+        result.waiting.push(record.pool)
+      } else {
         expirePending(record.pool)
         result.expired.push(record.pool)
-      } else {
-        result.waiting.push(record.pool)
       }
     } catch (e) {
       if (e instanceof ListingError && e.retry) result.waiting.push(record.pool)

@@ -13,8 +13,10 @@ import {
   SwapMode,
   deriveDammV2PoolAddress,
   deriveDbcPoolAddress,
+  type PoolConfig,
   type SwapQuote2Params,
   type SwapQuote2Result,
+  type VirtualPool,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { getNetwork } from './network'
 import { SwapError, chainNow, slippageBps, toRawAmount, toSwapError } from './swaps'
@@ -203,13 +205,11 @@ type CurveSwap = { swapBaseForQuote: boolean; hasReferral?: boolean; slippageBps
   | { swapMode: SwapMode.ExactOut; amountOut: BN }
 )
 
-// Pass the build's own client (swapClient) so the quote and the swap share one read of the pool.
-export async function quoteCurveSwap(
-  connection: Connection,
-  pool: PublicKey,
-  swap: CurveSwap,
-  client: DynamicBondingCurveClient = dbcClient(connection),
-): Promise<SwapQuote2Result> {
+// The pool, its config and the chain clock its fee schedule runs on, read once per quote or build.
+export type CurveState = { virtualPool: VirtualPool; config: PoolConfig; now: number }
+
+// Pass the build's own client (swapClient) so the plan and the swap2 instruction share one read.
+export async function readCurve(connection: Connection, pool: PublicKey | string, client: DynamicBondingCurveClient = swapClient(connection)): Promise<CurveState> {
   const [virtualPool, now] = await Promise.all([
     client.state.getPool(pool).catch((e) => {
       if (/discriminator/i.test(e instanceof Error ? e.message : '')) return null // some other account
@@ -219,6 +219,18 @@ export async function quoteCurveSwap(
   ])
   if (!virtualPool) throw new SwapError('Campaign pool not found', 404)
   const config = await client.state.getPoolConfig(virtualPool.poolState.config)
+  if (!config) throw new Error(`config ${virtualPool.poolState.config.toBase58()} not found`)
+  return { virtualPool, config, now }
+}
+
+// Pass the build's own client (swapClient) so the quote and the swap share one read of the pool.
+export async function quoteCurveSwap(
+  connection: Connection,
+  pool: PublicKey,
+  swap: CurveSwap,
+  client: DynamicBondingCurveClient = dbcClient(connection),
+): Promise<SwapQuote2Result> {
+  const { virtualPool, config, now } = await readCurve(connection, pool, client)
   try {
     return client.pool.swapQuote2({
       ...swap,

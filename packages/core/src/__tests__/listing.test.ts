@@ -7,7 +7,7 @@ import bs58 from 'bs58'
 import { Connection, Keypair, PublicKey } from '@solana/web3.js'
 import { DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { closeDb } from '../db'
-import { getCampaign, getMetadata, getPending, listCampaigns, saveMetadata, savePending, type CampaignRecord } from '../store'
+import { PENDING_TTL_MS, getCampaign, getMetadata, getPending, listCampaigns, saveMetadata, savePending, type CampaignRecord } from '../store'
 import { ListingError, confirmListing, findCreateSignature, reconcilePending, verifyCreateTx } from '../listing'
 
 beforeEach(() => {
@@ -207,4 +207,23 @@ test('reconcile drops the token metadata of a build that never landed', async ()
   const result = await reconcilePending(chain.conn, { now })
   assert.deepEqual(result.expired, [dead.pool])
   assert.equal(getMetadata('deadmeta'), undefined)
+})
+
+test('reconcile keeps a split create whose config landed without its pool resumable until the pending TTL', async () => {
+  const chain = fakeChain()
+  const now = Date.now()
+  const stopped = record()
+  stopped.campaign = { ...stopped.campaign, uri: 'https://backed.test/m/stoppedmeta' }
+  saveMetadata('stoppedmeta', { name: 'Mug', symbol: 'MUG', description: '', image: '' })
+  savePending(stopped, now - 60 * 60_000)
+  chain.pools.add(stopped.config) // createConfig landed, createPool did not
+  const result = await reconcilePending(chain.conn, { now })
+  assert.deepEqual(result.waiting, [stopped.pool])
+  assert.deepEqual(result.expired, [])
+  assert.ok(getPending(stopped.pool), 'still there for POST /api/campaigns/<pool>/resume')
+  assert.ok(getMetadata('stoppedmeta'), 'the resumed pool reuses the metadata')
+
+  const later = await reconcilePending(chain.conn, { now: now + PENDING_TTL_MS })
+  assert.deepEqual(later.expired, [stopped.pool], 'expired once the pending TTL is up')
+  assert.equal(getMetadata('stoppedmeta'), undefined)
 })

@@ -9,14 +9,14 @@ import {
   swapQuoteExactOut,
   swapQuotePartialFill,
   type DynamicBondingCurveClient,
-  type PoolConfig,
   type SwapQuote2Result,
-  type VirtualPool,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
-import { swapClient, type SwapOptions } from './chain'
+import { readCurve, swapClient, type CurveState, type SwapOptions } from './chain'
+import { ttlCache } from './cache'
+import { LIVE_TTL_MS } from './live'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import { SwapError } from './errors'
-import { chainNow, slippageBps as checkSlippageBps, toSwapError } from './swaps'
+import { slippageBps as checkSlippageBps, toSwapError } from './swaps'
 import { checkUnits, maxUnitsLeft, planUnitsBuy, sweepMinOut, topUpRaw, unitsToRaw, type UnitsBuyMode } from './voucher-units'
 
 const BPS = 10_000
@@ -25,23 +25,9 @@ const toNum = (bn: BN, decimals: number) => Number(bn.toString()) / 10 ** decima
 const toBig = (bn: BN) => BigInt(bn.toString())
 const toBN = (n: bigint) => new BN(n.toString())
 
-// The pool, its config and the chain clock its fee schedule runs on, read once per quote or build.
-export type CurveState = { virtualPool: VirtualPool; config: PoolConfig; now: number }
-
-// Pass the build's own client (swapClient) so the plan and the swap2 instruction share one read.
-export async function readCurve(connection: Connection, pool: PublicKey | string, client: DynamicBondingCurveClient = swapClient(connection)): Promise<CurveState> {
-  const [virtualPool, now] = await Promise.all([
-    client.state.getPool(pool).catch((e) => {
-      if (/discriminator/i.test(e instanceof Error ? e.message : '')) return null // some other account
-      throw e
-    }),
-    chainNow(connection),
-  ])
-  if (!virtualPool) throw new SwapError('Campaign pool not found', 404)
-  const config = await client.state.getPoolConfig(virtualPool.poolState.config)
-  if (!config) throw new Error(`config ${virtualPool.poolState.config.toBase58()} not found`)
-  return { virtualPool, config, now }
-}
+// Public reads (the Blink unfurl): at most one curve read per pool per LIVE_TTL_MS, as readCampaignLive.
+const curveCache = ttlCache<CurveState>(LIVE_TTL_MS)
+export const readCurveCached = (connection: Connection, pool: string) => curveCache.get(pool, () => readCurve(connection, pool))
 
 const isCompleted = ({ virtualPool, config }: CurveState) =>
   Number(virtualPool.poolState.isMigrated) === 1 || virtualPool.poolState.quoteReserve.gte(config.migrationQuoteThreshold)

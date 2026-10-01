@@ -18,9 +18,11 @@ let cached: { at: number; body: Record<string, unknown> & { ok: boolean } } | nu
 
 async function check() {
   const network = getNetwork().name;
+  // Opens the store first: the first open imports (and shreds) a legacy redemptions file.
+  const health = storeHealth();
   const plaintextFiles = legacyPlaintextFiles();
   const store = {
-    ...storeHealth(),
+    ...health,
     // Off a volume the store sits on the container disk, which a redeploy wipes.
     ...storeDurability(),
     // Legacy redemptions JSON (plaintext shipping details) still on disk: delete it once checked.

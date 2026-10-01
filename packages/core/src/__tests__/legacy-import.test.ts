@@ -18,7 +18,7 @@ delete process.env.SHIPPING_KEY
 delete process.env.SHIPPING_ENCRYPTION_KEY
 delete process.env.SHIPPING_KEY_PREVIOUS
 
-import { db, getMeta, legacyPlaintextFiles, redemptionAad } from '../db'
+import { closeDb, db, getMeta, legacyPlaintextFiles, redemptionAad } from '../db'
 import { countFaucetClaims, takeRateToken } from '../store'
 import { getPendingRedemption, getRedemption, listRedemptions } from '../redemptions'
 import { isLegacySealed, openJson } from '../seal'
@@ -108,4 +108,17 @@ test('the JSON-file stores are imported once, shipping re-sealed to the burn sig
       ['rate.localnet.json', 1, 0],
     ],
   )
+})
+
+test('an import retried after a crash (rows committed, file not renamed) does not count a faucet claim twice', () => {
+  const data = path.join(root, 'data')
+  const before = countFaucetClaims(0)
+  assert.equal(before, 2)
+  // As if the process died after the import transaction committed, before the rename and the marker.
+  fs.copyFileSync(path.join(data, 'faucet-claims.localnet.json.imported'), path.join(data, 'faucet-claims.localnet.json'))
+  db().prepare("DELETE FROM meta WHERE key = 'legacy_json_import'").run()
+  closeDb()
+  assert.equal(countFaucetClaims(0), before)
+  assert.equal(countFaucetClaims(0, { wallet: 'F2' }), 1, 'a claim with no ip is matched too')
+  assert.ok(getMeta('legacy_json_import'))
 })

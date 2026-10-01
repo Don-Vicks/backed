@@ -11,7 +11,7 @@ import {
   parseWith,
   planUnits,
   readCampaignLive,
-  readCurve,
+  readCurveCached,
   resolveReferral,
   schemas,
   summarizeBuyQuote,
@@ -68,7 +68,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
   const base = `/api/actions/back/${pool}?units=`;
 
   // Live state decides the copy and whether the Blink can be used; if it can't be read, the Blink is
-  // shown disabled rather than offering a buy that may not be possible.
+  // shown disabled rather than offering a buy that may not be possible. Both reads are cached per pool
+  // for LIVE_TTL_MS, so public unfurls cost no RPC calls per viewer.
   const about = record.campaign.description ?? "";
   const conn = connection();
   const [live, curve] = await Promise.all([
@@ -76,7 +77,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[po
       logLine("error", { reqId: log.reqId, route: log.route, pool, err: e instanceof Error ? e.message : String(e) });
       return null;
     }),
-    readCurve(conn, record.pool).catch(() => null), // without it the buttons carry no prices
+    readCurveCached(conn, record.pool).catch(() => null), // without it the buttons carry no prices
   ]);
   // Live prices for "Back 1" and "Back 2", fee included, from one read of the curve.
   const quotes: Partial<Record<1 | 2, UnitsQuote>> = {};

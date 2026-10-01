@@ -9,7 +9,8 @@ import { getNetwork } from '../../network'
 import { send } from '../../tx'
 import { campaignToConfig, type Campaign } from '../../engine'
 import { buildBuyTx, buildCreateCampaignTx, dbcClient, readResaleConfig, toUsdcRaw } from '../../chain'
-import { forgetCampaignLive, readCampaignLive, readCampaignsLive } from '../../live'
+import { LIVE_TTL_MS, forgetCampaignLive, readCampaignLive, readCampaignsLive } from '../../live'
+import { readCurveCached } from '../../units'
 import { readMakerEarnings, readResale, readResaleCached } from '../../resale'
 import type { CampaignRecord } from '../../store'
 
@@ -140,6 +141,24 @@ test('concurrent resale-panel reads of one pool cost one set of RPC calls', { sk
   assert.deepEqual(reads[0], { resale: direct, maker })
   assert.equal(total(calls), total(once.calls), `ten readers: ${JSON.stringify([...calls])} vs one: ${JSON.stringify([...once.calls])}`)
   await readResaleCached(counted, record)
+  assert.equal(total(calls), total(once.calls), 'served from the cache')
+})
+
+test('concurrent Blink unfurls of one pool cost one set of RPC calls', { skip }, async () => {
+  // What GET /api/actions/back/<pool> reads: live state and the curve for the unit buttons.
+  const unfurl = (c: Connection) => Promise.all([readCampaignLive(c, record), readCurveCached(c, record.pool)])
+  const expire = () => new Promise((r) => setTimeout(r, LIVE_TTL_MS + 100)) // earlier tests cached this pool
+  await expire()
+  const once = counting(conn)
+  await unfurl(once.conn)
+  assert.ok(total(once.calls) > 0)
+
+  await expire()
+  const { conn: counted, calls } = counting(conn)
+  const reads = await Promise.all(Array.from({ length: 10 }, () => unfurl(counted)))
+  assert.equal(new Set(reads.map(([, curve]) => curve)).size, 1, 'one curve read shared by ten viewers')
+  assert.equal(total(calls), total(once.calls), `ten viewers: ${JSON.stringify([...calls])} vs one: ${JSON.stringify([...once.calls])}`)
+  await unfurl(counted)
   assert.equal(total(calls), total(once.calls), 'served from the cache')
 })
 
