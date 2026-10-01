@@ -15,11 +15,13 @@ rpc() { # rpc <method> [json params]
 }
 healthy() { rpc getHealth | grep -q '"result":"ok"'; }
 balance() { rpc getBalance "[\"$1\",{\"commitment\":\"confirmed\"}]" | sed -n 's/.*"value":\([0-9]*\).*/\1/p'; }
-executable() { rpc getAccountInfo "[\"$1\",{\"encoding\":\"base64\",\"dataSlice\":{\"offset\":0,\"length\":0}}]" | grep -q '"executable":true'; }
+account_info() { rpc getAccountInfo "[\"$1\",{\"encoding\":\"base64\",\"dataSlice\":{\"offset\":0,\"length\":0}}]"; }
+executable() { account_info "$1" | grep -q '"executable":true'; }
+exists() { account_info "$1" | grep -q '"value":{'; }
 
 # Programs, migration configs and the DBC pool authority, read from the DBC SDK (packages/core/src/localnet.ts).
-# Lines: `program <id>`, `account <address>`, `pool-authority <address>`.
+# Lines: `program <id>`, `account <address>`, `pool-authority <address>`. Errors go to stderr as they are.
 mainnet_deps() {
   [ -d "$ROOT/packages/core/node_modules/@meteora-ag" ] || die "run pnpm install first"
-  (cd "$ROOT/packages/core" && node -r ts-node/register/transpile-only src/scripts/localnet-accounts.ts 2>/dev/null)
+  (cd "$ROOT/packages/core" && node -r ts-node/register/transpile-only src/scripts/localnet-accounts.ts)
 }

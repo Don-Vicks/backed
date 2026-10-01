@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Starts a solana-test-validator with the mainnet DBC, DAMM v2, Metaplex and Locker programs and every
-# DAMM v2 migration config, or reuses the validator already answering on the RPC port. It never
-# resets a ledger: a running validator is left alone (other suites share it), and a stopped one resumes
-# its ledger. Either way it airdrops 5 SOL to the DBC pool authority, which pays rent on migration.
+# DAMM v2 migration config, or reuses the validator already answering on the RPC port. Either way it
+# checks the validator has every one of them. It never resets a ledger: a running validator is left
+# alone (other suites share it), and a stopped one resumes its ledger. Then it airdrops 5 SOL to the
+# DBC pool authority, which pays rent on migration.
 #
 #   bash scripts/localnet/start.sh            # :8899, ledger in .localnet/ (gitignored)
 #   LOCALNET_RPC_PORT=18899 LOCALNET_LEDGER=$(mktemp -d)/ledger bash scripts/localnet/start.sh
@@ -20,9 +21,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-DEPS=$(mainnet_deps) || die "could not read the program list from the DBC SDK"
+DEPS=$(mainnet_deps) || die "could not read the program list from the DBC SDK (error above)"
 POOL_AUTHORITY=$(awk '$1 == "pool-authority" { print $2 }' <<<"$DEPS")
-DBC=$(awk '$1 == "program" { print $2; exit }' <<<"$DEPS")
 
 if healthy; then
   log "reusing the validator at $RPC_URL (not reset)"
@@ -58,14 +58,26 @@ else
   echo $! >"$LEDGER/start.pid"
   for _ in $(seq 1 120); do
     healthy && break
-    kill -0 "$(cat "$LEDGER/start.pid")" 2>/dev/null || { tail -20 "$LEDGER/start.log" >&2; die "validator exited"; }
+    kill -0 "$(cat "$LEDGER/start.pid")" 2>/dev/null || { tail -20 "$LEDGER/start.log" "$LEDGER/validator.log" >&2 2>/dev/null; die "validator exited"; }
     sleep 1
   done
-  healthy || { tail -20 "$LEDGER/start.log" >&2; die "validator did not become healthy in 120s"; }
+  healthy || { tail -20 "$LEDGER/start.log" "$LEDGER/validator.log" >&2 2>/dev/null; die "validator did not become healthy in 120s"; }
   log "started at $RPC_URL (pid $(cat "$LEDGER/start.pid"), log $LEDGER/start.log)"
 fi
 
-executable "$DBC" || die "the validator at $RPC_URL has no DBC program ($DBC); start one with this script on another LOCALNET_RPC_PORT"
+# A reused validator may have been started without some of them: say so now, not as a program error
+# halfway through a suite.
+missing=()
+while read -r kind id; do
+  case $kind in
+    program) executable "$id" || missing+=("program $id") ;;
+    account) exists "$id" || missing+=("account $id") ;;
+  esac
+done <<<"$DEPS"
+if [ ${#missing[@]} -gt 0 ]; then
+  printf '[localnet]   missing %s\n' "${missing[@]}" >&2
+  die "the validator at $RPC_URL lacks ${#missing[@]} of the mainnet programs and configs; start one with this script on another LOCALNET_RPC_PORT"
+fi
 
 before=$(balance "$POOL_AUTHORITY"); before=${before:-0}; now=$before
 # An airdrop repeated within one blockhash has the same signature and is dropped, so retry.

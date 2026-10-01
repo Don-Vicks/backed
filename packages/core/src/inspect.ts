@@ -5,10 +5,12 @@ import BN from 'bn.js'
 import { Connection, PublicKey } from '@solana/web3.js'
 import {
   BaseFeeMode,
+  DAMM_V2_MIGRATION_FEE_ADDRESS,
   DAMM_V2_PROGRAM_ID,
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
   MigrationFeeOption,
   MigrationOption,
+  deriveDammV2PoolAddress,
   feeNumeratorToBps,
   type PoolConfig,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
@@ -165,6 +167,13 @@ export async function inspectResalePool(
   return { address: address.toBase58(), liquidity: raw(pool.liquidity), permanentLockLiquidity: raw(pool.permanentLockLiquidity), positions: views }
 }
 
+// The DAMM v2 pool a DBC pool graduates into, from the migration fee option in its own config, so pools
+// created under an earlier option still resolve after MIGRATION_FEE_OPTION changes.
+export function resalePoolAddressFor(config: Pick<PoolConfig, 'migrationFeeOption' | 'quoteMint'>, baseMint: PublicKey): PublicKey {
+  const dammConfig = DAMM_V2_MIGRATION_FEE_ADDRESS[config.migrationFeeOption]
+  return dammConfig ? deriveDammV2PoolAddress(dammConfig, baseMint, config.quoteMint) : resalePoolAddress(baseMint, config.quoteMint)
+}
+
 export async function inspectDbcPool(connection: Connection, address: PublicKey): Promise<PoolView> {
   const client = dbcClient(connection)
   const virtualPool = await client.state.getPool(address)
@@ -174,7 +183,7 @@ export async function inspectDbcPool(connection: Connection, address: PublicKey)
   if (!config) throw new Error(`config ${s.config.toBase58()} not found`)
   const migrated = s.isMigrated === 1
   const resale = migrated
-    ? await inspectResalePool(connection, resalePoolAddress(s.baseMint, config.quoteMint), {
+    ? await inspectResalePool(connection, resalePoolAddressFor(config, s.baseMint), {
         creator: s.creator.toBase58(),
         partner: config.feeClaimer.toBase58(),
       })

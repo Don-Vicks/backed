@@ -8,6 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 out=${1:?usage: dump.sh <dir>}
 command -v solana >/dev/null || die "solana CLI not found (set SOLANA_BIN or PATH)"
+deps=$(mainnet_deps) || die "could not read the program list from the DBC SDK (error above)"
 mkdir -p "$out/programs" "$out/accounts"
 
 retry() { for i in 1 2 3 4 5; do "$@" >/dev/null && return 0; log "retry $i: $*"; sleep $((i * 3)); done; return 1; }
@@ -21,5 +22,5 @@ while read -r kind id; do
       [ -s "$out/accounts/$id.json" ] || retry solana account --url "$CLONE_URL" "$id" --output json --output-file "$out/accounts/$id.json" || die "dump $id"
       ;;
   esac
-done <<<"$(mainnet_deps)"
+done <<<"$deps"
 log "dumped to $out: $(ls "$out/programs" | wc -l) programs, $(ls "$out/accounts" | wc -l) accounts"

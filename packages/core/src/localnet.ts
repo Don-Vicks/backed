@@ -34,7 +34,9 @@ export const DBC_POOL_AUTHORITY: PublicKey = deriveDbcPoolAuthority()
 // A ready-to-use localnet world in `root` (a PREORDER_ROOT): fresh keys for every role, SOL for all of
 // them, a mock USDC mint whose authority is the platform key (the faucet mints with it), 1000 USDC for
 // each backer and an env file the scripts, the web server and tests can load. The maker and the
-// referrer get no USDC account, as for a fresh wallet. Never reuses keys, so runs can share a validator.
+// referrer get no USDC account, as for a fresh wallet. Never reuses keys, so runs can share a validator,
+// and refuses a root that already holds localnet keys or a mock USDC: replacing them would orphan the
+// campaigns in its data/ (their partner key) and the faucet (its mint authority).
 export const SEED_ROLES = ['platform', 'maker', 'backer1', 'backer2', 'backer3', 'referrer'] as const
 export type SeedRole = (typeof SEED_ROLES)[number]
 export type Seeded = { root: string; envFile: string; rpcUrl: string; wallets: Record<SeedRole, Keypair>; usdcMint: PublicKey }
@@ -48,7 +50,16 @@ export async function airdrop(connection: Connection, to: PublicKey, sol: number
   await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed')
 }
 
+export function seededFiles(root: string): string[] {
+  const keys = path.join(root, 'keys', 'localnet')
+  return [...SEED_ROLES.map((r) => `${r}.json`), 'mock-usdc.json'].map((f) => path.join(keys, f)).filter((f) => fs.existsSync(f))
+}
+
 export async function seedLocalnet(connection: Connection, root: string): Promise<Seeded> {
+  const existing = seededFiles(root)
+  if (existing.length) {
+    throw new Error(`${root} is already seeded (${existing.map((f) => path.relative(root, f)).join(', ')}): seed a fresh PREORDER_ROOT`)
+  }
   const keys = path.join(root, 'keys', 'localnet')
   fs.mkdirSync(keys, { recursive: true })
   fs.mkdirSync(path.join(root, 'data'), { recursive: true })

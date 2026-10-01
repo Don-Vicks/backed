@@ -87,8 +87,11 @@ jobs:
       - name: Week
         id: week
         run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-      - name: Cache mainnet program and account dumps
-        uses: actions/cache@v4
+      # Restore and save are separate steps so the dumps are cached as soon as they exist, even when
+      # the tests below fail (a plain actions/cache only saves after a green job).
+      - name: Restore mainnet program and account dumps
+        id: dumps
+        uses: actions/cache/restore@v4
         with:
           path: .localnet/dumps
           # The SDK version decides which programs and configs are needed; the week bounds staleness
@@ -97,6 +100,12 @@ jobs:
           restore-keys: localnet-dumps-${{ steps.week.outputs.week }}-
       - name: Dump programs and accounts from mainnet (only what the cache lacks)
         run: bash scripts/localnet/dump.sh .localnet/dumps
+      - name: Save mainnet program and account dumps
+        if: steps.dumps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .localnet/dumps
+          key: ${{ steps.dumps.outputs.cache-primary-key }}
 
       - name: Start a fresh validator
         env:

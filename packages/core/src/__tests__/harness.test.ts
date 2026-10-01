@@ -3,12 +3,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'child_process'
+import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import BN from 'bn.js'
-import { DAMM_V2_MIGRATION_FEE_ADDRESS, MigrationFeeOption } from '@meteora-ag/dynamic-bonding-curve-sdk'
-import { DBC_POOL_AUTHORITY, LOCALNET_ACCOUNTS, LOCALNET_PROGRAMS } from '../localnet'
+import { Connection, Keypair } from '@solana/web3.js'
+import { DAMM_V2_MIGRATION_FEE_ADDRESS, MigrationFeeOption, deriveDammV2PoolAddress } from '@meteora-ag/dynamic-bonding-curve-sdk'
+import { DBC_POOL_AUTHORITY, LOCALNET_ACCOUNTS, LOCALNET_PROGRAMS, seedLocalnet, seededFiles } from '../localnet'
 import { MIGRATION_FEE_OPTION } from '../engine'
-import { pctOf } from '../inspect'
+import { resalePoolAddress } from '../chain'
+import { pctOf, resalePoolAddressFor } from '../inspect'
 
 const coreDir = path.join(__dirname, '..', '..')
 const scriptsDir = path.join(coreDir, '..', '..', 'scripts', 'localnet')
@@ -61,4 +65,44 @@ test('pctOf: share in percent to 0.01%, on u128-sized liquidity', () => {
   assert.equal(pctOf(new BN(1234), new BN(10_000)), 12.34)
   assert.equal(pctOf(pool, pool), 100)
   assert.equal(pctOf(new BN(1), new BN(0)), 0)
+})
+
+test('inspect finds the resale pool from the migration fee option in the pool\'s own config', () => {
+  const baseMint = Keypair.generate().publicKey
+  const quoteMint = Keypair.generate().publicKey
+  for (const option of [MigrationFeeOption.FixedBps200, MigrationFeeOption.Customizable, MigrationFeeOption.FixedBps25]) {
+    assert.equal(
+      resalePoolAddressFor({ migrationFeeOption: option, quoteMint }, baseMint).toBase58(),
+      deriveDammV2PoolAddress(DAMM_V2_MIGRATION_FEE_ADDRESS[option], baseMint, quoteMint).toBase58(),
+    )
+  }
+  // A FixedBps200 pool and a Customizable one with the same mints graduate into different pools.
+  assert.notEqual(
+    resalePoolAddressFor({ migrationFeeOption: MigrationFeeOption.FixedBps200, quoteMint }, baseMint).toBase58(),
+    resalePoolAddressFor({ migrationFeeOption: MigrationFeeOption.Customizable, quoteMint }, baseMint).toBase58(),
+  )
+  // An option the SDK has no config for falls back to the one new campaigns use.
+  assert.equal(
+    resalePoolAddressFor({ migrationFeeOption: 99 as MigrationFeeOption, quoteMint }, baseMint).toBase58(),
+    resalePoolAddress(baseMint, quoteMint).toBase58(),
+  )
+})
+
+test('seedLocalnet refuses a root that already holds localnet keys or a mock USDC', async () => {
+  // The refusal comes before any RPC call, so no validator is needed.
+  const connection = new Connection('http://127.0.0.1:1', 'confirmed')
+  for (const file of ['platform.json', 'mock-usdc.json']) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'preorder-seed-'))
+    try {
+      assert.deepEqual(seededFiles(root), [])
+      const keys = path.join(root, 'keys', 'localnet')
+      fs.mkdirSync(keys, { recursive: true })
+      fs.writeFileSync(path.join(keys, file), 'existing')
+      await assert.rejects(seedLocalnet(connection, root), /already seeded \(keys\/localnet\/.*: seed a fresh PREORDER_ROOT/)
+      assert.equal(fs.readFileSync(path.join(keys, file), 'utf8'), 'existing')
+      assert.deepEqual(fs.readdirSync(keys), [file])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
 })
