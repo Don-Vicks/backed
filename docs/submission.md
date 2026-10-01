@@ -14,7 +14,7 @@ Backed is pre-orders for real products, priced on a Meteora Dynamic Bonding Curv
 - Backers buy whole units (ExactOut swaps with slippage minimums), can exit at the curve price before the goal, and redeem by burning a voucher. The burn's memo binds it to their encrypted shipping details.
 - The platform is the DBC partner and claims its side from chain.
 
-There's no custom program: every rule is DBC config, DAMM v2 and SPL burns. The whole lifecycle is tested in CI against the mainnet DBC and DAMM v2 binaries on a local validator.
+There's no custom program: every rule is DBC config, DAMM v2 and SPL burns. The whole lifecycle is tested in CI against the mainnet DBC and DAMM v2 binaries on a local validator, once through the SDK and once clicked through the app in a real browser, from launch to a shipped order. The app is dressed in Meteora's own design language and draws each campaign's DBC price curve.
 
 **Project Github Link**
 https://github.com/Don-Vicks/preorder-curves
@@ -26,7 +26,7 @@ https://web-production-e2262.up.railway.app (devnet; press "Get test USDC" after
 (optional)
 
 **Pitch deck or Loom/video**
-Record the 3-minute Loom from [`docs/demo-script.md`](demo-script.md). The walkthrough with screenshots is [`docs/walkthrough.md`](walkthrough.md).
+Record the 3-minute Loom from [`docs/demo-script.md`](demo-script.md), or use the pitch deck (https://claude.ai/artifact/RpwieLyVcUzk4uh5KchqmH; check it opens when signed out before pasting it). The walkthrough with screenshots is [`docs/walkthrough.md`](walkthrough.md).
 
 **Did you submit this project to the official Crypto World's Fair Hackathon on Colosseum?**
 (Yes/No; submit there too, then paste the Colosseum project and profile links)

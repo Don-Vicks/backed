@@ -19,8 +19,8 @@ Built for the Colosseum **Crypto World's Fair** and Meteora's **Best use of DBC*
 | Criterion | Where to look |
 |---|---|
 | **Depth of Meteora integration** | The product *is* a DBC config:<br>• tiers = `curve[]` segments<br>• goal = `migrationQuoteThreshold`<br>• upfront budget = migration fee<br>• anti-bot = fee scheduler<br>• production money = `creatorLiquidityVestingInfo`<br>• resale royalty = Customizable DAMM v2 pool<br>• backer floor = permanent locked liquidity<br>• whole units = `SwapMode.ExactOut`<br>• last buy = `PartialFill`<br>• referrals, creator and partner fee claims, pool and partner metadata<br>See [How Backed uses DBC](#how-backed-uses-dbc). |
-| **Technical execution** | CI runs typecheck, lint, 188 unit tests and the build, and the full lifecycle on a validator loaded with the **mainnet** DBC and DAMM v2 binaries ([`ci.yml`](.github/workflows/ci.yml), [`__tests__/localnet`](packages/core/src/__tests__/localnet)).<br>Creation is maker-paid and the platform never signs. Every swap has a slippage minimum. Inputs pass zod schemas and an allowlist, and endpoints are rate-limited. Storage is SQLite with encrypted shipping data, and redemptions are memo-bound. |
-| **Originality** | Pre-order crowdfunding where resale pays the maker. The bonding curve is the early-bird pricing, graduation is "funded", and the DAMM v2 pool is a royalty-paying resale market with a permanent floor. |
+| **Technical execution** | CI runs typecheck, lint, 188 unit tests and the build, then the full lifecycle on a validator loaded with the **mainnet** DBC and DAMM v2 binaries: once through the SDK ([`__tests__/localnet`](packages/core/src/__tests__/localnet)) and once clicked through the real app in Chromium ([`e2e/lifecycle.spec.ts`](apps/web/e2e/lifecycle.spec.ts)), from launch to a shipped order ([`ci.yml`](.github/workflows/ci.yml)).<br>Creation is maker-paid and the platform never signs. Every swap has a slippage minimum. Inputs pass zod schemas and an allowlist, and endpoints are rate-limited. Storage is SQLite with encrypted shipping data, and redemptions are memo-bound. |
+| **Originality & taste** | Pre-order crowdfunding where resale pays the maker. The bonding curve is the early-bird pricing, graduation is "funded", and the DAMM v2 pool is a royalty-paying resale market with a permanent floor. The app wears Meteora's own design language (its v2 palette, type and gradient; see [brand.md](brand.md)) and draws each campaign's real DBC price curve. |
 | **Impact** | Tokenized pre-orders as a new asset class: makers get funded without giving up resale, and early fans pay less. The economics are worked through in [Maker trust tier](#maker-trust-tier) and the payout panel. |
 | **Traction** | Live on devnet at <https://web-production-e2262.up.railway.app>, with a full lifecycle proven there ([Proof on devnet](#proof-on-devnet)). Mainnet needs only `NETWORK=mainnet`, a funded fee-claimer wallet and a real campaign ([Deploy](#deploy-railway)). |
 
@@ -122,6 +122,7 @@ Also measured on devnet: the drop-bot fee on a 2 USDC buy was **40% at launch an
 
 ```
 apps/web            Next.js 16 app: pages + API routes (the API builds unsigned transactions)
+  e2e/              Playwright: every feature in Chromium with keypair wallets, on localnet
 packages/core       All Solana logic, shared by the scripts and the web server
   pricing.ts        pure tier → goal/units math (also used in the browser)
   engine.ts         campaignToConfig(): campaign + trust tier → DBC ConfigParameters
@@ -144,7 +145,7 @@ packages/core       All Solana logic, shared by the scripts and the web server
   localnet.ts       what a local validator clones from mainnet, and the localnet seed
   scripts/          lifecycle proof, launch, inspect, localnet seed, reconcile, API smoke and negative tests, platform claims, partner listing
 scripts/localnet    start/stop/dump a validator with the mainnet Meteora programs
-.github/workflows   CI: check (typecheck, lint, unit tests, build) and localnet (chain suites)
+.github/workflows   CI: check (typecheck, lint, unit tests, build) and localnet (chain suites, then the browser suite)
 ```
 
 - **Wallet flow.** The server builds each transaction and the browser wallet signs it. Every wallet transaction carries a compute-unit price (p75 of recent fees on its writable accounts, capped by `PRIORITY_FEE_MAX_MICROLAMPORTS`; none on localnet). Campaign creation is paid and signed by the maker's wallet (payer and pool creator); the server only signs with the fresh config and mint keys, never the platform key. The server builds the campaign from an allowlist of fields: name ≤ 32 bytes, ticker `A–Z0–9` ≤ 10, description ≤ 1000, https image ≤ 200, whole units, at most 4 tiers, and the fixed launch fee (15% → 1% over 1, 2 or 5 min), with the goal at most 10,000,000 USDC and the final price at most 100× the first tier's. A create too large for one transaction goes out as createConfig then createPool in one approval; if only the first lands, **Finish launch** (`POST /api/campaigns/<pool>/resume`) creates the pool on the config the maker already paid for, with a fresh mint.
@@ -182,6 +183,7 @@ pnpm core:launch --campaign examples/hoodie.json      # create a campaign from J
 pnpm core:reconcile                                   # list pending campaigns that landed, expire ones that never will
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
 pnpm --filter @preorder/core api-negative            # bad input, status gates and rate limits against a localnet server at WEB_URL: no 5xx
+bash apps/web/e2e/run-localnet.sh                     # browser suite: seeds wallets, builds and starts the app on localnet, runs Playwright (args pass through)
 pnpm --filter @preorder/core platform:claim [--unsigned] [--keep-leftover] [pool ...]   # collect the platform's fees and leftover
 pnpm --filter @preorder/core partner:metadata [--unsigned]                              # one-off: the platform's on-chain partner listing
 ```
@@ -232,7 +234,7 @@ bash scripts/localnet/stop.sh              # stops only a validator this script 
 CI (`.github/workflows/ci.yml`) runs two jobs on every PR and push to `main`:
 
 - **check** runs install with the frozen lockfile, both typechecks, lint, unit tests and a devnet production build. It needs no secrets.
-- **localnet** runs the whole localnet suite on a fresh validator. It uses the pinned Solana CLI (v4.3.0 from `release.anza.xyz`, cached) and program and account dumps from mainnet, cached per week and per lockfile (saved right after the dump, so a red test run does not dump again).
+- **localnet** runs the whole localnet suite on a fresh validator, then the browser suite on the same validator: `apps/web/e2e/run-localnet.sh` seeds wallets and a mock USDC, builds and starts the app with a seconds-long vesting schedule, and Playwright drives one campaign through every feature in Chromium with keypair-backed Wallet Standard wallets (launch, referral buy, exit, the capped last buy, graduation, resale with the price-impact guard, budget withdrawal, fee claim, unlock, redemption and shipping, link previews, the Blink, phone layouts). On failure the report and traces are uploaded as an artifact. It uses the pinned Solana CLI (v4.3.0 from `release.anza.xyz`, cached) and program and account dumps from mainnet, cached per week and per lockfile (saved right after the dump, so a red test run does not dump again).
 
 ### Deploy (Railway)
 
