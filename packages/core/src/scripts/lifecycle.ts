@@ -16,7 +16,7 @@ import {
   getOrCreateAssociatedTokenAccount,
 } from '@solana/spl-token'
 import { CpAmm } from '@meteora-ag/cp-amm-sdk'
-import { explorerAccount, getConnection, getNetwork } from '../network'
+import { explorerAccount, getConnection, getNetwork, trustRpcUrl } from '../network'
 import { keysDir, loadWallets } from '../wallets'
 import { send } from '../tx'
 import { trustTier, type TrustTierName } from '../trust'
@@ -35,7 +35,7 @@ import {
   toUsdcRaw,
 } from '../chain'
 
-const MAINNET_RPC = process.env.MAINNET_RPC_URL || 'https://api.mainnet-beta.solana.com'
+const TRUST_RPC = trustRpcUrl()
 const fmt = (bn: BN | bigint, decimals = 6) => (Number(bn.toString()) / 10 ** decimals).toFixed(4)
 
 // Small numbers so devnet can graduate it: goal ≈ 3·√(4·5) + 4·√(5·6) ≈ 35.3 USDC.
@@ -114,7 +114,7 @@ async function main() {
 
   // Trust tier from the maker wallet's MAINNET history ----------------------
   await step('trust', '2. Maker trust tier (mainnet history of the maker wallet)', async () => {
-    const r = await trustTier(new Connection(MAINNET_RPC, 'confirmed'), w.maker.publicKey)
+    const r = await trustTier(new Connection(TRUST_RPC, 'confirmed'), w.maker.publicKey)
     r.reasons.forEach((x) => console.log(`    ${x}`))
     console.log(`    → tier ${r.tier} (score ${r.score}), maker share capped at ${r.maxMakerSharePct}%`)
     s.tier = r.tier

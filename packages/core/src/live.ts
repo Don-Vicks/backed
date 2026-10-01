@@ -6,7 +6,7 @@ import { getPriceFromSqrtPrice } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { dbcClient, getUsdcMint, resalePoolAddress, toUsdcRaw } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
-import { getNetwork } from './network'
+import { getNetwork, isTestNetwork } from './network'
 import { loadKeypair } from './wallets'
 import { send } from './tx'
 
@@ -83,9 +83,9 @@ export async function quoteBuy(connection: Connection, poolAddress: string, usdc
   }
 }
 
-// Devnet only: gives a wallet 50 mock USDC and a little SOL for fees, paid by the platform wallet.
+// Devnet/localnet only: gives a wallet 50 mock USDC and a little SOL for fees, paid by the platform wallet.
 export async function devnetFaucet(connection: Connection, wallet: PublicKey) {
-  if (getNetwork().name !== 'devnet') throw new Error('faucet is devnet only')
+  if (!isTestNetwork(getNetwork().name)) throw new Error('faucet is devnet/localnet only')
   const platform = loadKeypair('platform')
   const usdcMint = getUsdcMint()
   const ata = getAssociatedTokenAddressSync(usdcMint, wallet)

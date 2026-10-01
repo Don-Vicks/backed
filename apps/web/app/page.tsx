@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CampaignList } from "@/components/campaign-list";
+import { BRAND } from "@preorder/core/src/brand";
 
 const STEPS = [
   { title: "Back it early", body: "Every campaign has early-bird tiers on a bonding curve. The first backers pay the least." },
@@ -19,7 +20,7 @@ export default function Home() {
         </h1>
         <p className="mt-6 max-w-xl text-lg text-muted-foreground">
           Pre-orders for real products, priced on a bonding curve. Resellers usually keep the profit on sold-out drops.
-          On Backed, the maker earns on every resale.
+          On {BRAND}, the maker earns on every resale.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <Button asChild size="lg"><a href="#campaigns">Browse campaigns <ArrowRight aria-hidden="true" /></a></Button>

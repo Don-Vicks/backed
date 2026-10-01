@@ -45,10 +45,8 @@ export function saveRedemption(r: Redemption) {
   fs.writeFileSync(redemptionsPath(), JSON.stringify([r, ...all], null, 2))
 }
 
-// Maker sign-in: the wallet signs a short, time-stamped message; valid for 10 minutes.
-export function ordersMessage(pool: string, issuedAt: string) {
-  return `Backed: view orders for campaign ${pool}\nIssued at: ${issuedAt}`
-}
+// Maker sign-in: the wallet signs ordersMessage(), a short, time-stamped message; valid for 10 minutes.
+export { ordersMessage } from './messages'
 
 export function verifyWalletMessage(message: string, signatureBase58: string, wallet: PublicKey, maxAgeMs = 10 * 60_000) {
   const issued = /Issued at: (.+)$/.exec(message)?.[1]

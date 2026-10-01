@@ -10,7 +10,7 @@ import {
   savePending,
   type Campaign,
 } from "@preorder/core";
-import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, serialize, trustFor } from "@/lib/server";
+import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, publicOrigin, serialize, trustFor } from "@/lib/server";
 
 export async function GET() {
   try {
@@ -28,14 +28,15 @@ export async function GET() {
 // fresh config + mint keys sign here; the maker signs as pool creator in the browser.
 export async function POST(req: Request) {
   try {
+    // First, so a misconfigured deploy fails before any RPC call or write.
+    const origin = publicOrigin(req);
     const body = (await req.json()) as { campaign: Campaign; maker: string; verifiedSocial?: boolean };
     const maker = publicKey(body.maker, "maker");
     if (!body.campaign?.name?.trim()) throw new BadRequest("Name the product");
     const trust = await trustFor(maker.toBase58(), !!body.verifiedSocial);
-    // Token metadata lives at our own URL (kept short: Metaplex caps uri at 200 chars).
-    const metaId = randomBytes(8).toString("hex");
-    const origin = new URL(req.url).origin;
-    const campaign: Campaign = { ...body.campaign, name: body.campaign.name.trim().slice(0, 32), symbol: body.campaign.symbol.trim().toUpperCase().slice(0, 10), uri: `${origin}/api/metadata/${metaId}` };
+    // Token metadata lives at our own URL, kept short because every uri byte is in the create tx.
+    const metaId = randomBytes(8).toString("base64url").slice(0, 10);
+    const campaign: Campaign = { ...body.campaign, name: body.campaign.name.trim().slice(0, 32), symbol: body.campaign.symbol.trim().toUpperCase().slice(0, 10), uri: `${origin}/m/${metaId}` };
     saveMetadata(metaId, { name: campaign.name, symbol: campaign.symbol, description: campaign.description ?? "", image: campaign.image ?? "" });
     const platform = loadKeypair("platform");
     const usdcMint = getUsdcMint();

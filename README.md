@@ -82,7 +82,8 @@ packages/core       All Solana logic, shared by the scripts and the web server
   engine.ts         campaignToConfig(): campaign + trust tier → DBC ConfigParameters
   trust.ts          maker trust tier from mainnet wallet history
   chain.ts          transaction builders: create, buy, exit, graduate, withdraw, redeem
-  live.ts           live campaign state, quotes, devnet faucet
+  live.ts           live campaign state, quotes, devnet/localnet faucet
+  network.ts        NETWORK switch (localnet, devnet, mainnet), RPC and explorer links
   resale.ts         DAMM v2 resale pool, quotes, swaps, maker earnings + claim
   redemptions.ts    on-chain burn verification, shipping records, maker sign-in
   scripts/          lifecycle proof, launch, API smoke tests
@@ -99,7 +100,7 @@ Stack: `@meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, `@meteora-ag/cp-amm-sdk@1
 
 ## Run it
 
-Needs Node 22+, pnpm 10 and a Solana CLI wallet with some devnet SOL (used to fund the test wallets).
+Needs Node 22.22 (`engines.node`, which Railway's Railpack reads before `.node-version`), pnpm 10 (`packageManager`) and a Solana CLI wallet with some devnet SOL (used to fund the test wallets).
 
 ```bash
 pnpm install
@@ -109,17 +110,30 @@ pnpm core:lifecycle         # full on-chain proof; also creates the devnet mock 
 pnpm --dir apps/web dev     # http://localhost:3100
 ```
 
-In the app, connect Phantom, Solflare or Backpack on **devnet** and click **Get test USDC**.
+In the app, connect Phantom, Solflare or Backpack on **devnet** and click **Get test USDC**. Creating a campaign on devnet needs `PUBLIC_BASE_URL` set to a public https URL (a tunnel), because the metadata URI is written on-chain; use `NETWORK=localnet` to create campaigns locally.
 
 Other commands:
 
 ```bash
-pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in)
+pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in, config)
+pnpm core:test:localnet                               # checks against a local validator (LOCALNET_RPC_URL)
+pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
-cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API
+cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
 ```
 
-`NETWORK=mainnet` switches the app to real USDC and mainnet RPC with no code changes. The devnet faucet turns itself off on mainnet.
+### Configuration
+
+Every variable is documented in [`.env.example`](.env.example). The ones that matter most:
+
+- **`NETWORK`** (`localnet`, `devnet` or `mainnet`) is the only network switch. The scripts and the server read it at runtime; `next.config.ts` bakes it and the matching browser RPC (`PUBLIC_RPC_URL`, else a keyless default) into the bundle, so **changing it needs a rebuild**. `/api/health` returns 503 if the running server and the build disagree. `NETWORK=mainnet` switches to real USDC and mainnet RPC; the faucet only runs on devnet and localnet.
+- **`PUBLIC_BASE_URL`** is the app's https origin. It goes into immutable on-chain metadata URIs and Blink icons, so it is required off localnet (`RAILWAY_PUBLIC_DOMAIN` is the fallback). Creating a campaign fails fast without it. Creating campaigns from a laptop on devnet therefore needs a public https URL (a tunnel); use localnet for local work.
+- **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching.
+- **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history.
+
+### Deploy (Railway)
+
+`railway.json` builds from the repo root with Railpack (`pnpm build`), starts with `pnpm start` (Next reads `PORT`) and health-checks `/api/health`, a liveness route that makes no RPC call. Railpack takes the Node version from `engines.node` (`22.22.x`). Set `NETWORK`, the RPC URLs, `PUBLIC_RPC_URL`, `PUBLIC_BASE_URL`, `PLATFORM_SECRET_KEY`, `PLATFORM_FEE_CLAIMER` and (off mainnet) `USDC_MINT` as service variables before the first build, and keep the service root at the repo root so the workspace resolves.
 
 ---
 

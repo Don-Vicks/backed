@@ -3,7 +3,7 @@
 import fs from 'fs'
 import path from 'path'
 import { Connection } from '@solana/web3.js'
-import { explorerAccount, getConnection, getNetwork } from '../network'
+import { explorerAccount, getConnection, getNetwork, trustRpcUrl } from '../network'
 import { loadWallets } from '../wallets'
 import { send } from '../tx'
 import { MAX_MAKER_SHARE, scoreSignals, trustTier, type TrustResult, type TrustTierName } from '../trust'
@@ -29,7 +29,7 @@ async function main() {
   if (forced) {
     trust = { ...scoreSignals({ walletAgeDays: 0, txCount: 0, fundedByFreshWallet: false, verifiedSocial: false }), tier: forced, maxMakerSharePct: MAX_MAKER_SHARE[forced], reasons: [`Tier set manually to ${forced}`] }
   } else {
-    trust = await trustTier(new Connection(process.env.MAINNET_RPC_URL || 'https://api.mainnet-beta.solana.com'), w.maker.publicKey)
+    trust = await trustTier(new Connection(trustRpcUrl()), w.maker.publicKey)
   }
   console.log(`Maker trust tier ${trust.tier}: ${trust.reasons.join('; ')}`)
 

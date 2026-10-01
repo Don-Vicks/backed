@@ -9,7 +9,7 @@
     "lifecycle": "ts-node src/scripts/lifecycle.ts",
     "test": "node -r ts-node/register --test src/__tests__/*.test.ts",
     "launch": "ts-node src/scripts/launch.ts",
-    "trust": "ts-node src/scripts/trust.ts"
+    "test:localnet": "LOCALNET=1 node -r ts-node/register --test src/__tests__/localnet/*.test.ts"
   },
   "dependencies": {
     "@meteora-ag/cp-amm-sdk": "1.5.0",

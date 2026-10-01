@@ -13,7 +13,7 @@ import {
   deriveDbcPoolAddress,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { getNetwork } from './network'
-import { keysDir } from './wallets'
+import { keysDir, platformFeeClaimer } from './wallets'
 import { MIGRATION_FEE_OPTION, USDC_DECIMALS, VOUCHER_DECIMALS, campaignToConfig, type Campaign } from './engine'
 import type { TrustTierName } from './trust'
 
@@ -22,11 +22,17 @@ export const toVoucherRaw = (units: number) => new BN(Math.round(units * 10 ** V
 
 const mockUsdcPath = () => path.join(keysDir(), 'mock-usdc.json')
 
-// Mainnet: real USDC. Devnet: the mock USDC mint created by the lifecycle script.
+// Mainnet: real USDC. Devnet/localnet: USDC_MINT, else the mock mint created by the lifecycle script.
 export function getUsdcMint(): PublicKey {
   const net = getNetwork()
-  if (net.usdcMint) return net.usdcMint
-  if (!fs.existsSync(mockUsdcPath())) throw new Error('No mock USDC mint yet: run `pnpm core:lifecycle` once on devnet')
+  const fromEnv = process.env.USDC_MINT?.trim()
+  if (net.usdcMint) {
+    // A stray devnet mint in a mainnet env must not silently price campaigns in a fake token.
+    if (fromEnv && fromEnv !== net.usdcMint.toBase58()) throw new Error('USDC_MINT must be unset or real USDC on mainnet')
+    return net.usdcMint
+  }
+  if (fromEnv) return new PublicKey(fromEnv)
+  if (!fs.existsSync(mockUsdcPath())) throw new Error(`No mock USDC mint yet: set USDC_MINT or run \`pnpm core:lifecycle\` once on ${net.name}`)
   return new PublicKey(JSON.parse(fs.readFileSync(mockUsdcPath(), 'utf8')).mint)
 }
 
@@ -56,11 +62,13 @@ export async function buildCreateCampaignTx(args: {
   const { params, pricing, onChain, fields } = campaignToConfig(args.campaign, args.tier)
   const config = Keypair.generate()
   const baseMint = Keypair.generate()
+  // Configs are immutable, so fees and leftover go to the configured claimer from the first campaign.
+  const feeClaimer = platformFeeClaimer()
   const tx = await dbcClient(args.connection).partner.createConfigAndPool({
     ...params,
     config: config.publicKey,
-    feeClaimer: args.platform,
-    leftoverReceiver: args.platform,
+    feeClaimer,
+    leftoverReceiver: feeClaimer,
     quoteMint: args.usdcMint,
     payer: args.platform,
     preCreatePoolParam: {

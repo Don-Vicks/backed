@@ -3,7 +3,7 @@ import { Transaction } from '@solana/web3.js'
 import { getConnection } from '../network'
 import { loadWallets } from '../wallets'
 
-const BASE = process.env.WEB_URL ?? 'http://localhost:3100'
+const BASE = process.env.WEB_URL || 'http://localhost:3100'
 async function api<T>(p: string, body?: unknown): Promise<T> {
   const res = await fetch(BASE + p, body === undefined ? undefined : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   const data = await res.json()

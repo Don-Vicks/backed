@@ -1,4 +1,8 @@
-export const NETWORK = process.env.NEXT_PUBLIC_NETWORK ?? "devnet";
+// Both are set from the root NETWORK by next.config.ts at build time.
+export const NETWORK = process.env.NEXT_PUBLIC_NETWORK as "localnet" | "devnet" | "mainnet";
+export const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL!;
+// Test networks have free SOL and mock USDC, so the faucet and network badge show.
+export const IS_TEST_NETWORK = NETWORK !== "mainnet";
 
 export function usd(n: number, digits = 2) {
   return `$${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
@@ -12,10 +16,14 @@ export function short(address: string, chars = 4) {
   return `${address.slice(0, chars)}…${address.slice(-chars)}`;
 }
 
+// Localnet links go to the Solana Explorer, which reads the custom RPC URL from the link.
+const cluster =
+  NETWORK === "localnet" ? `?cluster=custom&customUrl=${encodeURIComponent(RPC_URL)}` : NETWORK === "devnet" ? "?cluster=devnet" : "";
+
 export function explorerTx(sig: string) {
-  return `https://solscan.io/tx/${sig}${NETWORK === "devnet" ? "?cluster=devnet" : ""}`;
+  return NETWORK === "localnet" ? `https://explorer.solana.com/tx/${sig}${cluster}` : `https://solscan.io/tx/${sig}${cluster}`;
 }
 
 export function explorerAccount(address: string) {
-  return `https://solscan.io/account/${address}${NETWORK === "devnet" ? "?cluster=devnet" : ""}`;
+  return NETWORK === "localnet" ? `https://explorer.solana.com/address/${address}${cluster}` : `https://solscan.io/account/${address}${cluster}`;
 }

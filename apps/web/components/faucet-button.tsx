@@ -6,13 +6,13 @@ import { Droplet } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
-import { NETWORK, explorerTx } from "@/lib/format";
+import { IS_TEST_NETWORK, explorerTx } from "@/lib/format";
 
-// Devnet only: 50 test USDC (+ a little SOL for fees) so anyone can try backing a campaign.
+// Devnet/localnet only: 50 test USDC (+ a little SOL for fees) so anyone can try backing a campaign.
 export function FaucetButton() {
   const { publicKey } = useWallet();
   const [busy, setBusy] = useState(false);
-  if (NETWORK !== "devnet" || !publicKey) return null;
+  if (!IS_TEST_NETWORK || !publicKey) return null;
 
   async function drip() {
     setBusy(true);
