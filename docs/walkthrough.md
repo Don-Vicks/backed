@@ -33,19 +33,25 @@ Backers choose a number of units, not dollars. Buys use DBC's `SwapMode.ExactOut
 
 Before graduation a backer can sell any number of vouchers back along the curve (quoted, with a minimum out). Selling 0.5 left backer1 with 1.5 vouchers. The page explains that the half voucher can't be redeemed on its own and offers **Top up to 2** at the curve price.
 
-## 5. The goal is reached
+## 5. The same campaign as a Blink
+
+![Blink](walkthrough/05b-blink.png)
+
+Every campaign link is also a Solana Action (`/actions.json` maps `/c/<pool>` to `/api/actions/back/<pool>`), so a Blink-enabled wallet unfurls it on X as a card with **Back 1**, **Back 2** and a units field, priced live. **See it as a Blink** on the campaign page (`/c/<pool>/blink`) draws that card with Dialect's open-source renderer and the connected wallet. Here backer2 backs one unit from it, a real transaction like any other, so 4.5 units are left. The notice is the renderer's own: the domain is not yet in Dialect's registry, which X unfurls require.
+
+## 6. The goal is reached
 
 ![Goal reached](walkthrough/05-goal-reached.png)
 
-The last backer asks for 5 units with 5.5 left. A whole-unit buy would strand the last half voucher, so the button becomes "Back the last 5.5" and the buy uses `PartialFill` to stop exactly at the goal: $35.33 / $35.33, 7 / 7. Anyone can graduate the campaign. The clicking wallet pays the migration (about 0.033 SOL), and Meteora's keeper may do it first on mainnet.
+The last backer asks for 4 units with 4.5 left. A whole-unit buy would strand the last half voucher, so the button becomes "Back the last 4.5" and the buy uses `PartialFill` to stop exactly at the goal: $35.33 / $35.33, 7 / 7. Anyone can graduate the campaign. The clicking wallet pays the migration (about 0.033 SOL), and Meteora's keeper may do it first on mainnet.
 
-## 6. Graduation opens the resale market (DAMM v2, Customizable fee)
+## 7. Graduation opens the resale market (DAMM v2, Customizable fee)
 
 ![Resale market](walkthrough/06-resale.png)
 
 The pool migrates to DAMM v2 with the maker's 5% royalty. Vouchers trade with quoted slippage. The panel shows the premium over the last pre-order price, the pool depth, the share of liquidity that is locked forever, and the **backer floor**: what selling a voucher returns today, and what the permanent floor alone would return.
 
-## 7. The maker's earnings, all read from chain
+## 8. The maker's earnings, all read from chain
 
 ![Maker earnings](walkthrough/07-maker-earnings.png)
 
@@ -59,25 +65,25 @@ The maker sees:
 
 **Claim** collects the DBC creator trading fees and every DAMM v2 position fee in one transaction.
 
-## 8. Unlocking production funds: the ship-window vesting
+## 9. Unlocking production funds: the ship-window vesting
 
 ![Unlocked](walkthrough/08-unlocked.png)
 
 After the cliff, **Unlock production funds** removes the maker's released liquidity from the resale pool (`removeLiquidity`, with minimums from `getWithdrawQuote`). In the same transaction it burns every voucher that came out, so those vouchers are no longer owed. Before the cliff the program refuses the withdrawal. On mainnet the cliff is the ship date (at least 14, 30 or 60 days for tiers A, B and C). Here it was 30 seconds.
 
-## 9. Redemption: shipping details bound to the burn
+## 10. Redemption: shipping details bound to the burn
 
 ![Redeem](walkthrough/09-redeem.png)
 
 The backer enters shipping details first. The server stores them encrypted (AES-256-GCM) against a pending order id. It then returns a burn transaction carrying an SPL Memo with that id. Only a burn with the matching memo, made after graduation, by the owner's wallet and not by the maker's unlock, confirms the order. If the page closes in between, the order is recovered on the next visit.
 
-## 10. The maker's orders
+## 11. The maker's orders
 
 ![Orders](walkthrough/10-orders.png)
 
 The maker signs a message that names the domain and expires after a few minutes. They see decrypted shipping details and can download a CSV that is safe from formula injection. **Mark shipped** deletes the shipping details and keeps the on-chain proof.
 
-## 11. The platform's side
+## 12. The platform's side
 
 ![Platform](walkthrough/11-platform.png)
 
@@ -89,7 +95,7 @@ Backed is the DBC partner on every campaign. `/platform` reads what the partner 
 
 `pnpm --filter @preorder/core platform:claim` signs the claims, or prints unsigned transactions for a multisig.
 
-## 12. Phones
+## 13. Phones
 
 ![Mobile](walkthrough/12-mobile.png)
 

@@ -118,12 +118,23 @@ test("a backer exits part of a position at the curve price", async () => {
   await shot(page, "04-exit-and-top-up");
 });
 
+test("the campaign's Blink backs a unit from the connected wallet", async () => {
+  const { page } = actors.backer2;
+  await page.goto(`/c/${pool}`);
+  await page.getByRole("link", { name: "See it as a Blink" }).click();
+  await expect(page.getByText("Back E2E Hoodie", { exact: true })).toBeVisible();
+  await expect(page.getByText(/has not yet been registered/)).toBeVisible(); // until Dialect's registry lists the domain
+  await page.getByRole("button", { name: /^Back 1 ·/ }).click();
+  await expect(page.getByText(/Backed 1 unit of E2E Hoodie/)).toBeVisible({ timeout: 120_000 });
+  await shot(page, "05b-blink");
+});
+
 test("the stepper stops at the units left, and the last buy completes the goal", async () => {
   const { page } = actors.backer3;
   await page.goto(`/c/${pool}`);
   const more = page.getByRole("button", { name: "One unit more" });
   for (let i = 0; i < 10 && !(await more.isDisabled()); i++) await more.click();
-  await expect(page.locator("#units")).toHaveValue("5"); // 5.5 left: whole units cap at 5
+  await expect(page.locator("#units")).toHaveValue("4"); // 4.5 left: whole units cap at 4
   await expect(backButton(page)).toBeVisible();
   await backButton(page).click();
   await succeeded(page, /Back/);
