@@ -1,23 +1,37 @@
 // After graduation: the DAMM v2 resale pool, and what the maker has earned.
-// Token A of the resale pool is the voucher, token B is USDC (both 6 decimals).
+// Token A of the resale pool is the voucher, token B is USDC (both 6 decimals). Every resale pool we
+// open collects its fees in USDC only (the Customizable QuoteToken mode, and the fixed 2% config of
+// older campaigns), so there are no voucher-side royalties to show or claim.
 import BN from 'bn.js'
 import { Connection, PublicKey, Transaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, getAccount } from '@solana/spl-token'
-import { CpAmm, getPriceFromSqrtPrice, getUnClaimLpFee } from '@meteora-ag/cp-amm-sdk'
-import { dbcClient, resalePoolAddress } from './chain'
+import { CpAmm, getPriceFromSqrtPrice, getUnClaimLpFee, type PoolState } from '@meteora-ag/cp-amm-sdk'
+import { dbcClient, readResaleConfig, resolveResalePool } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
+import { makerRoyaltyBps } from './royalty'
 import type { CampaignRecord } from './store'
-import { DEFAULT_SLIPPAGE_BPS, chainNow, slippageBps, toRawAmount } from './swaps'
+import { DEFAULT_SLIPPAGE_BPS, chainClock, chainNow, slippageBps, toRawAmount } from './swaps'
 import { ttlCache } from './cache'
+import { backerFloor, makerLp, type BackerFloor, type MakerLp } from './unlock'
 
 export type ResaleSide = 'buy' | 'sell' // buy = USDC → vouchers, sell = vouchers → USDC
 
 export type MakerEarnings = {
   curveFeesUnclaimedUsdc: number // maker's share of bonding-curve trading fees, not yet claimed
   curveFeesClaimedUsdc: number
-  resaleFeesUnclaimedUsdc: number // resale-pool fees earned by the maker's locked position, USDC side
-  resaleFeesUnclaimedVouchers: number // …and voucher side
+  resaleFeesUnclaimedUsdc: number // resale-pool fees earned by the maker's positions (USDC only)
   positions: number
+  liquidityShareBps: number // the maker's positions as a share of resale-pool liquidity
+  lp: MakerLp | null // the maker's resale-pool liquidity: unlockable now, still vesting, permanent
+}
+
+// The maker's royalty, all from chain: maker royalty = poolFeeBps × (1 − protocolFeePct) × maker liquidity share.
+export type ResaleRoyalty = {
+  poolFeeBps: number // base fee on every resale trade (the DBC config's migrated pool fee)
+  dynamicFee: boolean // a volatility fee is added on top when the price moves fast
+  protocolFeePct: number // Meteora's share of each trade's fee, from the resale pool
+  makerLiquidityBps: number
+  makerRoyaltyBps: number // what the maker earns per trade now, before any volatility fee
 }
 
 export type ResaleView = {
@@ -26,53 +40,84 @@ export type ResaleView = {
   vouchersInPool: number
   usdcInPool: number
   maker: MakerEarnings
+  floor: BackerFloor | null // exit value of one voucher, now and at the permanent floor
+  royalty: ResaleRoyalty | null
 }
 
 const toNum = (bn: BN | bigint, decimals: number) => Number(bn.toString()) / 10 ** decimals
 
-function resalePool(record: CampaignRecord) {
-  return resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint))
-}
-
-export async function readMakerEarnings(connection: Connection, record: CampaignRecord): Promise<MakerEarnings> {
+// `chain`: the resale pool state and chain time when the caller has already read them (readResale).
+export async function readMakerEarnings(
+  connection: Connection,
+  record: CampaignRecord,
+  chain?: { poolState: PoolState | null; now: number },
+): Promise<MakerEarnings> {
   const fees = await dbcClient(connection).state.getPoolFeeBreakdown(record.pool)
   const out: MakerEarnings = {
     curveFeesUnclaimedUsdc: toNum(fees.creator.unclaimedQuoteFee, USDC_DECIMALS),
     curveFeesClaimedUsdc: toNum(fees.creator.claimedQuoteFee, USDC_DECIMALS),
     resaleFeesUnclaimedUsdc: 0,
-    resaleFeesUnclaimedVouchers: 0,
     positions: 0,
+    liquidityShareBps: 0,
+    lp: null,
   }
   const cpAmm = new CpAmm(connection)
-  const pool = resalePool(record)
-  const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
+  const pool = await resolveResalePool(connection, record)
+  const poolState = chain ? chain.poolState : await cpAmm.fetchPoolState(pool).catch(() => null)
   if (!poolState) return out
-  const positions = await cpAmm.getUserPositionByPool(pool, new PublicKey(record.maker))
+  const [positions, now] = await Promise.all([cpAmm.getUserPositionByPool(pool, new PublicKey(record.maker)), chain?.now ?? chainNow(connection)])
   out.positions = positions.length
+  out.lp = makerLp(cpAmm, poolState, positions.map((p) => p.positionState), now)
+  let liquidity = new BN(0)
   for (const p of positions) {
-    const fee = getUnClaimLpFee(poolState, p.positionState)
-    out.resaleFeesUnclaimedVouchers += toNum(fee.feeTokenA, VOUCHER_DECIMALS)
-    out.resaleFeesUnclaimedUsdc += toNum(fee.feeTokenB, USDC_DECIMALS)
+    out.resaleFeesUnclaimedUsdc += toNum(getUnClaimLpFee(poolState, p.positionState).feeTokenB, USDC_DECIMALS)
+    const s = p.positionState
+    liquidity = liquidity.add(s.unlockedLiquidity).add(s.vestedLiquidity).add(s.permanentLockedLiquidity)
   }
+  if (!poolState.liquidity.isZero()) out.liquidityShareBps = liquidity.muln(10_000).div(poolState.liquidity).toNumber()
   return out
 }
 
+// One pool-state read and one Clock read serve the pool view, the maker's earnings and the backer floor.
 export async function readResale(connection: Connection, record: CampaignRecord): Promise<ResaleView | null> {
   const cpAmm = new CpAmm(connection)
-  const pool = resalePool(record)
+  const pool = await resolveResalePool(connection, record)
   const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
   if (!poolState) return null
-  const [vaultA, vaultB, maker] = await Promise.all([
+  const clock = chainClock(connection)
+  const [vaultA, vaultB, now, maker, config] = await Promise.all([
     getAccount(connection, poolState.tokenAVault),
     getAccount(connection, poolState.tokenBVault),
-    readMakerEarnings(connection, record),
+    clock,
+    clock.then((c) => readMakerEarnings(connection, record, { poolState, now: c.unixTime })),
+    readResaleConfig(connection, record.config).catch(() => null),
   ])
+  let floor: BackerFloor | null = null
+  try {
+    floor = backerFloor(cpAmm, poolState, new PublicKey(record.baseMint), now)
+  } catch {
+    // a quote the SDK refuses (e.g. swaps disabled): the view still loads, without the floor
+  }
   return {
     pool: pool.toBase58(),
     priceUsdc: getPriceFromSqrtPrice(poolState.sqrtPrice, VOUCHER_DECIMALS, USDC_DECIMALS).toNumber(),
     vouchersInPool: toNum(vaultA.amount, VOUCHER_DECIMALS),
     usdcInPool: toNum(vaultB.amount, USDC_DECIMALS),
     maker,
+    floor,
+    royalty: config && resaleRoyalty(config, poolState, maker.liquidityShareBps),
+  }
+}
+
+// Pure: the royalty terms from the DBC config and the resale pool's own fee state.
+export function resaleRoyalty(config: { poolFeeBps: number; dynamicFee: boolean }, poolState: PoolState, makerLiquidityBps: number): ResaleRoyalty {
+  const protocolFeePct = poolState.poolFees.protocolFeePercent
+  return {
+    poolFeeBps: config.poolFeeBps,
+    dynamicFee: config.dynamicFee,
+    protocolFeePct,
+    makerLiquidityBps,
+    makerRoyaltyBps: makerRoyaltyBps(config.poolFeeBps, protocolFeePct, makerLiquidityBps),
   }
 }
 
@@ -91,7 +136,7 @@ export function readResaleCached(connection: Connection, record: CampaignRecord)
 
 async function quoteRaw(connection: Connection, record: CampaignRecord, side: ResaleSide, amount: number, bps: number) {
   const cpAmm = new CpAmm(connection)
-  const pool = resalePool(record)
+  const pool = await resolveResalePool(connection, record)
   const [poolState, slot, now] = await Promise.all([cpAmm.fetchPoolState(pool), connection.getSlot(), chainNow(connection)])
   const inputMint = side === 'buy' ? poolState.tokenBMint : poolState.tokenAMint
   const inDecimals = side === 'buy' ? USDC_DECIMALS : VOUCHER_DECIMALS
@@ -158,7 +203,7 @@ export async function buildMakerClaimTx(connection: Connection, record: Campaign
     tx.add(...claim.instructions)
   }
   const cpAmm = new CpAmm(connection)
-  const pool = resalePool(record)
+  const pool = await resolveResalePool(connection, record)
   const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
   if (poolState) {
     for (const p of await cpAmm.getUserPositionByPool(pool, maker)) {

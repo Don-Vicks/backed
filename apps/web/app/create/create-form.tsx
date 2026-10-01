@@ -17,6 +17,8 @@ import {
   NAME_MAX_BYTES,
   NORMAL_FEE_BPS,
 } from "@preorder/core/src/campaign-input";
+import { RESALE_ROYALTY_BPS } from "@preorder/core/src/royalty";
+import { LP_SPLIT, SHIP_DAYS, firstReleaseSec, formatAfterGoal, makerPayoutPct, unitsOwedAfterUnlock, vestingEndSec, vestingSchedule } from "@preorder/core/src/vesting";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,7 +29,7 @@ import { useDebounced } from "@/lib/use-debounced";
 import { confirmLaunch, setPendingLaunch, usePendingLaunch, type PendingLaunch } from "@/lib/pending-launch";
 import { FinishListing } from "./finish-listing";
 import { units, usd } from "@/lib/format";
-import type { Campaign, PreviewResponse } from "@/lib/types";
+import type { Campaign, PreviewResponse, PricingSummary, VestingSchedule } from "@/lib/types";
 
 type TierInput = { units: string; startPrice: string };
 
@@ -56,6 +58,9 @@ export function CreateForm() {
   const [finalPrice, setFinalPrice] = useState("38");
   const [makerShare, setMakerShare] = useState(10);
   const [dropWindow, setDropWindow] = useState<number>(DEFAULT_DROP_BOT_WINDOW_SEC);
+  const [shipDays, setShipDays] = useState(String(SHIP_DAYS.default));
+  const [royaltyPct, setRoyaltyPct] = useState(String(RESALE_ROYALTY_BPS.default / 100));
+  const [unitCost, setUnitCost] = useState("");
   const [launching, setLaunching] = useState(false);
   // A split create whose config landed but whose pool did not: launching again finishes it on that config.
   const [resumePool, setResumePool] = useState<string | null>(null);
@@ -78,8 +83,10 @@ export function CreateForm() {
       },
       dropBot: { startFeeBps: DROP_BOT_START_FEE_BPS, windowSec: dropWindow },
       normalFeeBps: NORMAL_FEE_BPS,
+      shipDays: num(shipDays),
+      resaleRoyaltyBps: Math.round(num(royaltyPct) * 100),
     }),
-    [name, symbol, description, image, tiers, finalPrice, effectiveShare, dropWindow],
+    [name, symbol, description, image, tiers, finalPrice, effectiveShare, dropWindow, shipDays, royaltyPct],
   );
 
   // Instant numbers, computed in the browser.
@@ -103,12 +110,25 @@ export function CreateForm() {
   const cap = preview?.trust?.maxMakerSharePct ?? 10;
   if (cap !== previewCap) setPreviewCap(cap); // adjust state during render (React-recommended pattern)
 
+  // The ship-window schedule: the server's (it applies the tier and any localnet override), else a local estimate.
+  const vesting = useMemo(() => {
+    if (preview?.vesting) return preview.vesting;
+    try {
+      return vestingSchedule(preview?.trust?.tier ?? "C", num(shipDays));
+    } catch {
+      return null;
+    }
+  }, [preview, shipDays]);
+
   const blocking = pricing.error ?? preview?.error ?? (!name.trim() ? "Name the product" : null);
 
   // A sent launch that is not listed yet: finish it (once automatically on load) rather than launch twice.
   const pendingLaunch = usePendingLaunch();
   const [listing, setListing] = useState(false);
-  async function finishListing(launch: PendingLaunch) {
+  // `publish`: right after a launch from this page, also offer the on-chain listing (DBC pool metadata),
+  // a second, optional transaction. Skipping it or a failure doesn't stop the launch; the maker can
+  // publish it later from the campaign page.
+  async function finishListing(launch: PendingLaunch, { publish = false } = {}) {
     setListing(true);
     try {
       if ((await confirmLaunch(launch)) === "gone") {
@@ -117,6 +137,11 @@ export function CreateForm() {
         return;
       }
       setPendingLaunch(null);
+      if (publish && publicKey) {
+        await api<BuiltTx>(`/api/campaigns/${launch.pool}/listing`, { wallet: publicKey.toBase58() })
+          .then((listing) => signAndSendAll([listing], "Publish on-chain listing"))
+          .catch(() => undefined);
+      }
       router.push(`/c/${launch.pool}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Listing failed");
@@ -178,7 +203,7 @@ export function CreateForm() {
       setResumePool(null);
       setPendingLaunch(pending);
       setLaunching(false);
-      await finishListing(pending);
+      await finishListing(pending, { publish: true });
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) setResumePool(null); // nothing left to resume: start over
       if (!(e instanceof ReportedError)) toast.error(e instanceof Error ? e.message : "Launch failed");
@@ -273,6 +298,37 @@ export function CreateForm() {
             <input id="share" type="range" min={0} max={cap} step={1} value={effectiveShare} onChange={(e) => setMakerShare(Number(e.target.value))} className="accent-primary" />
             <p className="text-xs text-muted-foreground">Paid to you when the goal is reached. The rest seeds the resale market. Your trust tier sets the cap.</p>
           </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="ship">Ships within (days of the goal)</Label>
+              <Input id="ship" type="number" inputMode="numeric" min={SHIP_DAYS.min} max={SHIP_DAYS.max} step={1} value={shipDays} className="font-mono" onChange={(e) => setShipDays(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="unit-cost">Cost to make one (USDC) <span className="text-muted-foreground">(optional)</span></Label>
+              <Input id="unit-cost" type="number" inputMode="decimal" min={0} step={0.01} placeholder="e.g. 12" value={unitCost} className="font-mono" onChange={(e) => setUnitCost(e.target.value)} />
+            </div>
+            <p className="text-xs text-muted-foreground sm:col-span-2">
+              The rest of your money unlocks from the resale pool after your ship date, faster for higher trust tiers. Only you see the unit cost.
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="royalty">Resale royalty (%)</Label>
+            <Input
+              id="royalty"
+              type="number"
+              inputMode="decimal"
+              min={RESALE_ROYALTY_BPS.min / 100}
+              max={RESALE_ROYALTY_BPS.max / 100}
+              step={0.25}
+              value={royaltyPct}
+              className="w-32 font-mono"
+              onChange={(e) => setRoyaltyPct(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              The fee on every resale trade after the goal, paid in USDC ({RESALE_ROYALTY_BPS.min / 100}–{RESALE_ROYALTY_BPS.max / 100}%). After Meteora&rsquo;s protocol share, your
+              positions earn {100 - LP_SPLIT.partnerPermanentPct}% of it, and {Math.round((LP_SPLIT.creatorPermanentPct * 100) / (LP_SPLIT.creatorPermanentPct + LP_SPLIT.partnerPermanentPct))}% once your funds are unlocked.
+            </p>
+          </div>
           <div className="grid gap-2" role="radiogroup" aria-labelledby="drop-label">
             <span id="drop-label" className="text-sm font-medium">Drop-bot window</span>
             <div className="flex gap-2">
@@ -325,6 +381,7 @@ export function CreateForm() {
             <p className="mt-3 text-sm text-destructive" role="alert">{pricing.error}</p>
           )}
         </div>
+        {pricing.ok && vesting && <PayoutCard pricing={pricing.ok} share={effectiveShare} vesting={vesting} unitCost={num(unitCost)} />}
         <div className="rounded-xl border border-border bg-card p-5">
           <h2 className="font-heading text-2xl">On-chain config</h2>
           <p className="text-sm text-muted-foreground">Every input becomes a Meteora DBC setting. It can’t be changed after launch.</p>
@@ -335,7 +392,7 @@ export function CreateForm() {
                   <span className="text-muted-foreground">{f.input}</span>
                   <span>
                     <span className="block">{f.value}</span>
-                    <code className="font-mono text-xs text-primary">{f.dbcField}</code>
+                    <code className="font-mono text-xs [overflow-wrap:anywhere] text-primary">{f.dbcField}</code>
                   </span>
                 </li>
               ))}
@@ -349,6 +406,39 @@ export function CreateForm() {
           )}
         </div>
       </aside>
+    </div>
+  );
+}
+
+// What the maker is paid and when, and what they may owe, assuming no resale trading.
+function PayoutCard({ pricing, share, vesting, unitCost }: { pricing: PricingSummary; share: number; vesting: VestingSchedule; unitCost: number }) {
+  const pct = makerPayoutPct(share, vesting);
+  const maxUsdc = (pricing.goalUsdc * pct.max) / 100;
+  const owed = unitsOwedAfterUnlock(pricing.preorderUnits, pricing.resaleUnits);
+  const cover = (usdc: number, units: number) => `${Math.round((usdc / (units * unitCost)) * 100)}%`;
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <h2 className="font-heading text-2xl">Your payout</h2>
+      <p className="mt-2 text-sm">
+        You receive <span className="font-mono">{pct.atGoal}%</span> at goal · <span className="font-mono">{Math.round(pct.atFirstRelease)}%</span> from{" "}
+        {formatAfterGoal(firstReleaseSec(vesting))} · up to <span className="font-mono">{Math.round(pct.max)}%</span> by {formatAfterGoal(vestingEndSec(vesting))} ·{" "}
+        <span className="font-mono">{pct.permanentFloorPct}%</span> permanent resale floor
+      </p>
+      <dl className="mt-4 grid grid-cols-2 gap-4">
+        <Stat label="At goal" value={usd(pricing.makerBudgetUsdc)} />
+        <Stat label={`By ${formatAfterGoal(vestingEndSec(vesting))}`} value={usd(maxUsdc)} />
+        <Stat label="Units owed at goal (max)" value={units(pricing.totalUnits)} />
+        <Stat label="Owed once unlocked" value={units(owed)} />
+      </dl>
+      {unitCost > 0 && (
+        <p className="mt-3 text-sm text-muted-foreground">
+          Covers <span className="font-mono text-foreground">{cover(pricing.makerBudgetUsdc, pricing.preorderUnits)}</span> of the pre-orders’ cost at goal and{" "}
+          <span className="font-mono text-foreground">{cover(maxUsdc, owed)}</span> of what you owe once fully unlocked.
+        </p>
+      )}
+      <p className="mt-3 text-xs text-muted-foreground">
+        Unlocking withdraws your share of the resale pool and burns the vouchers in it, so they are no longer owed. Resale trading changes the amounts.
+      </p>
     </div>
   );
 }

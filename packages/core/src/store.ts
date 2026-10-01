@@ -1,5 +1,6 @@
 // Campaign store on the durable SQLite database (db.ts). Same synchronous API as the JSON store it replaced.
 import { db, transaction } from './db'
+import type { MigrationFeeOption } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import type { Campaign, ConfigField } from './engine'
 import type { TrustResult } from './trust'
 
@@ -16,6 +17,9 @@ export type CampaignRecord = {
   goalUsdc: number
   totalUnits: number
   fields: ConfigField[]
+  // The DAMM v2 config the pool migrates into (resale pool address). The on-chain config is the
+  // source of truth; records older than this field are FixedBps200.
+  migrationFeeOption?: MigrationFeeOption
 }
 
 const parse = <T>(row: unknown) => JSON.parse((row as { data: string }).data) as T

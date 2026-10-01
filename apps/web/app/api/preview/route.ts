@@ -26,10 +26,10 @@ export async function POST(req: Request) {
     let out: PreviewResponse;
     try {
       // The same allowlist as the create route, so the form shows the error a launch would get.
-      const { pricing, onChain, fields } = campaignToConfig(campaignFromInput(body.campaign, ""), tier);
-      out = { trust, trustUnavailable, pricing, onChain, fields, error: null };
+      const { pricing, onChain, vesting, fields } = campaignToConfig(campaignFromInput(body.campaign, ""), tier);
+      out = { trust, trustUnavailable, pricing, onChain, vesting, fields, error: null };
     } catch (e) {
-      out = { trust, trustUnavailable, pricing: null, onChain: null, fields: [], error: e instanceof Error ? e.message : String(e) };
+      out = { trust, trustUnavailable, pricing: null, onChain: null, vesting: null, fields: [], error: e instanceof Error ? e.message : String(e) };
     }
     return Response.json({ ...out, caps: MAX_MAKER_SHARE });
   } catch (e) {

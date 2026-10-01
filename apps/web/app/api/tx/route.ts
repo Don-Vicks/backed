@@ -1,16 +1,20 @@
 import BN from "bn.js";
-import { PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import {
   buildBuyTx,
+  buildBuyUnitsTx,
   buildMakerClaimTx,
+  buildMakerUnlockTx,
   buildMakerWithdrawTx,
   buildResaleSwapTx,
   buildSellBackTx,
+  buildTopUpTx,
   DEFAULT_SLIPPAGE_BPS,
   formatRawAmount,
   getCampaign,
   HttpError,
+  onChainCreator,
   resolveReferral,
   schemas,
   summarizeBuyQuote,
@@ -20,6 +24,7 @@ import {
   type BuyQuote,
   type CampaignStatus,
   type SellQuote,
+  type UnitsQuote,
 } from "@preorder/core";
 import { BadRequest, connection, errorResponse, finalizeForWallet, rateLimit, readJson, requestLog, requireStatus, serialize } from "@/lib/server";
 
@@ -27,11 +32,18 @@ import { BadRequest, connection, errorResponse, finalizeForWallet, rateLimit, re
 // anyway, but only after the wallet prompt and a failed transaction.
 const NEEDS: Partial<Record<string, [CampaignStatus, string]>> = {
   buy: ["funding", "This campaign has reached its goal"],
+  buyUnits: ["funding", "This campaign has reached its goal"],
   sell: ["funding", "Exits close once the goal is reached"],
   withdraw: ["reselling", "The production budget unlocks when the campaign graduates"],
+  unlock: ["reselling", "Production funds unlock after graduation, on the ship-window schedule"],
   resaleBuy: ["reselling", "The resale market opens after graduation"],
   resaleSell: ["reselling", "The resale market opens after graduation"],
 };
+
+// The maker is whoever the DBC pool records as creator on chain, not what our store says.
+async function isMaker(conn: Connection, pool: PublicKey, wallet: PublicKey) {
+  return (await onChainCreator(conn, pool)).equals(wallet);
+}
 
 // Unsigned transactions for the connected wallet to sign and send.
 export async function POST(req: Request) {
@@ -51,8 +63,16 @@ export async function POST(req: Request) {
     const bps = body.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
 
     let tx;
-    let quote: BuyQuote | SellQuote | undefined; // what the curve swap was built from, for the UI
-    if (body.kind === "buy") {
+    let quote: BuyQuote | SellQuote | UnitsQuote | undefined; // what the curve swap was built from, for the UI
+    if (body.kind === "buyUnits") {
+      // A bad, self or unusable referral is dropped silently: it must never block the buy.
+      const referral = await resolveReferral(conn, new PublicKey(record.usdcMint), body.ref, wallet);
+      const opts = { referral, slippageBps: bps };
+      if (!body.topUp && body.units === undefined) throw new BadRequest("Pick a whole number of units");
+      const built = body.topUp ? await buildTopUpTx(conn, wallet, pool, baseMint, opts) : await buildBuyUnitsTx(conn, wallet, pool, body.units!, opts);
+      tx = built.tx;
+      quote = built.quote;
+    } else if (body.kind === "buy") {
       if (!body.usdc) throw new BadRequest("Enter an amount");
       // A bad, self or unusable referral is dropped silently: it must never block the buy.
       const referral = await resolveReferral(conn, new PublicKey(record.usdcMint), body.ref, wallet);
@@ -75,12 +95,17 @@ export async function POST(req: Request) {
       // A burn with no shipping details bound to it could never be claimed; redeeming starts there.
       throw new BadRequest("Redeem through the shipping form (POST /api/redemptions/prepare)");
     } else if (body.kind === "withdraw") {
-      if (wallet.toBase58() !== record.maker) throw new BadRequest("Only the maker can withdraw the budget");
+      if (!(await isMaker(conn, pool, wallet))) throw new BadRequest("Only the maker can withdraw the budget");
       tx = await buildMakerWithdrawTx(conn, wallet, pool);
     } else if (body.kind === "claim") {
-      if (wallet.toBase58() !== record.maker) throw new BadRequest("Only the maker can claim maker fees");
-      tx = await buildMakerClaimTx(conn, record);
+      if (!(await isMaker(conn, pool, wallet))) throw new BadRequest("Only the maker can claim maker fees");
+      tx = await buildMakerClaimTx(conn, { ...record, maker: wallet.toBase58() });
       if (!tx) throw new BadRequest("Nothing to claim yet");
+    } else if (body.kind === "unlock") {
+      if (!(await isMaker(conn, pool, wallet))) throw new BadRequest("Only the maker can unlock production funds");
+      const built = await buildMakerUnlockTx(conn, record, wallet);
+      if (!built) throw new BadRequest("Nothing to unlock yet");
+      tx = built.tx;
     } else if (body.kind === "resaleBuy") {
       if (!body.usdc) throw new BadRequest("Enter an amount");
       tx = await buildResaleSwapTx(conn, record, wallet, "buy", body.usdc, bps);

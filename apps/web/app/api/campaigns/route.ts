@@ -103,6 +103,7 @@ export async function POST(req: Request) {
       goalUsdc: built.onChain.goalUsdc,
       totalUnits: built.onChain.totalUnits,
       fields: built.fields,
+      migrationFeeOption: built.onChain.migrationFeeOption,
     });
     // In order: the wallet signs them all at once and the client sends each after the previous confirms.
     return Response.json({ txs: steps.map((step) => serialize(step.tx)), pool: built.pool.toBase58() });

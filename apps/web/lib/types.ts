@@ -1,13 +1,19 @@
 // Shapes shared by the API routes and the client (no server imports here).
-import type { BuyQuote, Campaign, CampaignLive, CampaignRecord, ConfigField, PricingSummary, SellQuote, TrustResult } from "@preorder/core";
+import type { BuyQuote, Campaign, CampaignLive, CampaignRecord, ConfigField, Listing, LpTerms, PlatformEarnings, PricingSummary, ResaleConfig, SellQuote, TrustResult, UnitsQuote, VestingSchedule } from "@preorder/core";
 
-export type CampaignWithLive = CampaignRecord & { live: CampaignLive | null };
+// terms, resaleFee: the resale-liquidity split and the resale pool fee, read from the on-chain config (campaign page only).
+// listing: the DBC pool metadata the maker published (null: none yet, undefined: not read); official
+// when it points at this campaign's page.
+export type CampaignWithLive = CampaignRecord & { live: CampaignLive | null; terms?: LpTerms | null; resaleFee?: ResaleConfig | null; listing?: (Listing & { address: string; official: boolean }) | null };
+// /api/platform: the partner's earnings across campaigns, the claimer new campaigns get, and its listing.
+export type PlatformResponse = PlatformEarnings & { feeClaimer: string | null; treasury: string | null; listing: Listing | null };
 export type PreviewResponse = {
   trust: TrustResult | null;
   trustUnavailable: boolean; // the maker's trust lookup failed; trust is null and nothing was cached
   pricing: PricingSummary | null;
   onChain: { goalUsdc: number; preorderUnits: number; resaleUnits: number; totalUnits: number } | null;
+  vesting: VestingSchedule | null;
   fields: ConfigField[];
   error: string | null;
 };
-export type { BuyQuote, Campaign, CampaignLive, CampaignRecord, ConfigField, PricingSummary, SellQuote, TrustResult };
+export type { BuyQuote, Campaign, CampaignLive, CampaignRecord, ConfigField, Listing, LpTerms, PlatformEarnings, PricingSummary, ResaleConfig, SellQuote, TrustResult, UnitsQuote, VestingSchedule };

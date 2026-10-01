@@ -89,6 +89,9 @@ const slippage = z
   .optional()
 
 const side = z.enum(['buy', 'sell'], { error: 'side must be buy or sell' })
+// Whole units are checked by checkUnits (voucher-units.ts), which says what is wrong with the number.
+const units = z.number({ error: 'Pick a whole number of units' }).optional()
+const topUp = z.boolean({ error: 'topUp must be true or false' }).optional()
 const text = (what: string, max: number) => z.string({ error: `${what} must be text` }).trim().max(max, { error: `${what} is too long (at most ${max} characters)` })
 const REQUIRED_SHIPPING = 'Name, address and country are required'
 const shippingField = (what: string, max: number) =>
@@ -119,14 +122,19 @@ export const schemas = {
   confirmCampaign: z.object({ pool: addressSchema('pool'), signature: signatureSchema.optional() }),
   resumeCampaign: z.object({ maker: addressSchema('maker') }),
   migrate: z.object({ wallet: addressSchema('wallet').optional() }),
+  listing: z.object({ wallet: addressSchema('wallet') }),
   quote: z.object({ pool: addressSchema('pool'), side: side.default('buy'), usdc: amountSchema.optional(), vouchers: amountSchema.optional(), slippageBps: slippage }),
   resaleQuote: z.object({ pool: addressSchema('pool'), side, amount: amountSchema, slippageBps: slippage }),
+  // { pool, units }, or { pool, wallet, topUp: true } for the rest of the wallet's next whole voucher.
+  quoteUnits: z.object({ pool: addressSchema('pool'), units, wallet: addressSchema('wallet').optional(), topUp, slippageBps: slippage }),
   tx: z.object({
-    kind: z.enum(['buy', 'sell', 'redeem', 'withdraw', 'claim', 'resaleBuy', 'resaleSell'], { error: 'Unknown transaction kind' }),
+    kind: z.enum(['buy', 'buyUnits', 'sell', 'redeem', 'withdraw', 'claim', 'unlock', 'resaleBuy', 'resaleSell'], { error: 'Unknown transaction kind' }),
     pool: addressSchema('pool'),
     wallet: addressSchema('wallet'),
     usdc: amountSchema.optional(),
     vouchers: amountSchema.optional(), // sell / resaleSell; sell defaults to the whole balance
+    units, // buyUnits: whole pre-order units
+    topUp, // buyUnits: instead of units, the rest of the next whole voucher
     ref: z.string().max(64).optional().catch(undefined), // a bad referral is dropped, never an error
     slippageBps: slippage,
   }),

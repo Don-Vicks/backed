@@ -40,6 +40,9 @@ async function main() {
   for (const built of created.txs) sig = await signSend(built, w.maker, 'maker signs, pays + sends create')
   await api('/api/campaigns/confirm', { pool: created.pool, signature: sig })
   console.log(`✓ confirmed, pool ${created.pool}`)
+  // The optional second transaction after create: the campaign's on-chain listing (DBC pool metadata).
+  const listing = await api<{ tx: string; lastValidBlockHeight: number }>(`/api/campaigns/${created.pool}/listing`, { wallet: w.maker.publicKey.toBase58() })
+  await signSend(listing, w.maker, 'maker publishes the on-chain listing')
 
   // Every backer below spends test USDC; fresh localnet wallets start with none.
   for (const b of [w.backer1, w.backer2, w.backer3]) await api('/api/faucet', { wallet: b.publicKey.toBase58() })
@@ -53,6 +56,11 @@ async function main() {
   await signSend(buy, w.backer1, 'backer1 backs 3 USDC (with referral)')
   const sell = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'sell', pool: created.pool, wallet: w.backer1.publicKey.toBase58() })
   await signSend(sell, w.backer1, 'backer1 exits at curve price')
+  // Whole units: exactly one voucher (ExactOut), for at most the quoted maximum.
+  const uq = await api<any>('/api/quote/units', { pool: created.pool, units: 1 })
+  console.log(`units quote 1 → $${uq.usdc.toFixed(4)} (at most $${uq.maxUsdc.toFixed(4)}), ${uq.maxUnits} units left`)
+  const unitsBuy = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'buyUnits', pool: created.pool, wallet: w.backer1.publicKey.toBase58(), units: 1, ref: w.backer2.publicKey.toBase58() })
+  await signSend(unitsBuy, w.backer1, 'backer1 backs 1 whole unit (with referral)')
 
   // Fund to the goal, graduate via API, maker withdraws, backer redeems.
   let live = (await api<any>(`/api/campaigns/${created.pool}`)).campaign.live
@@ -90,8 +98,15 @@ async function finish(pool: string) {
   let live: any
   const wd = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'withdraw', pool: created.pool, wallet: w.maker.publicKey.toBase58() })
   await signSend(wd, w.maker, 'maker withdraws budget')
-  live = (await api<any>(`/api/campaigns/${created.pool}`)).campaign.live
-  console.log(`status ${live.status}, resale pool ${live.resalePool}`)
+  const page = (await api<any>(`/api/campaigns/${created.pool}`)).campaign
+  live = page.live
+  console.log(`status ${live.status}, resale pool ${live.resalePool}, listed on-chain: ${page.listing?.official ?? false}`)
+  // Production funds unlock on the ship-window schedule: before the cliff the server says so.
+  const unlock = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'unlock', pool: created.pool, wallet: w.maker.publicKey.toBase58() }).catch((e: Error) => e)
+  if (unlock instanceof Error) console.log(`unlock: ${unlock.message}`)
+  else await signSend(unlock, w.maker, 'maker unlocks production funds')
+  const platform = await api<any>('/api/platform')
+  console.log(`✓ platform earnings read for ${platform.campaigns?.length ?? 0} campaigns`)
   const shipping = { name: 'Smoke Tester', email: '', address: '1 Test St', country: 'NL' }
   for (const b of backers) {
     const r = await api<{ id: string; tx: string; lastValidBlockHeight: number }>('/api/redemptions/prepare', { pool: created.pool, wallet: b.publicKey.toBase58(), shipping }).catch(() => null)

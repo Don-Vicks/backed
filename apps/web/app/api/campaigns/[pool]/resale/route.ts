@@ -1,8 +1,8 @@
 import { getCampaign, readResaleCached } from "@preorder/core";
 import { connection, errorResponse, requestLog } from "@/lib/server";
 
-// Resale pool state (after graduation) and the maker's earnings (curve fees exist before graduation too).
-// Cached per pool for a few seconds, so every viewer polling the panels costs one read.
+// Resale pool state with the backer floor (after graduation) and the maker's earnings (curve fees exist
+// before graduation too). Cached per pool for a few seconds, so every viewer polling the panels costs one read.
 export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[pool]/resale">) {
   const log = requestLog("GET /api/campaigns/[pool]/resale");
   try {

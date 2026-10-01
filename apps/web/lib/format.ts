@@ -12,6 +12,11 @@ export function units(n: number) {
   return n.toLocaleString("en-US", { maximumFractionDigits: n < 10 ? 2 : 1 });
 }
 
+// Vouchers a buy delivers, rounded down so a count is never overstated: 2.000018 reads 2, 5.999986 reads 5.99.
+export function unitsDown(n: number) {
+  return (Math.floor(n * 100 + 1e-9) / 100).toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
 export function short(address: string, chars = 4) {
   return `${address.slice(0, chars)}…${address.slice(-chars)}`;
 }

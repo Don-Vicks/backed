@@ -5,9 +5,11 @@ import path from 'path'
 import BN from 'bn.js'
 import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js'
 import { createBurnInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token'
+import { CpAmm } from '@meteora-ag/cp-amm-sdk'
 import {
   DAMM_V2_MIGRATION_FEE_ADDRESS,
   DynamicBondingCurveClient,
+  MigrationFeeOption,
   SwapMode,
   deriveDammV2PoolAddress,
   deriveDbcPoolAddress,
@@ -17,7 +19,9 @@ import {
 import { getNetwork } from './network'
 import { SwapError, chainNow, slippageBps, toRawAmount, toSwapError } from './swaps'
 import { keysDir, platformFeeClaimer } from './wallets'
-import { MIGRATION_FEE_OPTION, USDC_DECIMALS, VOUCHER_DECIMALS, campaignToConfig, type Campaign } from './engine'
+import { LEGACY_MIGRATION_FEE_OPTION, USDC_DECIMALS, VOUCHER_DECIMALS, campaignToConfig, type Campaign } from './engine'
+import { resalePoolFeeBps } from './royalty'
+import type { CampaignRecord } from './store'
 import type { TrustTierName } from './trust'
 
 // Both throw a 400 SwapError for non-finite or oversized amounts rather than a bn.js assertion.
@@ -49,8 +53,58 @@ export function dbcClient(connection: Connection) {
   return new DynamicBondingCurveClient(connection, 'confirmed')
 }
 
-export function resalePoolAddress(baseMint: PublicKey, usdcMint: PublicKey) {
-  return deriveDammV2PoolAddress(DAMM_V2_MIGRATION_FEE_ADDRESS[MIGRATION_FEE_OPTION], baseMint, usdcMint)
+// What a DBC config says about the resale pool it graduates into. The migrationFeeOption picks the
+// DAMM v2 config the pool migrates into, and with it the pool's address. Configs are immutable, so cached.
+export type ResaleConfig = { migrationFeeOption: MigrationFeeOption; poolFeeBps: number; dynamicFee: boolean }
+
+const resaleConfigCache = new Map<string, ResaleConfig>()
+
+export async function readResaleConfig(connection: Connection, config: PublicKey | string): Promise<ResaleConfig> {
+  const key = config.toString()
+  const hit = resaleConfigCache.get(key)
+  if (hit) return hit
+  const c = await dbcClient(connection).state.getPoolConfig(config)
+  if (!c) throw new Error(`config ${key} not found`)
+  const migrationFeeOption = c.migrationFeeOption as MigrationFeeOption
+  // Customizable: the DBC config says whether the volatility fee is on. A fixed option: the DAMM v2
+  // config it migrates into does; if that read fails, claim no volatility fee and don't cache.
+  const dynamicFee =
+    migrationFeeOption === MigrationFeeOption.Customizable
+      ? c.migratedDynamicFee === 1
+      : await fixedOptionDynamicFee(connection, migrationFeeOption).catch(() => null)
+  const out: ResaleConfig = {
+    migrationFeeOption,
+    poolFeeBps: resalePoolFeeBps(migrationFeeOption, c.migratedPoolFeeBps),
+    dynamicFee: dynamicFee ?? false,
+  }
+  if (dynamicFee !== null) resaleConfigCache.set(key, out)
+  return out
+}
+
+async function fixedOptionDynamicFee(connection: Connection, migrationFeeOption: MigrationFeeOption): Promise<boolean> {
+  const damm = await new CpAmm(connection).fetchConfigState(dammV2MigrationConfig(migrationFeeOption))
+  return damm.poolFees.dynamicFee.initialized !== 0
+}
+
+export function dammV2MigrationConfig(migrationFeeOption: MigrationFeeOption): PublicKey {
+  const config = DAMM_V2_MIGRATION_FEE_ADDRESS[migrationFeeOption]
+  if (!config) throw new Error(`no DAMM v2 migration config for fee option ${migrationFeeOption}`)
+  return config
+}
+
+export function resalePoolAddress(baseMint: PublicKey, usdcMint: PublicKey, migrationFeeOption: MigrationFeeOption) {
+  return deriveDammV2PoolAddress(dammV2MigrationConfig(migrationFeeOption), baseMint, usdcMint)
+}
+
+// A campaign's resale pool, from its on-chain config. The option stored on the record (and, for
+// records older than that field, the fixed 2% every earlier campaign used) only stands in when the
+// config can't be read.
+export async function resolveResalePool(connection: Connection, record: Pick<CampaignRecord, 'config' | 'baseMint' | 'usdcMint' | 'migrationFeeOption'>) {
+  const option = await readResaleConfig(connection, record.config).then(
+    (c) => c.migrationFeeOption,
+    () => record.migrationFeeOption ?? LEGACY_MIGRATION_FEE_OPTION,
+  )
+  return resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint), option)
 }
 
 // Creates a fresh config AND the pool on it. The maker pays and signs; the platform key never signs
@@ -261,10 +315,13 @@ export async function buildSellBackTx(connection: Connection, seller: PublicKey,
 }
 
 export async function buildMigrateTx(connection: Connection, payer: PublicKey, pool: PublicKey) {
+  const virtualPool = await dbcClient(connection).state.getPool(pool)
+  if (!virtualPool) throw new Error(`pool ${pool.toBase58()} not found`)
+  const { migrationFeeOption } = await readResaleConfig(connection, virtualPool.poolState.config)
   const { transaction, firstPositionNftKeypair, secondPositionNftKeypair } = await dbcClient(connection).migration.migrateToDammV2({
     payer,
     pool,
-    dammConfig: DAMM_V2_MIGRATION_FEE_ADDRESS[MIGRATION_FEE_OPTION],
+    dammConfig: dammV2MigrationConfig(migrationFeeOption),
   })
   return { tx: transaction, extraSigners: [firstPositionNftKeypair, secondPositionNftKeypair] }
 }

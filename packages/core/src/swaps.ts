@@ -5,22 +5,14 @@ import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
 import { AccountLayout, AccountState, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import type { SwapQuote2Result } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
+import { SwapError } from './errors'
 
 // One slippage setting for every swap the app builds. Requests may pick 10–500 bps (0.1–5%).
 export const DEFAULT_SLIPPAGE_BPS = 100
 export const MIN_SLIPPAGE_BPS = 10
 export const MAX_SLIPPAGE_BPS = 500
 
-// A swap the request or the curve cannot take. Routes answer with `status`:
-// 400 for bad input, 404 for an unknown pool, 409 when the pool's state rules it out (goal reached).
-export class SwapError extends Error {
-  constructor(
-    message: string,
-    readonly status: 400 | 404 | 409,
-  ) {
-    super(message)
-  }
-}
+export { SwapError } from './errors' // defined there so pure modules (voucher-units.ts) can throw it
 
 export function slippageBps(value: unknown): number {
   if (value === undefined || value === null || value === '') return DEFAULT_SLIPPAGE_BPS
@@ -47,6 +39,16 @@ export async function chainNow(connection: Connection): Promise<number> {
   // Layout: slot u64, epoch_start_timestamp i64, epoch u64, leader_schedule_epoch u64, unix_timestamp i64
   if (!info || info.data.length < 40) return Math.floor(Date.now() / 1000)
   return Number(info.data.readBigInt64LE(32))
+}
+
+export type ChainClock = { slot: number; unixTime: number }
+
+// Slot and chain time from the Clock sysvar in one read, for quotes that need both (DAMM v2 vesting
+// and fee schedules). Unlike chainNow it never falls back to the wall clock: it throws.
+export async function chainClock(connection: Connection): Promise<ChainClock> {
+  const info = await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY)
+  if (!info || info.data.length < 40) throw new Error('Clock sysvar not readable')
+  return { slot: Number(info.data.readBigUInt64LE(0)), unixTime: Number(info.data.readBigInt64LE(32)) }
 }
 
 // A `?ref=<wallet>` becomes that wallet's USDC account, or null when using it would break or game

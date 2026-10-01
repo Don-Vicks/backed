@@ -3,6 +3,8 @@
 // unchecked. Pure (no SDK), so the create form shares the same limits.
 import { MAX_TIERS, priceTiers, validatePlan, type TierPlan } from './pricing'
 import type { Campaign } from './engine'
+import { validateResaleRoyaltyBps } from './royalty'
+import { validateShipDays } from './vesting'
 
 // Launch (drop-bot) fee: the same for every campaign. It starts at 15% and falls to 1% over a short
 // window the maker picks; the 1% stays for the rest of the curve.
@@ -99,6 +101,19 @@ export function campaignFromInput(input: unknown, uri: string): Campaign {
     normalFeeBps: (input.normalFeeBps ?? NORMAL_FEE_BPS) as number,
   }
   checkLaunchFee(requested)
+
+  // Ship date and resale royalty: left out means the engine's defaults; anything sent must be in range.
+  const shipDays = input.shipDays ?? undefined
+  if (shipDays !== undefined) {
+    if (typeof shipDays !== 'number') throw new Error('ship date must be a number')
+    validateShipDays(shipDays)
+  }
+  const resaleRoyaltyBps = input.resaleRoyaltyBps ?? undefined
+  if (resaleRoyaltyBps !== undefined) {
+    if (typeof resaleRoyaltyBps !== 'number') throw new Error('resale royalty must be a number')
+    validateResaleRoyaltyBps(resaleRoyaltyBps)
+  }
+
   const campaign: Campaign = {
     name,
     symbol,
@@ -108,6 +123,8 @@ export function campaignFromInput(input: unknown, uri: string): Campaign {
     plan,
     dropBot: { startFeeBps: DROP_BOT_START_FEE_BPS, windowSec: requested.dropBot.windowSec },
     normalFeeBps: NORMAL_FEE_BPS,
+    ...(shipDays !== undefined && { shipDays }),
+    ...(resaleRoyaltyBps !== undefined && { resaleRoyaltyBps }),
   }
   return campaign
 }

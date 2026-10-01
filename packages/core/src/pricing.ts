@@ -44,7 +44,8 @@ export function validatePlan(plan: TierPlan): void {
   if (plan.tiers.length > MAX_TIERS) throw new Error(`at most ${MAX_TIERS} tiers`)
   plan.tiers.forEach((t, i) => {
     if (!(t.units > 0)) throw new Error(`tier ${i + 1}: units must be positive`)
-    if (!Number.isInteger(t.units)) throw new Error(`tier ${i + 1}: units must be whole`)
+    // Vouchers redeem one whole item each, so tiers sell whole units (back-by-units buys exactly that).
+    if (!Number.isInteger(t.units)) throw new Error(`tier ${i + 1}: units must be a whole number`)
     if (!(t.startPrice > 0)) throw new Error(`tier ${i + 1}: price must be positive`)
     const next = plan.tiers[i + 1]?.startPrice ?? plan.finalPrice
     if (!(next > t.startPrice)) throw new Error(`tier ${i + 1}: prices must rise from tier to tier and up to the final price`)

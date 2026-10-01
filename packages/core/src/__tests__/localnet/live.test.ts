@@ -8,7 +8,7 @@ import { createAssociatedTokenAccountIdempotentInstruction, createMint, createMi
 import { getNetwork } from '../../network'
 import { send } from '../../tx'
 import { campaignToConfig, type Campaign } from '../../engine'
-import { buildBuyTx, buildCreateCampaignTx, dbcClient, toUsdcRaw } from '../../chain'
+import { buildBuyTx, buildCreateCampaignTx, dbcClient, readResaleConfig, toUsdcRaw } from '../../chain'
 import { forgetCampaignLive, readCampaignLive, readCampaignsLive } from '../../live'
 import { readMakerEarnings, readResale, readResaleCached } from '../../resale'
 import type { CampaignRecord } from '../../store'
@@ -128,6 +128,7 @@ test('a fresh read skips the cache and refreshes it; a forgotten pool is read ag
 const total = (calls: Map<string, number>) => [...calls.values()].reduce((a, b) => a + b, 0)
 
 test('concurrent resale-panel reads of one pool cost one set of RPC calls', { skip }, async () => {
+  await readResaleConfig(conn, record.config) // the resale pool's config is cached for good; warm it first
   const once = counting(conn)
   const direct = await readResale(once.conn, record)
   const maker = direct?.maker ?? (await readMakerEarnings(once.conn, record))

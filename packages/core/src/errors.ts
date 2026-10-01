@@ -10,3 +10,14 @@ export class HttpError extends Error {
     super(message)
   }
 }
+
+// A swap the request or the curve cannot take. Routes answer with `status`:
+// 400 for bad input, 404 for an unknown pool, 409 when the pool's state rules it out (goal reached).
+export class SwapError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 404 | 409,
+  ) {
+    super(message)
+  }
+}

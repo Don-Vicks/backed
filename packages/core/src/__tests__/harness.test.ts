@@ -84,7 +84,7 @@ test('inspect finds the resale pool from the migration fee option in the pool\'s
   // An option the SDK has no config for falls back to the one new campaigns use.
   assert.equal(
     resalePoolAddressFor({ migrationFeeOption: 99 as MigrationFeeOption, quoteMint }, baseMint).toBase58(),
-    resalePoolAddress(baseMint, quoteMint).toBase58(),
+    resalePoolAddress(baseMint, quoteMint, MIGRATION_FEE_OPTION).toBase58(),
   )
 })
 

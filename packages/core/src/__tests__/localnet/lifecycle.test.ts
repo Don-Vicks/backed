@@ -17,7 +17,7 @@ import { getAccount, getAssociatedTokenAddressSync, getMint, getOrCreateAssociat
 import { getNetwork } from '../../network'
 import { send } from '../../tx'
 import { closeDb } from '../../db'
-import type { Campaign } from '../../engine'
+import { MIGRATION_FEE_OPTION, type Campaign } from '../../engine'
 import { saveCampaign, type CampaignRecord } from '../../store'
 import {
   buildBuyTx,
@@ -170,7 +170,7 @@ test('graduate: DAMM v2 resale pool with locked maker and partner positions, buf
   const view = await inspect()
   assert.equal(view.migrated, true)
   assert.ok(view.resale, 'resale pool exists')
-  assert.equal(view.resale.address, resalePoolAddress(baseMint, usdcMint).toBase58())
+  assert.equal(view.resale.address, resalePoolAddress(baseMint, usdcMint, MIGRATION_FEE_OPTION).toBase58())
   assert.equal((await getMint(conn, baseMint)).supply.toString(), view.config.supply.postMigration, 'unused swap buffer burned')
 
   const byRole = (role: string) => view.resale!.positions.filter((p) => p.role === role)

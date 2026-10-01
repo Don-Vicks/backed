@@ -29,6 +29,12 @@ test('builds the campaign from allowlisted fields only, with the server uri and 
     normalFeeBps: NORMAL_FEE_BPS,
   })
   // The client may echo the fixed fees.
+  // Ship date and resale royalty pass through when sent, in range.
+  const terms = campaignFromInput(body({ shipDays: 60, resaleRoyaltyBps: 500 }), URI)
+  assert.deepEqual({ shipDays: terms.shipDays, resaleRoyaltyBps: terms.resaleRoyaltyBps }, { shipDays: 60, resaleRoyaltyBps: 500 })
+  assert.throws(() => campaignFromInput(body({ shipDays: 7 }), URI), /ship date/)
+  assert.throws(() => campaignFromInput(body({ shipDays: '60' }), URI), /ship date/)
+  assert.throws(() => campaignFromInput(body({ resaleRoyaltyBps: 5000 }), URI), /resale royalty/)
   const echoed = campaignFromInput(body({ dropBot: { startFeeBps: 1500, windowSec: 60 }, normalFeeBps: 100 }), URI)
   assert.equal(echoed.dropBot.windowSec, 60)
 })

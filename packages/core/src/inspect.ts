@@ -16,7 +16,7 @@ import {
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { CpAmm } from '@meteora-ag/cp-amm-sdk'
 import { dbcClient, resalePoolAddress } from './chain'
-import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
+import { MIGRATION_FEE_OPTION, USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 
 const raw = (bn: BN | bigint) => bn.toString()
 const ui = (bn: BN, decimals: number) => Number(bn.toString()) / 10 ** decimals
@@ -170,8 +170,8 @@ export async function inspectResalePool(
 // The DAMM v2 pool a DBC pool graduates into, from the migration fee option in its own config, so pools
 // created under an earlier option still resolve after MIGRATION_FEE_OPTION changes.
 export function resalePoolAddressFor(config: Pick<PoolConfig, 'migrationFeeOption' | 'quoteMint'>, baseMint: PublicKey): PublicKey {
-  const dammConfig = DAMM_V2_MIGRATION_FEE_ADDRESS[config.migrationFeeOption]
-  return dammConfig ? deriveDammV2PoolAddress(dammConfig, baseMint, config.quoteMint) : resalePoolAddress(baseMint, config.quoteMint)
+  const option = DAMM_V2_MIGRATION_FEE_ADDRESS[config.migrationFeeOption] ? config.migrationFeeOption : MIGRATION_FEE_OPTION
+  return resalePoolAddress(baseMint, config.quoteMint, option)
 }
 
 export async function inspectDbcPool(connection: Connection, address: PublicKey): Promise<PoolView> {

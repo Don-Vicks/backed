@@ -2,7 +2,7 @@
 import BN from 'bn.js'
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js'
 import { createAssociatedTokenAccountIdempotentInstruction, createMintToInstruction, getAssociatedTokenAddressSync, unpackMint } from '@solana/spl-token'
-import { SwapMode, getPriceFromSqrtPrice } from '@meteora-ag/dynamic-bonding-curve-sdk'
+import { SwapMode, getPriceFromSqrtPrice, type MigrationFeeOption } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { dbcClient, getUsdcMint, quoteCurveSwap, resalePoolAddress, toUsdcRaw, toVoucherRaw } from './chain'
 import { DEFAULT_SLIPPAGE_BPS, SwapError, summarizeBuyQuote, summarizeSellQuote, type BuyQuote, type SellQuote } from './swaps'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
@@ -126,7 +126,8 @@ function campaignLive(record: CampaignRecord, s: PoolState, config: PoolConfigAc
     unitsSold: migrated ? record.campaign.plan.tiers.reduce((a, t) => a + t.units, 0) : toNum(new BN(mintSupply.toString()).sub(s.baseReserve), VOUCHER_DECIMALS),
     tierIndex,
     makerBudgetWithdrawn: (Number((s as { migrationFeeWithdrawStatus?: number }).migrationFeeWithdrawStatus ?? 0) & 0b10) !== 0,
-    resalePool: migrated ? resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint)).toBase58() : null,
+    // From the on-chain config, as resolveResalePool reads it (configs are immutable).
+    resalePool: migrated ? resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint), config.migrationFeeOption as MigrationFeeOption).toBase58() : null,
   }
 }
 

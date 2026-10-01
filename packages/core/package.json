@@ -13,6 +13,8 @@
     "inspect": "ts-node src/scripts/inspect.ts",
     "seed:localnet": "ts-node src/scripts/seed-localnet.ts",
     "api-negative": "ts-node src/scripts/api-negative.ts",
+    "platform:claim": "ts-node src/scripts/platform-claim.ts",
+    "partner:metadata": "ts-node src/scripts/partner-metadata.ts",
     "test:localnet": "LOCALNET=1 node -r ts-node/register --test 'src/__tests__/localnet/**/*.test.ts'"
   },
   "dependencies": {
