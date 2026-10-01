@@ -32,7 +32,7 @@ The maker fills in a plain form. `campaignToConfig()` ([`packages/core/src/engin
 | **Resale market** | `migrationOption: MET_DAMM_V2`, `migrationFeeOption: FixedBps200` | Graduation opens a 2%-fee DAMM v2 pool, so vouchers stay liquid after the pre-order. |
 | **Resale royalties** | `creatorPermanentLockedLiquidityPercentage: 80`, `partnerPermanentLockedLiquidityPercentage: 20` | 100% of resale liquidity is locked forever. Locked positions still earn trading fees, so the maker earns on every resale. |
 | **Curve trading fees** | `creatorTradingFeePercentage: 50`, `dynamicFeeEnabled` | After Meteora's 20% protocol fee, the maker earns half of the curve's trading fees. Both fee streams are claimed in one transaction. |
-| **Affiliate links** | swap `referralTokenAccount` | Share links carry `?ref=<wallet>`. On referred buys, the sharer gets DBC's referral cut (20% of the protocol fee). The buyer pays nothing extra. A ref that is the buyer, malformed, or without a usable USDC account is dropped, never failing the buy. |
+| **Affiliate links** | swap `referralTokenAccount` | Share links carry `?ref=<wallet>`. On referred buys, the sharer gets DBC's referral cut (20% of the protocol fee). The buyer pays nothing extra. The ref is checked at each buy: one that is the buyer, malformed, or without a usable USDC account (yet) is dropped, never failing the buy. |
 | **No reused configs** | `createConfigAndPool` (one transaction, platform key = `feeClaimer`) | Each campaign gets its own config, created in the same transaction as its pool. Nobody can launch another pool on a campaign's terms. |
 
 ### Why we build the curve ourselves

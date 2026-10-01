@@ -6,6 +6,16 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { toast } from "sonner";
 import { explorerTx } from "@/lib/format";
 
+// A failed API call. `status` tells a message meant for the user (4xx) from a server fault (5xx).
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export async function api<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, body === undefined ? undefined : {
     method: "POST",
@@ -13,8 +23,13 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status);
   return data as T;
+}
+
+// What to show for a failed quote: the server's reason when it is about the request, else a generic line.
+export function quoteErrorMessage(e: unknown) {
+  return e instanceof ApiError && e.status < 500 ? e.message : "Quote unavailable right now";
 }
 
 export type BuiltTx = { tx: string; lastValidBlockHeight: number };

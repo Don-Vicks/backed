@@ -8,12 +8,14 @@ import {
   buildRedeemTx,
   buildResaleSwapTx,
   buildSellBackTx,
+  formatRawAmount,
   getCampaign,
   resolveReferral,
   slippageBps,
   summarizeBuyQuote,
   summarizeSellQuote,
   toVoucherRaw,
+  VOUCHER_DECIMALS,
   type BuyQuote,
   type SellQuote,
 } from "@preorder/core";
@@ -55,8 +57,11 @@ export async function POST(req: Request) {
       if (!account || account.amount === BigInt(0)) throw new BadRequest("You hold no vouchers for this campaign");
       const held = new BN(account.amount.toString());
       if (body.vouchers !== undefined && !(Number(body.vouchers) > 0)) throw new BadRequest("Enter an amount");
+      // Checked in UI units before converting, so an absurd amount is this 400, not a conversion error.
+      const heldUnits = formatRawAmount(account.amount, VOUCHER_DECIMALS);
+      if (Number(body.vouchers) > Number(heldUnits)) throw new BadRequest(`You hold ${heldUnits} vouchers`);
       const amount = body.vouchers === undefined ? held : toVoucherRaw(Number(body.vouchers));
-      if (amount.gt(held)) throw new BadRequest(`You hold ${Number(account.amount) / 1e6} vouchers`);
+      if (amount.gt(held)) throw new BadRequest(`You hold ${heldUnits} vouchers`);
       const built = await buildSellBackTx(conn, wallet, pool, amount, { slippageBps: bps });
       tx = built.tx;
       quote = summarizeSellQuote(built.quote, bps);

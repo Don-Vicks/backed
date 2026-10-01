@@ -7,7 +7,7 @@ import { CpAmm, getPriceFromSqrtPrice, getUnClaimLpFee } from '@meteora-ag/cp-am
 import { dbcClient, resalePoolAddress } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
-import { DEFAULT_SLIPPAGE_BPS, chainNow, slippageBps } from './swaps'
+import { DEFAULT_SLIPPAGE_BPS, chainNow, slippageBps, toRawAmount } from './swaps'
 
 export type ResaleSide = 'buy' | 'sell' // buy = USDC → vouchers, sell = vouchers → USDC
 
@@ -81,7 +81,7 @@ async function quoteRaw(connection: Connection, record: CampaignRecord, side: Re
   const [poolState, slot, now] = await Promise.all([cpAmm.fetchPoolState(pool), connection.getSlot(), chainNow(connection)])
   const inputMint = side === 'buy' ? poolState.tokenBMint : poolState.tokenAMint
   const inDecimals = side === 'buy' ? USDC_DECIMALS : VOUCHER_DECIMALS
-  const inAmount = new BN(Math.round(amount * 10 ** inDecimals))
+  const inAmount = toRawAmount(amount, inDecimals) // 400 rather than a bn.js assertion for huge amounts
   const quote = cpAmm.getQuote({
     inAmount,
     inputTokenMint: inputMint,

@@ -8,12 +8,15 @@ import {
   DEFAULT_SLIPPAGE_BPS,
   SwapError,
   chainNow,
+  formatRawAmount,
   resolveReferral,
   slippageBps,
   summarizeBuyQuote,
   summarizeSellQuote,
+  toRawAmount,
   toSwapError,
 } from '../swaps'
+import { swapClient, toUsdcRaw, toVoucherRaw } from '../chain'
 
 // A Connection that only answers getAccountInfo from a map.
 function fakeConnection(accounts: Map<string, AccountInfo<Buffer>>): Connection {
@@ -100,6 +103,50 @@ test('resolveReferral returns the referrer USDC account only when it is usable',
     null,
     'not owned by the Token program',
   )
+  // An RPC error on the referrer lookup (429, timeout) drops the referral instead of failing the buy.
+  const flaky = { getAccountInfo: async () => Promise.reject(new Error('429 Too Many Requests')) } as unknown as Connection
+  assert.equal(await resolveReferral(flaky, usdc, referrer.toBase58(), buyer), null, 'RPC error')
+})
+
+test('UI amounts convert to raw units, and oversized or non-finite ones are a 400, not a bn.js assertion', () => {
+  assert.ok(toUsdcRaw(12.345678).eq(new BN(12_345_678)))
+  assert.ok(toVoucherRaw(1.14842).eq(new BN(1_148_420)))
+  assert.ok(toRawAmount(0, 6).isZero())
+  const is400 = (e: unknown) => e instanceof SwapError && e.status === 400
+  for (const bad of [1e10, 1e11, Infinity, -Infinity, NaN, -1]) {
+    assert.throws(() => toUsdcRaw(bad), is400, String(bad))
+    assert.throws(() => toVoucherRaw(bad), is400, String(bad))
+  }
+  assert.throws(() => toRawAmount(JSON.parse('1e400'), 6), is400) // JSON reads it as Infinity
+  // The largest whole amount that still converts exactly.
+  assert.ok(toUsdcRaw(9_007_199_254).eq(new BN('9007199254000000')))
+})
+
+test('raw amounts format at full precision with trailing zeros trimmed', () => {
+  assert.equal(formatRawAmount(BigInt(1_148_420), 6), '1.14842')
+  assert.equal(formatRawAmount(new BN(3_000_000), 6), '3')
+  assert.equal(formatRawAmount(BigInt(1), 6), '0.000001')
+  assert.equal(formatRawAmount(BigInt(0), 6), '0')
+  assert.equal(formatRawAmount(BigInt('123456789012345678'), 6), '123456789012.345678')
+})
+
+test('a swap client shares one memoized state between the quote and swap2', async () => {
+  let reads = 0
+  const conn = {
+    commitment: 'confirmed',
+    rpcEndpoint: 'http://fake',
+    getAccountInfo: async () => (reads++, null),
+    getAccountInfoAndContext: async () => (reads++, { context: { slot: 1 }, value: null }),
+  } as unknown as Connection
+  const client = swapClient(conn)
+  // swap2 reads the pool through PoolService's own StateService: it must be the memoized one.
+  assert.equal((client.pool as unknown as { state: unknown }).state, client.state)
+  const pool = Keypair.generate().publicKey
+  assert.equal(await client.state.getPool(pool), null)
+  const first = reads
+  assert.ok(first > 0)
+  assert.equal(await client.state.getPool(pool.toBase58()), null)
+  assert.equal(reads, first, 'the second read of the same pool is served from the memo')
 })
 
 const raw = (n: number) => new BN(Math.round(n * 1e6))

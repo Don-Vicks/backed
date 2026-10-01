@@ -105,6 +105,25 @@ test('a buy carries the quote-derived minimum in its swap2 data', { skip }, asyn
   assert.ok((await balance(baseMint, backer1.publicKey)).gte(quote.minimumAmountOut!))
 })
 
+test('one build reads the pool and its config once, for both the quote and swap2', { skip }, async () => {
+  const reads = new Map<string, number>()
+  const counted = new Proxy(conn, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target)
+      if (typeof value !== 'function') return value
+      if (prop !== 'getAccountInfo' && prop !== 'getAccountInfoAndContext') return value.bind(target)
+      return (key: PublicKey, ...rest: unknown[]) => {
+        reads.set(key.toBase58(), (reads.get(key.toBase58()) ?? 0) + 1)
+        return value.call(target, key, ...rest)
+      }
+    },
+  })
+  await buildBuyTx(counted, backer1.publicKey, pool, 1)
+  const config = (await dbcClient(conn).state.getPool(pool))!.poolState.config
+  assert.equal(reads.get(pool.toBase58()), 1)
+  assert.equal(reads.get(config.toBase58()), 1)
+})
+
 test('a front-run between build and send makes the victim fail with ExceededSlippage', { skip }, async () => {
   const victim = await buildBuyTx(conn, backer2.publicKey, pool, 100)
   // Control: the same buy with no minimum would still fill, at the attacker's worse price.

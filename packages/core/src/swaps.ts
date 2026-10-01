@@ -67,11 +67,32 @@ export async function resolveReferral(
   }
   if (referrer.equals(buyer)) return null
   const ata = getAssociatedTokenAddressSync(usdcMint, referrer, true)
-  const info = await connection.getAccountInfo(ata)
-  if (!info || !info.owner.equals(TOKEN_PROGRAM_ID) || info.data.length < AccountLayout.span) return null
-  const account = AccountLayout.decode(info.data.subarray(0, AccountLayout.span))
-  if (!account.mint.equals(usdcMint) || account.state !== AccountState.Initialized) return null
-  return ata
+  try {
+    const info = await connection.getAccountInfo(ata)
+    if (!info || !info.owner.equals(TOKEN_PROGRAM_ID) || info.data.length < AccountLayout.span) return null
+    const account = AccountLayout.decode(info.data.subarray(0, AccountLayout.span))
+    if (!account.mint.equals(usdcMint) || account.state !== AccountState.Initialized) return null
+    return ata
+  } catch {
+    return null // an RPC error (429, timeout) on the referrer's account costs the referral, not the buy
+  }
+}
+
+// UI amount -> raw token units. Rejects what the routes would otherwise turn into a bn.js 500:
+// non-finite input (JSON reads 1e400 as Infinity) and raw values past 2^53, beyond exact Number math.
+export function toRawAmount(amount: number, decimals: number): BN {
+  if (!Number.isFinite(amount) || amount < 0) throw new SwapError('Enter a valid amount', 400)
+  const raw = Math.round(amount * 10 ** decimals)
+  if (!Number.isSafeInteger(raw)) throw new SwapError('Amount is too large', 400)
+  return new BN(raw)
+}
+
+// Raw token units -> a UI amount at full precision (1148420 at 6 decimals -> "1.14842").
+export function formatRawAmount(raw: bigint | BN, decimals: number): string {
+  const s = raw.toString().padStart(decimals + 1, '0')
+  const whole = s.slice(0, s.length - decimals)
+  const frac = s.slice(s.length - decimals).replace(/0+$/, '')
+  return frac ? `${whole}.${frac}` : whole
 }
 
 const toNum = (bn: BN, decimals: number) => Number(bn.toString()) / 10 ** decimals

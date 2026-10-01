@@ -15,13 +15,14 @@ import {
   type SwapQuote2Result,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { getNetwork } from './network'
-import { SwapError, chainNow, slippageBps, toSwapError } from './swaps'
+import { SwapError, chainNow, slippageBps, toRawAmount, toSwapError } from './swaps'
 import { keysDir, platformFeeClaimer } from './wallets'
 import { MIGRATION_FEE_OPTION, USDC_DECIMALS, VOUCHER_DECIMALS, campaignToConfig, type Campaign } from './engine'
 import type { TrustTierName } from './trust'
 
-export const toUsdcRaw = (usdc: number) => new BN(Math.round(usdc * 10 ** USDC_DECIMALS))
-export const toVoucherRaw = (units: number) => new BN(Math.round(units * 10 ** VOUCHER_DECIMALS))
+// Both throw a 400 SwapError for non-finite or oversized amounts rather than a bn.js assertion.
+export const toUsdcRaw = (usdc: number) => toRawAmount(usdc, USDC_DECIMALS)
+export const toVoucherRaw = (units: number) => toRawAmount(units, VOUCHER_DECIMALS)
 
 const mockUsdcPath = () => path.join(keysDir(), 'mock-usdc.json')
 
@@ -93,8 +94,13 @@ type CurveSwap = { swapBaseForQuote: boolean; hasReferral?: boolean; slippageBps
   | { swapMode: SwapMode.ExactOut; amountOut: BN }
 )
 
-export async function quoteCurveSwap(connection: Connection, pool: PublicKey, swap: CurveSwap): Promise<SwapQuote2Result> {
-  const client = dbcClient(connection)
+// Pass the build's own client (swapClient) so the quote and the swap share one read of the pool.
+export async function quoteCurveSwap(
+  connection: Connection,
+  pool: PublicKey,
+  swap: CurveSwap,
+  client: DynamicBondingCurveClient = dbcClient(connection),
+): Promise<SwapQuote2Result> {
   const [virtualPool, now] = await Promise.all([
     client.state.getPool(pool).catch((e) => {
       if (/discriminator/i.test(e instanceof Error ? e.message : '')) return null // some other account
@@ -119,6 +125,31 @@ export async function quoteCurveSwap(connection: Connection, pool: PublicKey, sw
   }
 }
 
+// One client per swap build, with its pool and config reads shared: swap2 re-reads both through
+// PoolService's own (protected) StateService, so point that at the same memoized one. The quote and
+// the instruction then see the same state, and a build reads each account once instead of twice.
+// If a later SDK moves that field, swap2 simply reads the accounts again.
+export function swapClient(connection: Connection) {
+  const client = dbcClient(connection)
+  const state = client.state
+  const pools = new Map<string, ReturnType<typeof state.getPool>>()
+  const configs = new Map<string, ReturnType<typeof state.getPoolConfig>>()
+  const getPool = state.getPool.bind(state)
+  const getPoolConfig = state.getPoolConfig.bind(state)
+  state.getPool = (address) => {
+    const key = address.toString()
+    if (!pools.has(key)) pools.set(key, getPool(address))
+    return pools.get(key)!
+  }
+  state.getPoolConfig = (address) => {
+    const key = address.toString()
+    if (!configs.has(key)) configs.set(key, getPoolConfig(address))
+    return configs.get(key)!
+  }
+  ;(client.pool as unknown as { state: typeof state }).state = state
+  return client
+}
+
 export type SwapOptions = { referral?: PublicKey | null; slippageBps?: number }
 
 // Back with USDC. PartialFill so the last buy stops exactly at the goal and refunds the rest;
@@ -126,15 +157,21 @@ export type SwapOptions = { referral?: PublicKey | null; slippageBps?: number }
 export async function buildBuyTx(connection: Connection, buyer: PublicKey, pool: PublicKey, usdc: number, opts: SwapOptions = {}) {
   const referralTokenAccount = opts.referral ?? null
   const amountIn = toUsdcRaw(usdc)
-  const quote = await quoteCurveSwap(connection, pool, {
-    swapBaseForQuote: false,
-    swapMode: SwapMode.PartialFill,
-    amountIn,
-    hasReferral: !!referralTokenAccount,
-    slippageBps: opts.slippageBps,
-  })
+  const client = swapClient(connection)
+  const quote = await quoteCurveSwap(
+    connection,
+    pool,
+    {
+      swapBaseForQuote: false,
+      swapMode: SwapMode.PartialFill,
+      amountIn,
+      hasReferral: !!referralTokenAccount,
+      slippageBps: opts.slippageBps,
+    },
+    client,
+  )
   if (!quote.minimumAmountOut?.gtn(0)) throw new SwapError('Amount is too small to buy any vouchers', 400)
-  const tx = await dbcClient(connection).pool.swap2({
+  const tx = await client.pool.swap2({
     owner: buyer,
     pool,
     swapBaseForQuote: false,
@@ -148,14 +185,15 @@ export async function buildBuyTx(connection: Connection, buyer: PublicKey, pool:
 
 // Exit on the curve: sell vouchersRaw back for USDC (ExactIn) with the quote's minimum.
 export async function buildSellBackTx(connection: Connection, seller: PublicKey, pool: PublicKey, vouchersRaw: BN, opts: Omit<SwapOptions, 'referral'> = {}) {
-  const quote = await quoteCurveSwap(connection, pool, {
-    swapBaseForQuote: true,
-    swapMode: SwapMode.ExactIn,
-    amountIn: vouchersRaw,
-    slippageBps: opts.slippageBps,
-  })
+  const client = swapClient(connection)
+  const quote = await quoteCurveSwap(
+    connection,
+    pool,
+    { swapBaseForQuote: true, swapMode: SwapMode.ExactIn, amountIn: vouchersRaw, slippageBps: opts.slippageBps },
+    client,
+  )
   if (!quote.minimumAmountOut?.gtn(0)) throw new SwapError('Amount is too small to sell', 400)
-  const tx = await dbcClient(connection).pool.swap2({
+  const tx = await client.pool.swap2({
     owner: seller,
     pool,
     swapBaseForQuote: true,

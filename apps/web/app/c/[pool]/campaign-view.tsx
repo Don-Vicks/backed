@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, useSignAndSend, type BuiltTx } from "@/lib/client";
+import { api, quoteErrorMessage, useSignAndSend, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { ShippingForm } from "@/components/shipping-form";
@@ -168,14 +168,25 @@ function useBalances(c: CampaignWithLive) {
     enabled: !!publicKey,
     refetchInterval: 6_000,
     queryFn: async () => {
+      // null: no token account yet. Any other RPC error fails the query, which keeps the last balances.
       const read = async (mint: string) => {
         const ata = getAssociatedTokenAddressSync(new PublicKey(mint), publicKey!);
-        const bal = await connection.getTokenAccountBalance(ata).catch(() => null);
-        return bal ? Number(bal.value.uiAmount ?? 0) : null; // null: no token account yet
+        return connection.getTokenAccountBalance(ata).then(
+          (bal) => bal.value,
+          (e: unknown) => {
+            if (e instanceof Error && /could not find account/i.test(e.message)) return null;
+            throw e;
+          },
+        );
       };
       const [vouchers, usdc] = await Promise.all([read(c.baseMint), read(c.usdcMint)]);
-      // Referral fees are paid into the sharer's USDC account, so a link is only worth sharing once it exists.
-      return { vouchers: vouchers ?? 0, usdc: usdc ?? 0, hasUsdcAccount: usdc !== null };
+      return {
+        vouchers: Number(vouchers?.uiAmount ?? 0),
+        vouchersText: vouchers?.uiAmountString ?? "0", // full precision, for "you hold" and "All (…)"
+        usdc: Number(usdc?.uiAmount ?? 0),
+        // Referral fees are paid into the sharer's USDC account; until it exists, a referred buy pays none.
+        hasUsdcAccount: usdc !== null,
+      };
     },
   });
 }
@@ -208,6 +219,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
 
   const isMaker = publicKey?.toBase58() === c.maker;
   const vouchers = balances.data?.vouchers ?? 0;
+  const vouchersText = balances.data?.vouchersText ?? "0";
   const exitVouchers = exitAmount === "" ? vouchers : Number(exitAmount);
   const exitTooMuch = exitVouchers > vouchers;
   const debouncedExit = useDebounced(exitVouchers, 350);
@@ -260,7 +272,9 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
 
   async function copyShare() {
     const url = new URL(window.location.href);
-    url.search = publicKey && balances.data?.hasUsdcAccount ? `?ref=${publicKey.toBase58()}` : "";
+    // Always tag the link: the server checks the referrer's USDC account at each buy, so a link copied
+    // before the sharer holds USDC starts earning once they do.
+    url.search = publicKey ? `?ref=${publicKey.toBase58()}` : "";
     await navigator.clipboard.writeText(url.toString());
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
@@ -283,7 +297,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
           </div>
           <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
             {quoteEnabled && quoteError ? (
-              <span className="text-destructive">{quoteError.message}</span>
+              <span className="text-destructive">{quoteErrorMessage(quoteError)}</span>
             ) : quote ? (
               <>
                 {quote.capped && (
@@ -343,7 +357,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
                     inputMode="decimal"
                     min={0.000001}
                     step="any"
-                    placeholder={`All (${units(vouchers)})`}
+                    placeholder={`All (${vouchersText})`}
                     value={exitAmount}
                     onChange={(e) => setExitAmount(e.target.value)}
                     className="font-mono"
@@ -354,9 +368,9 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
                 </div>
                 <p className="min-h-5 text-sm text-muted-foreground" aria-live="polite">
                   {exitTooMuch ? (
-                    <span className="text-destructive">You hold {units(vouchers)} vouchers.</span>
+                    <span className="text-destructive">You hold {vouchersText} vouchers.</span>
                   ) : sellQuoteEnabled && sellQuoteError ? (
-                    <span className="text-destructive">{sellQuoteError.message}</span>
+                    <span className="text-destructive">{quoteErrorMessage(sellQuoteError)}</span>
                   ) : sellQuote ? (
                     <>
                       ≈ <span className="font-mono text-foreground">{usd(sellQuote.usdc)}</span> (at least {usd(sellQuote.minUsdc)}) · fee{" "}
@@ -380,6 +394,9 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
         {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
         {copied ? "Link copied" : publicKey ? "Copy your referral link" : "Copy link"}
       </Button>
+      {publicKey && balances.data?.hasUsdcAccount === false && (
+        <p className="-mt-2 text-center text-xs text-muted-foreground">Referral fees are paid in USDC: you start earning them once your wallet holds USDC.</p>
+      )}
     </div>
   );
 }
