@@ -25,6 +25,24 @@ export function resolvePublicOrigin(env: NodeJS.ProcessEnv, network: NetworkName
   return url.origin
 }
 
+// The current origin and any the app was served from before (PREVIOUS_BASE_URLS, comma-separated).
+// On-chain listings are immutable, so a campaign listed under an old domain keeps that website; it is
+// still this app's listing when it names one of these origins.
+export function publicOrigins(env: NodeJS.ProcessEnv, network: NetworkName, requestUrl?: string): string[] {
+  const previous = (env.PREVIOUS_BASE_URLS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .flatMap((s) => {
+      try {
+        return [new URL(s).origin]
+      } catch {
+        return [] // a typo here must not take the app down: it only widens a badge check
+      }
+    })
+  return [...new Set([resolvePublicOrigin(env, network, requestUrl), ...previous])]
+}
+
 // Hosts the app answers on, for checking which site a wallet signed a message for: PUBLIC_BASE_URL's
 // and, on Railway, the service's own domain (both reach the same server); the request's on localnet.
 export function siteHosts(env: NodeJS.ProcessEnv, network: NetworkName, requestUrl?: string): string[] {
