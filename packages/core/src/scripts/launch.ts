@@ -7,8 +7,9 @@ import { explorerAccount, getConnection, getNetwork, trustRpcUrl } from '../netw
 import { loadWallets } from '../wallets'
 import { send } from '../tx'
 import { MAX_MAKER_SHARE, scoreSignals, trustTier, type TrustResult, type TrustTierName } from '../trust'
-import { buildCreateCampaignTx, dbcClient, getUsdcMint } from '../chain'
+import { buildCreateCampaignTx, createCampaignSteps, dbcClient, getUsdcMint } from '../chain'
 import { saveCampaign } from '../store'
+import { dbPath } from '../db'
 import { repoRoot } from '../paths'
 import type { Campaign } from '../engine'
 
@@ -27,16 +28,20 @@ async function main() {
   let trust: TrustResult
   const forced = arg('tier') as TrustTierName | undefined
   if (forced) {
-    trust = { ...scoreSignals({ walletAgeDays: 0, txCount: 0, fundedByFreshWallet: false, verifiedSocial: false }), tier: forced, maxMakerSharePct: MAX_MAKER_SHARE[forced], reasons: [`Tier set manually to ${forced}`] }
+    trust = { ...scoreSignals({ walletAgeDays: 0, txCount: 0, activeDays: 0, fundedByFreshWallet: false, truncated: false, partial: false }), tier: forced, maxMakerSharePct: MAX_MAKER_SHARE[forced], reasons: [`Tier set manually to ${forced}`] }
   } else {
     trust = await trustTier(new Connection(trustRpcUrl()), w.maker.publicKey)
   }
   console.log(`Maker trust tier ${trust.tier}: ${trust.reasons.join('; ')}`)
 
   const usdcMint = getUsdcMint()
-  const built = await buildCreateCampaignTx({ connection, campaign, tier: trust.tier, platform: w.platform.publicKey, maker: w.maker.publicKey, usdcMint })
+  const built = await buildCreateCampaignTx({ connection, campaign, tier: trust.tier, maker: w.maker.publicKey, usdcMint })
   console.table(built.fields.map((f) => ({ input: f.input, value: f.value, 'DBC field': f.dbcField })))
-  const sig = await send(connection, built.tx, [w.platform, ...built.extraSigners, w.maker], `create "${campaign.name}" on ${getNetwork().name}`)
+  // The maker pays; a campaign too large for one transaction goes out as createConfig, then createPool.
+  let sig = ''
+  for (const step of createCampaignSteps(built, w.maker.publicKey)) {
+    sig = await send(connection, step.tx, [w.maker, ...step.signers], `create "${campaign.name}" on ${getNetwork().name}`)
+  }
   const threshold = await dbcClient(connection).state.getPoolMigrationQuoteThreshold(built.pool)
 
   saveCampaign({
@@ -52,8 +57,9 @@ async function main() {
     goalUsdc: Number(threshold.toString()) / 1e6,
     totalUnits: built.onChain.totalUnits,
     fields: built.fields,
+    migrationFeeOption: built.onChain.migrationFeeOption,
   })
-  console.log(`Pool ${explorerAccount(built.pool)}\nOn-chain goal ${(Number(threshold.toString()) / 1e6).toFixed(4)} USDC. Saved to data/campaigns.${getNetwork().name}.json`)
+  console.log(`Pool ${explorerAccount(built.pool)}\nOn-chain goal ${(Number(threshold.toString()) / 1e6).toFixed(4)} USDC. Saved to ${dbPath()}`)
 }
 
 main().catch((e) => {

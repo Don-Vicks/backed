@@ -19,6 +19,7 @@ import { CpAmm } from '@meteora-ag/cp-amm-sdk'
 import { explorerAccount, getConnection, getNetwork, trustRpcUrl } from '../network'
 import { keysDir, loadWallets } from '../wallets'
 import { send } from '../tx'
+import { DEFAULT_SLIPPAGE_BPS, chainNow } from '../swaps'
 import { trustTier, type TrustTierName } from '../trust'
 import { VOUCHER_DECIMALS, type Campaign } from '../engine'
 import {
@@ -30,10 +31,11 @@ import {
   buildSellBackTx,
   dbcClient,
   getUsdcMint,
-  resalePoolAddress,
+  resolveResalePool,
   saveMockUsdcMint,
   toUsdcRaw,
 } from '../chain'
+import { newRedemptionId } from '../redemptions'
 
 const TRUST_RPC = trustRpcUrl()
 const fmt = (bn: BN | bigint, decimals = 6) => (Number(bn.toString()) / 10 ** decimals).toFixed(4)
@@ -51,7 +53,7 @@ const proofCampaign = (makerSharePct: number): Campaign => ({
     finalPrice: 6,
     makerSharePct,
   },
-  dropBot: { startFeeBps: 5000, windowSec: 60 },
+  dropBot: { startFeeBps: 1500, windowSec: 60 },
   normalFeeBps: 100,
 })
 
@@ -128,12 +130,11 @@ async function main() {
       connection,
       campaign: proofCampaign(s.makerSharePct!),
       tier: s.tier!,
-      platform: w.platform.publicKey,
       maker: w.maker.publicKey,
       usdcMint,
     })
     built.fields.forEach((f) => console.log(`    ${f.input.padEnd(16)} ${f.value.padEnd(38)} → ${f.dbcField}`))
-    const sig = await send(connection, built.tx, [w.platform, ...built.extraSigners, w.maker], 'createConfigAndPool')
+    const sig = await send(connection, built.tx, [w.maker, ...built.extraSigners], 'createConfigAndPool')
     s.config = built.config.toBase58()
     s.baseMint = built.baseMint.toBase58()
     s.pool = built.pool.toBase58()
@@ -148,20 +149,19 @@ async function main() {
   const quoteBuy = async (usdc: number) => {
     const virtualPool = (await client.state.getPool(pool))!
     const config = (await client.state.getPoolConfig(virtualPool.poolState.config))!
-    const slot = await connection.getSlot()
     return client.pool.swapQuote({
       virtualPool,
       config,
       swapBaseForQuote: false,
       amountIn: toUsdcRaw(usdc),
-      slippageBps: 100,
+      slippageBps: DEFAULT_SLIPPAGE_BPS,
       hasReferral: false,
       eligibleForFirstSwapWithMinFee: false,
-      currentPoint: new BN((await connection.getBlockTime(slot))!),
+      currentPoint: new BN(await chainNow(connection)),
     })
   }
   const buy = async (buyer: Keypair, usdc: number) =>
-    send(connection, await buildBuyTx(connection, buyer.publicKey, pool, usdc), [buyer], `${name(buyer)} backs ${usdc} USDC`)
+    send(connection, (await buildBuyTx(connection, buyer.publicKey, pool, usdc)).tx, [buyer], `${name(buyer)} backs ${usdc} USDC`)
 
   // Drop-bot window ---------------------------------------------------------
   await step('dropWindow', '4. Drop-bot fee: quote at launch, then after the window', async () => {
@@ -182,7 +182,7 @@ async function main() {
   await step('sellBack', '6. backer1 exits: sells all vouchers back on the curve', async () => {
     const vouchers = await balanceOf(connection, baseMint, w.backer1.publicKey)
     const before = await balanceOf(connection, usdcMint, w.backer1.publicKey)
-    const sig = await send(connection, await buildSellBackTx(connection, w.backer1.publicKey, pool, vouchers), [w.backer1], 'sell back')
+    const sig = await send(connection, (await buildSellBackTx(connection, w.backer1.publicKey, pool, vouchers)).tx, [w.backer1], 'sell back')
     const after = await balanceOf(connection, usdcMint, w.backer1.publicKey)
     console.log(`    sold ${fmt(vouchers)} vouchers for ${fmt(after.sub(before))} USDC (paid 4.0000)`)
     return sig
@@ -204,10 +204,10 @@ async function main() {
     const { tx, extraSigners } = await buildMigrateTx(connection, w.platform.publicKey, pool)
     const sig = await send(connection, tx, [w.platform, ...extraSigners], 'migrateToDammV2')
     const supply = (await getMint(connection, baseMint)).supply
-    console.log(`    voucher supply after graduation: ${fmt(supply)} units (buffer burned)`)
+    console.log(`    voucher supply after graduation: ${fmt(supply)} units (fixed supply: nothing minted or burned)`)
     return sig
   })
-  const resalePool = resalePoolAddress(baseMint, usdcMint)
+  const resalePool = await resolveResalePool(connection, { config: s.config!, baseMint: baseMint.toBase58(), usdcMint: usdcMint.toBase58() })
   console.log(`    resale pool ${explorerAccount(resalePool)}`)
 
   await step('withdraw', '9. Maker withdraws the production budget', async () => {
@@ -229,9 +229,9 @@ async function main() {
     const quote = cpAmm.getQuote({
       inAmount: amountIn,
       inputTokenMint: baseMint,
-      slippage: 1,
+      slippage: DEFAULT_SLIPPAGE_BPS, // basis points
       poolState,
-      currentTime: (await connection.getBlockTime(slot))!,
+      currentTime: await chainNow(connection),
       currentSlot: slot,
       tokenADecimal: 6,
       tokenBDecimal: 6,
@@ -260,7 +260,8 @@ async function main() {
     const holdings = await Promise.all(backers.map(async (b) => ({ b, v: await balanceOf(connection, baseMint, b.publicKey) })))
     const top = holdings.sort((x, y) => y.v.cmp(x.v))[0]
     if (top.v.lt(new BN(10 ** VOUCHER_DECIMALS))) throw new Error('no backer holds a whole voucher')
-    const sig = await send(connection, buildRedeemTx(top.b.publicKey, baseMint), [top.b], `${name(top.b)} burns 1 voucher`)
+    // The web app stores the shipping details as a pending redemption first; its id goes in the burn's memo.
+    const sig = await send(connection, buildRedeemTx(top.b.publicKey, baseMint, newRedemptionId()), [top.b], `${name(top.b)} burns 1 voucher`)
     console.log(`    ${name(top.b)} vouchers: ${fmt(top.v)} → ${fmt(await balanceOf(connection, baseMint, top.b.publicKey))}`)
     return sig
   })

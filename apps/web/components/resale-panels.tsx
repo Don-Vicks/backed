@@ -1,14 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Coins } from "lucide-react";
+import { Coins, Hourglass } from "lucide-react";
+import type { BackerFloor, MakerLp, ResaleRoyalty } from "@preorder/core";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/client";
+import { api, quoteErrorMessage } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { units, usd } from "@/lib/format";
 import type { CampaignWithLive } from "@/lib/types";
@@ -16,14 +17,17 @@ import type { CampaignWithLive } from "@/lib/types";
 type MakerEarnings = {
   curveFeesUnclaimedUsdc: number;
   curveFeesClaimedUsdc: number;
-  resaleFeesUnclaimedUsdc: number;
-  resaleFeesUnclaimedVouchers: number;
+  resaleFeesUnclaimedUsdc: number; // resale pools collect fees in USDC only
   positions: number;
+  lp?: MakerLp | null; // absent from servers older than ship-window vesting
 };
-type ResaleView = { pool: string; priceUsdc: number; vouchersInPool: number; usdcInPool: number; maker: MakerEarnings };
+type ResaleView = { pool: string; priceUsdc: number; vouchersInPool: number; usdcInPool: number; maker: MakerEarnings; floor?: BackerFloor | null; royalty?: ResaleRoyalty | null };
 type ResaleQuote = { out: number; minOut: number; feeUsdcEquivalent: number; priceImpactPct: number };
 
-export type RunTx = (kind: "resaleBuy" | "resaleSell" | "claim" | "withdraw", label: string, extra?: Record<string, unknown>) => Promise<void>;
+export type RunTx = (kind: "resaleBuy" | "resaleSell" | "claim" | "withdraw" | "unlock", label: string, extra?: Record<string, unknown>) => Promise<void>;
+
+// Basis points as a short percentage: 380 → "3.8%".
+const pct = (bps: number) => `${Number((bps / 100).toFixed(2))}%`;
 
 export function useResale(c: CampaignWithLive, enabled: boolean) {
   return useQuery({
@@ -44,8 +48,11 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
     queryKey: ["resale-quote", c.pool, side, debounced, resale.data?.resale?.priceUsdc],
     queryFn: () => api<ResaleQuote>("/api/resale/quote", { pool: c.pool, side, amount: debounced }),
     enabled: debounced > 0,
+    retry: false,
   });
   const view = resale.data?.resale;
+  const floor = view?.floor;
+  const royalty = view?.royalty;
   const lastPreorderPrice = c.campaign.plan.finalPrice;
 
   if (resale.isPending) return <Skeleton className="h-64 rounded-xl" />;
@@ -73,7 +80,15 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
         <p className="font-mono text-2xl tabular-nums">{usd(view.priceUsdc)}</p>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        <span className={`font-mono ${change >= 0 ? "text-primary" : ""}`}>{change >= 0 ? "+" : ""}{change.toFixed(1)}%</span> vs the last pre-order price of {usd(lastPreorderPrice)}. The maker earns on every trade.
+        <span className={`font-mono ${change >= 0 ? "text-primary" : ""}`}>{change >= 0 ? "+" : ""}{change.toFixed(1)}%</span> vs the last pre-order price of {usd(lastPreorderPrice)}.{" "}
+        {royalty ? (
+          <>
+            Each trade pays a <span className="font-mono">{pct(royalty.poolFeeBps)}</span> fee{royalty.dynamicFee ? ", more when the price moves fast" : ""}. The maker earns{" "}
+            <span className="font-mono">{pct(royalty.makerRoyaltyBps)}</span> of the trade as a royalty.
+          </>
+        ) : (
+          "The maker earns on every trade."
+        )}
       </p>
 
       <div className="mt-4 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="radiogroup" aria-label="Buy or sell">
@@ -104,6 +119,8 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
       <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
         {notEnough ? (
           <span className="text-destructive">You hold {units(vouchers)} vouchers.</span>
+        ) : debounced > 0 && quote.error ? (
+          <span className="text-destructive">{quoteErrorMessage(quote.error)}</span>
         ) : quote.data ? (
           <>
             ≈ <span className="font-mono text-foreground">{side === "buy" ? `${units(quote.data.out)} vouchers` : usd(quote.data.out)}</span>
@@ -112,8 +129,20 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
         ) : null}
       </p>
       <p className="mt-3 text-xs text-muted-foreground">
-        Pool: <span className="font-mono">{units(view.vouchersInPool)}</span> vouchers · <span className="font-mono">{usd(view.usdcInPool)}</span>. Liquidity is locked forever.
+        Pool: <span className="font-mono">{units(view.vouchersInPool)}</span> vouchers · <span className="font-mono">{usd(view.usdcInPool)}</span>.{" "}
+        {/* terms unknown (the config read failed): say nothing rather than claim it is all locked */}
+        {!c.terms
+          ? "The liquidity split is set in the on-chain config."
+          : c.terms.creatorVestingPct
+            ? `${c.terms.partnerPermanentPct + c.terms.creatorPermanentPct}% of the liquidity is locked forever; the maker's ${c.terms.creatorVestingPct}% unlocks on the ship-window schedule to fund production.`
+            : "Liquidity is locked forever."}
       </p>
+      {floor && c.terms?.creatorVestingPct ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Selling 1 voucher returns <span className="font-mono">{usd(floor.nowUsdc)}</span> today and{" "}
+          <span className="font-mono">{usd(floor.floorUsdc)}</span> from the permanent floor alone, at today&rsquo;s price. An exit, not a refund.
+        </p>
+      ) : null}
     </form>
   );
 }
@@ -123,8 +152,11 @@ export function MakerPanel({ c, run, busy }: { c: CampaignWithLive; run: RunTx; 
   const resale = useResale(c, true);
   const maker = resale.data?.maker;
   const claimable = maker ? maker.curveFeesUnclaimedUsdc + maker.resaleFeesUnclaimedUsdc : 0;
-  const claimableVouchers = maker?.resaleFeesUnclaimedVouchers ?? 0;
+  const royalty = resale.data?.resale?.royalty;
   const budget = (live.goalUsdc * c.campaign.plan.makerSharePct) / 100;
+  const lp = maker?.lp ?? null;
+  const vesting = live.status === "reselling" && lp && (lp.unlockableUsdc > 0 || lp.vestingUsdc > 0 || lp.nextUnlockAt !== null);
+  const nowSec = useChainClock(lp?.now, resale.dataUpdatedAt);
 
   return (
     <div className="rounded-xl border border-primary/40 bg-card p-5">
@@ -144,6 +176,24 @@ export function MakerPanel({ c, run, busy }: { c: CampaignWithLive; run: RunTx; 
           <dt className="text-muted-foreground">Resale royalties, unclaimed</dt>
           <dd className="font-mono tabular-nums">{maker ? usd(maker.resaleFeesUnclaimedUsdc, 3) : "…"}</dd>
         </div>
+        {royalty && (
+          <div className="flex items-baseline justify-between gap-4">
+            <dt className="text-muted-foreground">Your royalty per resale</dt>
+            <dd className="font-mono tabular-nums">{pct(royalty.makerRoyaltyBps)}</dd>
+          </div>
+        )}
+        {vesting && (
+          <>
+            <div className="flex items-baseline justify-between gap-4">
+              <dt className="text-muted-foreground">Production funds still vesting</dt>
+              <dd className="font-mono tabular-nums">{usd(lp.vestingUsdc)}</dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-4">
+              <dt className="text-muted-foreground">Your permanent resale floor</dt>
+              <dd className="font-mono tabular-nums">{usd(lp.permanentUsdc)}</dd>
+            </div>
+          </>
+        )}
       </dl>
       <div className="mt-4 grid gap-2">
         {live.status === "reselling" &&
@@ -154,11 +204,37 @@ export function MakerPanel({ c, run, busy }: { c: CampaignWithLive; run: RunTx; 
               {busy === "withdraw" ? "Withdrawing…" : `Withdraw ${usd(budget)} budget`}
             </Button>
           ))}
-        <Button variant="secondary" onClick={() => run("claim", "Claim fees")} disabled={!!busy || (claimable <= 0 && claimableVouchers <= 0)}>
+        {vesting &&
+          (lp.unlockableUsdc > 0 ? (
+            <Button onClick={() => run("unlock", "Unlock production funds")} disabled={!!busy}>
+              {busy === "unlock" ? "Unlocking…" : `Unlock ${usd(lp.unlockableUsdc)} production funds`}
+            </Button>
+          ) : lp.nextUnlockAt !== null ? (
+            <p className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground" aria-live="polite">
+              <Hourglass aria-hidden="true" className="size-4" />
+              {lp.nextUnlockAt > nowSec ? (
+                <>Next production funds unlock in <span className="font-mono text-foreground">{countdown(lp.nextUnlockAt - nowSec)}</span></>
+              ) : (
+                "Unlocking now…"
+              )}
+            </p>
+          ) : null)}
+        <Button variant="secondary" onClick={() => run("claim", "Claim fees")} disabled={!!busy || claimable <= 0}>
           {busy === "claim" ? "Claiming…" : claimable > 0 ? `Claim ${usd(claimable, 3)} in fees` : "No fees to claim yet"}
         </Button>
       </div>
       {live.status === "funding" && <p className="mt-2 text-xs text-muted-foreground">Your budget unlocks when the goal is reached.</p>}
+      {royalty && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Royalty = the {pct(royalty.poolFeeBps)} pool fee, minus Meteora&rsquo;s {royalty.protocolFeePct}% protocol share, times your {pct(royalty.makerLiquidityBps)} of the pool&rsquo;s
+          liquidity. Volatility fees add to it; unlocking lowers your share.
+        </p>
+      )}
+      {vesting && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Unlocking withdraws your released share of the resale pool and burns the vouchers that come with it, so they are no longer owed.
+        </p>
+      )}
       {live.status === "reselling" && (
         <Button asChild variant="ghost" className="mt-2 w-full">
           <Link href={`/c/${c.pool}/orders`}>View orders to ship</Link>
@@ -166,4 +242,24 @@ export function MakerPanel({ c, run, busy }: { c: CampaignWithLive; run: RunTx; 
       )}
     </div>
   );
+}
+
+// Chain time, advanced by the wall clock since the server last read it.
+function useChainClock(chainNow: number | undefined, readAtMs: number) {
+  const [wallMs, setWallMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setWallMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return chainNow === undefined ? wallMs / 1000 : chainNow + Math.max(0, (wallMs - readAtMs) / 1000);
+}
+
+function countdown(sec: number) {
+  const s = Math.ceil(sec);
+  const d = Math.floor(s / 86_400);
+  const h = Math.floor((s % 86_400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
 }

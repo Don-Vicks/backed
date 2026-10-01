@@ -1,20 +1,15 @@
-import { getCampaign, listRedemptions, verifyWalletMessage } from "@preorder/core";
-import { BadRequest, errorResponse, publicKey } from "@/lib/server";
+import { listRedemptions, schemas } from "@preorder/core";
+import { errorResponse, readJson, requestLog, requireMakerSignIn } from "@/lib/server";
 
-// Maker-only: the maker's wallet signs a time-stamped message to see shipping details.
+// Maker-only: the maker's wallet signs a short-lived message for this site to see shipping details.
 export async function POST(req: Request) {
+  const log = requestLog("POST /api/redemptions/list");
   try {
-    const { pool, message, signature } = (await req.json()) as { pool: string; message: string; signature: string };
-    const record = getCampaign(pool);
-    if (!record) throw new BadRequest("Unknown campaign");
-    if (!message.includes(pool)) throw new BadRequest("Message is for a different campaign");
-    try {
-      verifyWalletMessage(message, signature, publicKey(record.maker));
-    } catch (e) {
-      return Response.json({ error: e instanceof Error ? e.message : "Not authorized" }, { status: 403 });
-    }
-    return Response.json({ redemptions: listRedemptions(pool) });
+    const body = await readJson(req, schemas.ordersSignIn);
+    const record = requireMakerSignIn(req, body);
+    log.wallet = record.maker;
+    return Response.json({ redemptions: listRedemptions(record.pool) });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

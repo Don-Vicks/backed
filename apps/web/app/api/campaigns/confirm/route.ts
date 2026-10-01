@@ -1,20 +1,24 @@
-import { dbcClient, saveCampaign, takePending } from "@preorder/core";
-import { BadRequest, connection, errorResponse } from "@/lib/server";
+import { ListingError, confirmListing, schemas } from "@preorder/core";
+import { connection, errorResponse, logLine, rateLimit, readJson, requestLog } from "@/lib/server";
 
-// Called after the maker's wallet sent the create transaction: verifies the pool exists, then lists it.
+// Called after the maker's wallet sent the create transaction(s). Idempotent: a listed campaign returns ok.
+// Waits up to ~15s for the pool on the server's RPC, checks the transaction that created it (the client's
+// signature, else the pool's first transaction), then lists it. 409 + retry means "try again shortly".
+// A split create's pool is made by its second transaction (createPool), which is the one to send.
 export async function POST(req: Request) {
+  const log = requestLog("POST /api/campaigns/confirm");
   try {
-    const { pool, signature } = (await req.json()) as { pool: string; signature: string };
-    const conn = connection();
-    const status = await conn.getSignatureStatus(signature, { searchTransactionHistory: true });
-    if (status.value?.err) throw new BadRequest("The create transaction failed on-chain");
-    const onChain = await dbcClient(conn).state.getPool(pool);
-    if (!onChain) throw new BadRequest("Pool not found on-chain yet; try again in a few seconds");
-    const record = takePending(pool);
-    if (!record) throw new BadRequest("Unknown campaign");
-    saveCampaign({ ...record, createSignature: signature });
-    return Response.json({ ok: true, pool });
+    rateLimit(req, "tx");
+    const { pool: poolKey, signature } = await readJson(req, schemas.confirmCampaign);
+    const pool = poolKey.toBase58();
+    log.sig = signature;
+    const { record, alreadyListed } = await confirmListing(connection(), pool, signature);
+    if (!alreadyListed) {
+      logLine("info", { reqId: log.reqId, route: log.route, wallet: record.maker, sig: record.createSignature, pool, event: "campaign listed" });
+    }
+    return Response.json({ ok: true, pool, alreadyListed });
   } catch (e) {
-    return errorResponse(e);
+    if (e instanceof ListingError) return Response.json({ error: e.message, retry: e.retry }, { status: e.status });
+    return errorResponse(e, log);
   }
 }

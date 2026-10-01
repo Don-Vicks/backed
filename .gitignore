@@ -8,3 +8,4 @@ dist
 out/
 data/
 .brand-preview/
+.localnet/

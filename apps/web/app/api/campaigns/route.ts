@@ -1,54 +1,95 @@
 import { randomBytes } from "crypto";
-import { Keypair } from "@solana/web3.js";
 import {
   buildCreateCampaignTx,
+  campaignFromInput,
+  campaignToConfig,
+  createCampaignSteps,
   getUsdcMint,
+  HttpError,
   listCampaigns,
-  loadKeypair,
-  readCampaignLive,
+  readCampaignsLive,
   saveMetadata,
   savePending,
+  schemas,
   type Campaign,
+  type TrustResult,
 } from "@preorder/core";
-import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, publicOrigin, serialize, trustFor } from "@/lib/server";
+import {
+  BadRequest,
+  connection,
+  errorResponse,
+  finalizeForWallet,
+  logLine,
+  publicOrigin,
+  rateLimit,
+  readJson,
+  requestLog,
+  serialize,
+  trustFor,
+} from "@/lib/server";
 
+// Every campaign with its live state, read in batches and cached per pool for a few seconds; a pool
+// that can't be read right now comes back with live: null.
 export async function GET() {
+  const log = requestLog("GET /api/campaigns");
   try {
-    const conn = connection();
-    const campaigns = await Promise.all(
-      listCampaigns().map(async (c) => ({ ...c, live: await readCampaignLive(conn, c).catch(() => null) })),
-    );
-    return Response.json({ campaigns });
+    const records = listCampaigns();
+    const live = await readCampaignsLive(connection(), records).catch((e) => {
+      logLine("error", { reqId: log.reqId, route: log.route, err: e instanceof Error ? e.message : String(e) });
+      return records.map(() => null);
+    });
+    return Response.json({ campaigns: records.map((c, i) => ({ ...c, live: live[i] })) });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }
 
-// Builds the create-campaign transaction for the maker's wallet. The platform (partner) key and the
-// fresh config + mint keys sign here; the maker signs as pool creator in the browser.
+// Builds the create-campaign transaction(s) for the maker's wallet. The maker pays and signs as
+// payer and pool creator; only the fresh config + mint keys sign here, never the platform key. Large
+// campaigns come back as two transactions (createConfig, then createPool) for one signAllTransactions.
 export async function POST(req: Request) {
+  const log = requestLog("POST /api/campaigns");
   try {
     // First, so a misconfigured deploy fails before any RPC call or write.
     const origin = publicOrigin(req);
-    const body = (await req.json()) as { campaign: Campaign; maker: string; verifiedSocial?: boolean };
-    const maker = publicKey(body.maker, "maker");
-    if (!body.campaign?.name?.trim()) throw new BadRequest("Name the product");
-    const trust = await trustFor(maker.toBase58(), !!body.verifiedSocial);
+    rateLimit(req, "create");
+    const body = await readJson(req, schemas.createCampaign);
+    const maker = body.maker;
+    log.wallet = maker.toBase58();
     // Token metadata lives at our own URL, kept short because every uri byte is in the create tx.
     const metaId = randomBytes(8).toString("base64url").slice(0, 10);
-    const campaign: Campaign = { ...body.campaign, name: body.campaign.name.trim().slice(0, 32), symbol: body.campaign.symbol.trim().toUpperCase().slice(0, 10), uri: `${origin}/m/${metaId}` };
-    saveMetadata(metaId, { name: campaign.name, symbol: campaign.symbol, description: campaign.description ?? "", image: campaign.image ?? "" });
-    const platform = loadKeypair("platform");
-    const usdcMint = getUsdcMint();
-    const conn = connection();
-    let built;
+    let campaign: Campaign;
     try {
-      built = await buildCreateCampaignTx({ connection: conn, campaign, tier: trust.tier, platform: platform.publicKey, maker, usdcMint });
+      campaign = campaignFromInput(body.campaign, `${origin}/m/${metaId}`);
     } catch (e) {
       throw new BadRequest(e instanceof Error ? e.message : String(e));
     }
-    const tx = await finalizeForWallet(built.tx, platform.publicKey);
-    tx.partialSign(platform, ...(built.extraSigners as Keypair[]));
+    // The tier caps the maker's share, so a failed lookup stops the launch instead of guessing a tier.
+    let trust: TrustResult;
+    try {
+      trust = await trustFor(maker.toBase58(), req);
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 429) throw e;
+      logLine("error", { reqId: log.reqId, route: log.route, wallet: log.wallet, err: `trust lookup: ${e instanceof Error ? e.message : String(e)}` });
+      throw new HttpError("Your wallet's trust check is unavailable right now. Try again in a minute.", 503);
+    }
+    // The same validation the build runs, first: a share above the tier cap or a bad plan is the maker's
+    // to fix (400); anything the build itself throws after this is ours (500).
+    try {
+      campaignToConfig(campaign, trust.tier);
+    } catch (e) {
+      throw new BadRequest(e instanceof Error ? e.message : String(e));
+    }
+    const usdcMint = getUsdcMint();
+    const conn = connection();
+    const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: trust.tier, maker, usdcMint });
+    const steps = createCampaignSteps(built, maker);
+    for (const step of steps) {
+      await finalizeForWallet(step.tx, maker);
+      step.tx.partialSign(...step.signers);
+    }
+    // Only a request that built a valid transaction leaves metadata behind.
+    saveMetadata(metaId, { name: campaign.name, symbol: campaign.symbol, description: campaign.description ?? "", image: campaign.image ?? "" });
     savePending({
       pool: built.pool.toBase58(),
       config: built.config.toBase58(),
@@ -62,9 +103,11 @@ export async function POST(req: Request) {
       goalUsdc: built.onChain.goalUsdc,
       totalUnits: built.onChain.totalUnits,
       fields: built.fields,
+      migrationFeeOption: built.onChain.migrationFeeOption,
     });
-    return Response.json({ ...serialize(tx), pool: built.pool.toBase58() });
+    // In order: the wallet signs them all at once and the client sends each after the previous confirms.
+    return Response.json({ txs: steps.map((step) => serialize(step.tx)), pool: built.pool.toBase58() });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

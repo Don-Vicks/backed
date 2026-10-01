@@ -1,5 +1,6 @@
 // Exercises the web API exactly as the browser does, signing with local devnet test wallets.
 import { Transaction } from '@solana/web3.js'
+import { LIVE_TTL_MS } from '../live'
 import { getConnection } from '../network'
 import { loadWallets } from '../wallets'
 
@@ -29,18 +30,23 @@ async function main() {
   const campaign = {
     name: 'API Smoke Mug', symbol: 'MUG', uri: '', description: 'Created through the web API.',
     plan: { tiers: [{ units: 2, startPrice: 3 }, { units: 2, startPrice: 4 }], finalPrice: 5, makerSharePct: 10 },
-    dropBot: { startFeeBps: 5000, windowSec: 60 }, normalFeeBps: 100,
+    dropBot: { startFeeBps: 1500, windowSec: 60 }, normalFeeBps: 100,
   }
   const preview = await api<any>('/api/preview', { campaign, maker: w.maker.publicKey.toBase58() })
   console.log(`preview: tier ${preview.trust.tier}, goal ${preview.onChain.goalUsdc.toFixed(4)}, fields ${preview.fields.length}`)
 
-  const created = await api<{ tx: string; lastValidBlockHeight: number; pool: string }>('/api/campaigns', { campaign, maker: w.maker.publicKey.toBase58() })
-  const sig = await signSend(created, w.maker, 'maker signs + sends create')
+  const created = await api<{ txs: { tx: string; lastValidBlockHeight: number }[]; pool: string }>('/api/campaigns', { campaign, maker: w.maker.publicKey.toBase58() })
+  let sig = ''
+  for (const built of created.txs) sig = await signSend(built, w.maker, 'maker signs, pays + sends create')
   await api('/api/campaigns/confirm', { pool: created.pool, signature: sig })
   console.log(`✓ confirmed, pool ${created.pool}`)
+  // The optional second transaction after create: the campaign's on-chain listing (DBC pool metadata).
+  const listing = await api<{ tx: string; lastValidBlockHeight: number }>(`/api/campaigns/${created.pool}/listing`, { wallet: w.maker.publicKey.toBase58() })
+  await signSend(listing, w.maker, 'maker publishes the on-chain listing')
 
-  await api('/api/faucet', { wallet: w.backer1.publicKey.toBase58() })
-  console.log('✓ faucet')
+  // Every backer below spends test USDC; fresh localnet wallets start with none.
+  for (const b of [w.backer1, w.backer2, w.backer3]) await api('/api/faucet', { wallet: b.publicKey.toBase58() })
+  console.log('✓ faucet ×3')
 
   console.log('waiting 65s for the drop-bot window…')
   await new Promise((r) => setTimeout(r, 65_000))
@@ -50,6 +56,11 @@ async function main() {
   await signSend(buy, w.backer1, 'backer1 backs 3 USDC (with referral)')
   const sell = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'sell', pool: created.pool, wallet: w.backer1.publicKey.toBase58() })
   await signSend(sell, w.backer1, 'backer1 exits at curve price')
+  // Whole units: exactly one voucher (ExactOut), for at most the quoted maximum.
+  const uq = await api<any>('/api/quote/units', { pool: created.pool, units: 1 })
+  console.log(`units quote 1 → $${uq.usdc.toFixed(4)} (at most $${uq.maxUsdc.toFixed(4)}), ${uq.maxUnits} units left`)
+  const unitsBuy = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'buyUnits', pool: created.pool, wallet: w.backer1.publicKey.toBase58(), units: 1, ref: w.backer2.publicKey.toBase58() })
+  await signSend(unitsBuy, w.backer1, 'backer1 backs 1 whole unit (with referral)')
 
   // Fund to the goal, graduate via API, maker withdraws, backer redeems.
   let live = (await api<any>(`/api/campaigns/${created.pool}`)).campaign.live
@@ -59,11 +70,15 @@ async function main() {
     const b = backers[i++ % 3]
     const t = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'buy', pool: created.pool, wallet: b.publicKey.toBase58(), usdc: 4 })
     await signSend(t, b, `buy 4 USDC`)
+    await new Promise((r) => setTimeout(r, LIVE_TTL_MS)) // the server caches live state this long
     live = (await api<any>(`/api/campaigns/${created.pool}`)).campaign.live
     console.log(`  progress ${(live.progress * 100).toFixed(1)}%`)
     if (i > 20) throw new Error('did not fund')
   }
-  console.log(await api('/api/campaigns/' + created.pool + '/migrate', {}))
+  // Graduation is paid by whoever clicks; here backer1. Meteora's keeper may already have done it.
+  const migrate = await api<{ tx?: string; lastValidBlockHeight?: number; already?: boolean }>('/api/campaigns/' + created.pool + '/migrate', { wallet: w.backer1.publicKey.toBase58() })
+  if (migrate.tx) await signSend(migrate as { tx: string; lastValidBlockHeight: number }, w.backer1, 'backer1 pays + sends graduation')
+  else console.log('already graduated by the keeper')
   await finish(created.pool)
 }
 
@@ -83,12 +98,24 @@ async function finish(pool: string) {
   let live: any
   const wd = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'withdraw', pool: created.pool, wallet: w.maker.publicKey.toBase58() })
   await signSend(wd, w.maker, 'maker withdraws budget')
-  live = (await api<any>(`/api/campaigns/${created.pool}`)).campaign.live
-  console.log(`status ${live.status}, resale pool ${live.resalePool}`)
+  const page = (await api<any>(`/api/campaigns/${created.pool}`)).campaign
+  live = page.live
+  console.log(`status ${live.status}, resale pool ${live.resalePool}, listed on-chain: ${page.listing?.official ?? false}`)
+  // Production funds unlock on the ship-window schedule: before the cliff the server says so.
+  const unlock = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'unlock', pool: created.pool, wallet: w.maker.publicKey.toBase58() }).catch((e: Error) => e)
+  if (unlock instanceof Error) console.log(`unlock: ${unlock.message}`)
+  else await signSend(unlock, w.maker, 'maker unlocks production funds')
+  const platform = await api<any>('/api/platform')
+  console.log(`✓ platform earnings read for ${platform.campaigns?.length ?? 0} campaigns`)
+  const shipping = { name: 'Smoke Tester', email: '', address: '1 Test St', country: 'NL' }
   for (const b of backers) {
-    const r = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'redeem', pool: created.pool, wallet: b.publicKey.toBase58() }).catch(() => null)
-    if (!r) continue
-    try { await signSend(r, b, 'redeem 1 voucher'); break } catch { /* holds < 1 voucher */ }
+    const r = await api<{ id: string; tx: string; lastValidBlockHeight: number }>('/api/redemptions/prepare', { pool: created.pool, wallet: b.publicKey.toBase58(), shipping }).catch(() => null)
+    if (!r) continue // holds < 1 voucher
+    const tx = Transaction.from(Buffer.from(r.tx, 'base64'))
+    tx.partialSign(b)
+    const done = await api<{ signature: string }>('/api/redemptions/submit', { pool: created.pool, id: r.id, tx: tx.serialize().toString('base64'), shipping })
+    console.log(`✓ redeem 1 voucher ${done.signature.slice(0, 16)}…, order recorded`)
+    break
   }
   console.log(`\nAPI smoke passed. Open ${BASE}/c/${created.pool}`)
 }

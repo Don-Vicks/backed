@@ -1,15 +1,18 @@
-import { getCampaign, quoteResale, type ResaleSide } from "@preorder/core";
-import { BadRequest, connection, errorResponse } from "@/lib/server";
+import { getCampaign, HttpError, quoteResale, schemas } from "@preorder/core";
+import { connection, errorResponse, rateLimit, readJson, requestLog, requireStatus } from "@/lib/server";
 
+// Same slippage setting as /api/tx resaleBuy/resaleSell, so minOut matches the signed transaction.
+// 404 for an unknown campaign, 409 until it has graduated and its resale pool exists.
 export async function POST(req: Request) {
+  const log = requestLog("POST /api/resale/quote");
   try {
-    const { pool, side, amount } = (await req.json()) as { pool: string; side: ResaleSide; amount: number };
-    const record = getCampaign(pool);
-    if (!record) throw new BadRequest("Unknown campaign");
-    if (side !== "buy" && side !== "sell") throw new BadRequest("side must be buy or sell");
-    if (!(amount > 0)) throw new BadRequest("Enter an amount");
-    return Response.json(await quoteResale(connection(), record, side, amount));
+    rateLimit(req, "quote");
+    const { pool, side, amount, slippageBps } = await readJson(req, schemas.resaleQuote);
+    const record = getCampaign(pool.toBase58());
+    if (!record) throw new HttpError("Campaign not found", 404);
+    await requireStatus(record, log, "reselling", "The resale market opens after graduation");
+    return Response.json(await quoteResale(connection(), record, side, amount, slippageBps));
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

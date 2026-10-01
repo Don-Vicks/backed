@@ -3,7 +3,7 @@ import os from 'os'
 import path from 'path'
 import bs58 from 'bs58'
 import { Keypair, PublicKey } from '@solana/web3.js'
-import { getNetwork } from './network'
+import { getNetwork, isTestNetwork } from './network'
 import { repoRoot } from './paths'
 
 export const WALLET_ROLES = ['platform', 'maker', 'backer1', 'backer2', 'backer3'] as const
@@ -24,7 +24,7 @@ export function loadKeypairFile(file: string): Keypair {
 
 export function hasKeypair(name: string): boolean {
   const envName = KEY_ENV[name]
-  return !!(envName && process.env[envName]?.trim()) || fs.existsSync(keyPath(name))
+  return !!(envName && process.env[envName]?.trim()) || fs.existsSync(keyPath(name)) || (name === 'platform' && testKeysAutogen())
 }
 
 class SecretKeyError extends Error {}
@@ -50,6 +50,27 @@ export function parseSecretKey(raw: string): Keypair {
 // Deployed servers have no keys/ directory, so the platform key can come from the environment.
 const KEY_ENV: Partial<Record<string, string>> = { platform: 'PLATFORM_SECRET_KEY' }
 
+// TEST_KEYS_AUTOGEN=1 lets a devnet deploy create its own platform key (and shipping key, see seal.ts)
+// on its volume the first time it is needed, so no secret is ever pasted into the host's settings.
+// Ignored on mainnet, where keys must be provisioned deliberately.
+export function testKeysAutogen(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.TEST_KEYS_AUTOGEN === '1' && isTestNetwork(getNetwork(env).name)
+}
+
+function generatePlatformKey(): Keypair {
+  const kp = Keypair.generate()
+  fs.mkdirSync(keysDir(), { recursive: true })
+  try {
+    // 'wx': two requests racing on first boot keep whichever key landed first.
+    fs.writeFileSync(keyPath('platform'), JSON.stringify(Array.from(kp.secretKey)), { mode: 0o600, flag: 'wx' })
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    return loadKeypairFile(keyPath('platform'))
+  }
+  console.log(`TEST_KEYS_AUTOGEN: generated the ${getNetwork().name} platform key ${kp.publicKey.toBase58()}`)
+  return kp
+}
+
 export function loadKeypair(name: string): Keypair {
   const envName = KEY_ENV[name]
   const raw = envName ? process.env[envName] : undefined
@@ -61,6 +82,7 @@ export function loadKeypair(name: string): Keypair {
       throw new Error(`${envName} is not a valid secret key: ${e instanceof SecretKeyError ? e.message : 'invalid'}`)
     }
   }
+  if (name === 'platform' && !fs.existsSync(keyPath(name)) && testKeysAutogen()) return generatePlatformKey()
   return loadKeypairFile(keyPath(name))
 }
 

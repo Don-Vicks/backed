@@ -1,23 +1,50 @@
 import { PublicKey } from "@solana/web3.js";
-import { buildMigrateTx, dbcClient, getCampaign, loadKeypair, send } from "@preorder/core";
-import { BadRequest, connection, errorResponse } from "@/lib/server";
+import { buildMigrateTx, dbcClient, forgetCampaignLive, getCampaign, HttpError, loadKeypair, schemas, send, withPriorityFee } from "@preorder/core";
+import { adminAuth, unauthorized } from "@/lib/admin";
+import { connection, errorResponse, finalizeForWallet, logLine, rateLimit, readJson, requestLog, serialize } from "@/lib/server";
 
-// Anyone can trigger graduation once the goal is reached; the platform pays for it.
-export async function POST(_req: Request, ctx: RouteContext<"/api/campaigns/[pool]/migrate">) {
+// Anyone can trigger graduation once the goal is reached, and the caller's wallet pays: this returns a
+// migrate transaction with that wallet as fee payer and the two position-NFT keys already signed.
+// The platform-paid path (signed and sent here) is only for an operator holding ADMIN_TOKEN.
+// When the pool has already graduated (Meteora's keeper or another wallet), the answer is { already: true }.
+export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[pool]/migrate">) {
+  const log = requestLog("POST /api/campaigns/[pool]/migrate");
   try {
     const { pool } = await ctx.params;
-    if (!getCampaign(pool)) throw new BadRequest("Unknown campaign");
+    if (!getCampaign(pool)) throw new HttpError("Campaign not found", 404);
+    const auth = adminAuth(req);
+    if (auth === "denied") return unauthorized();
+    if (auth !== "admin") rateLimit(req, "migrate");
+    const { wallet } = await readJson(req, schemas.migrate, { optional: true });
+
     const conn = connection();
     const client = dbcClient(conn);
     const state = await client.state.getPool(pool);
-    if (!state) throw new BadRequest("Pool not found");
-    if (Number(state.poolState.isMigrated) === 1) return Response.json({ ok: true, already: true });
-    if ((await client.state.getPoolQuoteTokenCurveProgress(pool)) < 1) throw new BadRequest("Goal not reached yet");
-    const platform = loadKeypair("platform");
-    const { tx, extraSigners } = await buildMigrateTx(conn, platform.publicKey, new PublicKey(pool));
-    const signature = await send(conn, tx, [platform, ...extraSigners], `migrate ${pool}`);
-    return Response.json({ ok: true, signature });
+    if (!state) throw new HttpError("Pool not found", 404);
+    if (Number(state.poolState.isMigrated) === 1) {
+      forgetCampaignLive(pool); // the cached state may still say funded: the next read sees the graduation
+      return Response.json({ ok: true, already: true });
+    }
+
+    if (auth !== "admin" && !wallet) throw new HttpError("wallet is missing", 400);
+    const payer = auth === "admin" ? null : wallet!;
+    log.wallet = payer?.toBase58();
+    if ((await client.state.getPoolQuoteTokenCurveProgress(pool)) < 1) throw new HttpError("Goal not reached yet", 409);
+    if (!payer) {
+      const platform = loadKeypair("platform");
+      const { tx, extraSigners } = await buildMigrateTx(conn, platform.publicKey, new PublicKey(pool));
+      tx.feePayer = platform.publicKey;
+      await withPriorityFee(tx, conn); // send() sets the blockhash and signs after this
+      const signature = await send(conn, tx, [platform, ...extraSigners], `migrate ${pool}`);
+      forgetCampaignLive(pool);
+      logLine("info", { reqId: log.reqId, route: log.route, sig: signature, pool, event: "graduated (platform-paid)" });
+      return Response.json({ ok: true, signature });
+    }
+    const { tx, extraSigners } = await buildMigrateTx(conn, payer, new PublicKey(pool));
+    await finalizeForWallet(tx, payer);
+    tx.partialSign(...extraSigners);
+    return Response.json(serialize(tx));
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

@@ -6,8 +6,8 @@ import { BRAND } from "@preorder/core/src/brand";
 
 const STEPS = [
   { title: "Back it early", body: "Every campaign has early-bird tiers on a bonding curve. The first backers pay the least." },
-  { title: "Goal reached, maker funded", body: "When the goal is hit, the maker gets their production budget automatically." },
-  { title: "Resell or redeem", body: "Your voucher trades on a locked resale market, and the maker earns on every resale. Burn it to claim the item." },
+  { title: "Goal reached, maker funded", body: "When the goal is hit, the maker gets an upfront budget automatically. The rest unlocks after the promised ship date." },
+  { title: "Resell or redeem", body: "Your voucher trades on a resale market with a permanent floor, and the maker earns on every resale. Burn it to claim the item." },
 ];
 
 export default function Home() {

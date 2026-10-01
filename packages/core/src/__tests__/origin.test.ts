@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ConfigError, resolvePublicOrigin } from '../origin'
+import { ConfigError, resolvePublicOrigin, siteHosts } from '../origin'
 
 test('PUBLIC_BASE_URL wins over RAILWAY_PUBLIC_DOMAIN and the request', () => {
   const env = { PUBLIC_BASE_URL: 'https://x.test/', RAILWAY_PUBLIC_DOMAIN: 'app.up.railway.app' }
@@ -23,4 +23,15 @@ test('refuses localhost and plain http off localnet', () => {
   }
   assert.throws(() => resolvePublicOrigin({ PUBLIC_BASE_URL: 'not a url' }, 'devnet'), /not a URL/)
   assert.equal(resolvePublicOrigin({ PUBLIC_BASE_URL: 'http://localhost:3201' }, 'localnet'), 'http://localhost:3201')
+})
+
+test('site hosts: the public URL’s and Railway’s own domain, for checking signed messages', () => {
+  assert.deepEqual(siteHosts({ PUBLIC_BASE_URL: 'https://backed.example' }, 'devnet'), ['backed.example'])
+  assert.deepEqual(siteHosts({ PUBLIC_BASE_URL: 'https://backed.example', RAILWAY_PUBLIC_DOMAIN: 'backed.up.railway.app' }, 'devnet'), [
+    'backed.example',
+    'backed.up.railway.app',
+  ])
+  assert.deepEqual(siteHosts({ RAILWAY_PUBLIC_DOMAIN: 'backed.up.railway.app' }, 'devnet'), ['backed.up.railway.app'])
+  assert.deepEqual(siteHosts({}, 'localnet', 'http://localhost:3201/api/redemptions/list'), ['localhost:3201'])
+  assert.throws(() => siteHosts({}, 'mainnet', 'https://evil.example/x'), ConfigError, 'never the request’s host off localnet')
 })
