@@ -9,6 +9,7 @@
     "lifecycle": "ts-node src/scripts/lifecycle.ts",
     "test": "node -r ts-node/register --test src/__tests__/*.test.ts",
     "launch": "ts-node src/scripts/launch.ts",
+    "reconcile": "ts-node src/scripts/reconcile.ts",
     "test:localnet": "LOCALNET=1 node -r ts-node/register --test src/__tests__/localnet/*.test.ts"
   },
   "dependencies": {

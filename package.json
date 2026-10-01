@@ -12,6 +12,7 @@
     "core:balance": "pnpm --filter @preorder/core balance",
     "core:lifecycle": "pnpm --filter @preorder/core lifecycle",
     "core:launch": "pnpm --filter @preorder/core launch",
+    "core:reconcile": "pnpm --filter @preorder/core reconcile",
     "core:test": "pnpm --filter @preorder/core test",
     "core:test:localnet": "pnpm --filter @preorder/core test:localnet"
   }

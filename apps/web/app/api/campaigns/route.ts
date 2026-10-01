@@ -37,7 +37,6 @@ export async function POST(req: Request) {
     // Token metadata lives at our own URL, kept short because every uri byte is in the create tx.
     const metaId = randomBytes(8).toString("base64url").slice(0, 10);
     const campaign: Campaign = { ...body.campaign, name: body.campaign.name.trim().slice(0, 32), symbol: body.campaign.symbol.trim().toUpperCase().slice(0, 10), uri: `${origin}/m/${metaId}` };
-    saveMetadata(metaId, { name: campaign.name, symbol: campaign.symbol, description: campaign.description ?? "", image: campaign.image ?? "" });
     const platform = loadKeypair("platform");
     const usdcMint = getUsdcMint();
     const conn = connection();
@@ -49,6 +48,8 @@ export async function POST(req: Request) {
     }
     const tx = await finalizeForWallet(built.tx, platform.publicKey);
     tx.partialSign(platform, ...(built.extraSigners as Keypair[]));
+    // Only a request that built a valid transaction leaves metadata behind.
+    saveMetadata(metaId, { name: campaign.name, symbol: campaign.symbol, description: campaign.description ?? "", image: campaign.image ?? "" });
     savePending({
       pool: built.pool.toBase58(),
       config: built.config.toBase58(),

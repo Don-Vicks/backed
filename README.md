@@ -115,10 +115,11 @@ In the app, connect Phantom, Solflare or Backpack on **devnet** and click **Get 
 Other commands:
 
 ```bash
-pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in, config)
-pnpm core:test:localnet                               # checks against a local validator (LOCALNET_RPC_URL)
+pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in, config, store, listing)
+pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): programs, listing on the real DBC
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
+pnpm core:reconcile                                   # list pending campaigns that landed, expire ones that never will
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
 ```
 
@@ -129,11 +130,15 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 - **`NETWORK`** (`localnet`, `devnet` or `mainnet`) is the only network switch. The scripts and the server read it at runtime; `next.config.ts` bakes it and the matching browser RPC (`PUBLIC_RPC_URL`, else a keyless default) into the bundle, so **changing it needs a rebuild**. `/api/health` returns 503 if the running server and the build disagree. `NETWORK=mainnet` switches to real USDC and mainnet RPC; the faucet only runs on devnet and localnet.
 - **`PUBLIC_BASE_URL`** is the app's https origin. It goes into immutable on-chain metadata URIs and Blink icons, so it is required off localnet (`RAILWAY_PUBLIC_DOMAIN` is the fallback). Creating a campaign fails fast without it. Creating campaigns from a laptop on devnet therefore needs a public https URL (a tunnel); use localnet for local work.
 - **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching.
+- **`DATA_DIR`** holds the store: one SQLite file per network (`backed.<network>.sqlite`, WAL mode, via Node's built-in `node:sqlite`) with campaigns, pending creates, token metadata and redemptions. Every write is a transaction, so a crash or `kill -9` never leaves a torn file, and the scripts can run next to the server. Schema changes are an ordered list of named migrations in `packages/core/src/db.ts`. Old `data/*.json` files are imported once on first open.
+- **`SHIPPING_KEY`** encrypts shipping details at rest (AES-256-GCM, each row bound to its burn signature). Required on mainnet; devnet and localnet fall back to a public dev key with a warning.
+- **Listing is idempotent.** `POST /api/campaigns/confirm` can be retried: it waits up to ~15s for the pool on the server's RPC, checks the create transaction (succeeded, touches the pool, signed by the maker) and lists the campaign once. The create page keeps a sent launch in local storage and offers **Finish listing** instead of a second launch. Pending creates expire after 24h; the server's reconcile job (`RECONCILE_INTERVAL_SEC`), `pnpm core:reconcile` and `POST /api/admin/reconcile` (with `Authorization: Bearer $ADMIN_TOKEN`) list any pool that landed without a confirm.
+- **`/api/status`** is the deep check for operators: store writable and on a volume, `SHIPPING_KEY` set where required, RPC slot latency, and platform SOL against `STATUS_MIN_PLATFORM_SOL`. It returns 503 when any check fails.
 - **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history.
 
 ### Deploy (Railway)
 
-`railway.json` builds from the repo root with Railpack (`pnpm build`), starts with `pnpm start` (Next reads `PORT`) and health-checks `/api/health`, a liveness route that makes no RPC call. Railpack takes the Node version from `engines.node` (`22.22.x`). Set `NETWORK`, the RPC URLs, `PUBLIC_RPC_URL`, `PUBLIC_BASE_URL`, `PLATFORM_SECRET_KEY`, `PLATFORM_FEE_CLAIMER` and (off mainnet) `USDC_MINT` as service variables before the first build, and keep the service root at the repo root so the workspace resolves.
+`railway.json` builds from the repo root with Railpack (`pnpm build`), starts with `pnpm start` (Next reads `PORT`) and health-checks `/api/health`, a liveness route that makes no RPC call. Railpack takes the Node version from `engines.node` (`22.22.x`). Set `NETWORK`, the RPC URLs, `PUBLIC_RPC_URL`, `PUBLIC_BASE_URL`, `PLATFORM_SECRET_KEY`, `PLATFORM_FEE_CLAIMER` and (off mainnet) `USDC_MINT` as service variables before the first build, and keep the service root at the repo root so the workspace resolves. Attach a volume at `/app/data`, set `DATA_DIR=/app/data` and turn on daily backups: token metadata sits behind immutable on-chain URIs, so losing the store breaks it for good. Also set `SHIPPING_KEY` and `ADMIN_TOKEN`. One replica only (SQLite on a single volume).
 
 ---
 
@@ -141,7 +146,7 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 
 - **Trust-minimized, not trustless.** A maker can take the upfront share and never ship. The trust tier limits how much they can take upfront, and the rest stays locked in the resale pool.
 - **Exit ≠ refund.** Selling back before the goal pays the current curve price, which can be more or less than the price paid.
-- **Demo storage.** Campaign records, token metadata and shipping details are kept in JSON files on the server. Production needs a database, and encryption for shipping data.
+- **Single-server storage.** The store is SQLite on one volume, so the app runs as one replica. Shipping details are encrypted at rest, but the server holds the key and decrypts them for the maker.
 - **Trust signals are simple.** Wallet age, activity and first funder can be gamed with aged wallets. They are one input, shown openly, and not a verdict.
 
 ## Business model

@@ -9,6 +9,7 @@ import { send } from '../tx'
 import { MAX_MAKER_SHARE, scoreSignals, trustTier, type TrustResult, type TrustTierName } from '../trust'
 import { buildCreateCampaignTx, dbcClient, getUsdcMint } from '../chain'
 import { saveCampaign } from '../store'
+import { dbPath } from '../db'
 import { repoRoot } from '../paths'
 import type { Campaign } from '../engine'
 
@@ -53,7 +54,7 @@ async function main() {
     totalUnits: built.onChain.totalUnits,
     fields: built.fields,
   })
-  console.log(`Pool ${explorerAccount(built.pool)}\nOn-chain goal ${(Number(threshold.toString()) / 1e6).toFixed(4)} USDC. Saved to data/campaigns.${getNetwork().name}.json`)
+  console.log(`Pool ${explorerAccount(built.pool)}\nOn-chain goal ${(Number(threshold.toString()) / 1e6).toFixed(4)} USDC. Saved to ${dbPath()}`)
 }
 
 main().catch((e) => {
