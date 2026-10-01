@@ -86,7 +86,11 @@ packages/core       All Solana logic, shared by the scripts and the web server
   network.ts        NETWORK switch (localnet, devnet, mainnet), RPC and explorer links
   resale.ts         DAMM v2 resale pool, quotes, swaps, maker earnings + claim
   redemptions.ts    on-chain burn verification, shipping records, maker sign-in
-  scripts/          lifecycle proof, launch, API smoke tests
+  inspect.ts        decodes a config, a pool and the DAMM v2 positions per owner (core:inspect, tests)
+  localnet.ts       what a local validator clones from mainnet, and the localnet seed
+  scripts/          lifecycle proof, launch, inspect, localnet seed, API smoke tests
+scripts/localnet    start/stop/dump a validator with the mainnet Meteora programs
+.github/workflows   CI: check (typecheck, lint, unit tests, build) and localnet (chain suites)
 ```
 
 - **Wallet flow.** The server builds each transaction and the browser wallet signs it. Campaign creation is signed by the platform key (the DBC partner) and the fresh config and mint keys on the server, then by the maker's wallet as pool creator.
@@ -116,7 +120,8 @@ Other commands:
 
 ```bash
 pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in, config, store, listing)
-pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): programs, listing on the real DBC
+pnpm core:test:localnet                               # every suite in packages/core/src/__tests__/localnet/ against LOCALNET_RPC_URL (see Localnet below)
+pnpm core:inspect <pool | config | resale pool>       # decode a DBC config/pool and the DAMM v2 positions per owner (--json for machine output)
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
 pnpm core:reconcile                                   # list pending campaigns that landed, expire ones that never will
@@ -135,6 +140,27 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 - **Listing is idempotent.** `POST /api/campaigns/confirm` can be retried: it waits up to ~15s for the pool on the server's RPC, checks the create transaction (succeeded, touches the pool, signed by the maker) and lists the campaign once. Concurrent confirms of a pool share one wait, and a signature the RPC does not know falls back to the pool's first transaction instead of being polled. The create page keeps a sent launch in local storage and offers **Finish listing** instead of a second launch. Pending creates expire after 24h; the server's reconcile job (`RECONCILE_INTERVAL_SEC`), `pnpm core:reconcile` and `POST /api/admin/reconcile` (with `Authorization: Bearer $ADMIN_TOKEN`) list any pool that landed without a confirm, drop builds that never landed together with their token metadata, and prune idle rate-limit buckets and old faucet claims.
 - **`/api/status`** is the deep check for operators: store writable and on a volume (under `RAILWAY_VOLUME_MOUNT_PATH` on Railway), no plaintext legacy redemptions file left, `SHIPPING_KEY` valid and set where required, RPC slot latency, and platform SOL against `STATUS_MIN_PLATFORM_SOL`. It returns 503 when any check fails and caches its result for 15s.
 - **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history.
+
+### Localnet and CI
+
+`scripts/localnet/start.sh` gives you a validator with the mainnet DBC, DAMM v2, Metaplex and Locker programs and every DAMM v2 migration config (the list comes from the DBC SDK, so it follows SDK upgrades). If a validator already answers on the port, it is reused and never reset, since other suites may share it. Otherwise it starts one in the background and resumes its ledger if there is one. Either way it airdrops 5 SOL to the DBC pool authority `FhVo3mqL…HLuM`, which pays rent when a pool graduates.
+
+```bash
+bash scripts/localnet/start.sh             # :8899, ledger in .localnet/ (gitignored)
+pnpm core:test:localnet                    # lifecycle, listing and every other suite under __tests__/localnet/
+pnpm core:seed:localnet                    # wallets, SOL, mock USDC and <root>/.env.localnet for the app
+bash scripts/localnet/stop.sh              # stops only a validator this script started
+```
+
+- `pnpm core:seed:localnet` writes everything under `PREORDER_ROOT` (a new temp dir when unset): keys for platform, maker, backer1–3 and referrer, a mock USDC mint whose authority is the platform key, 1000 USDC per backer, and `.env.localnet`. Load it with `set -a; . <root>/.env.localnet; set +a` before starting the web app or a script.
+- The lifecycle suite (`localnet/lifecycle.test.ts`) walks create, back, exit, the capped last buy, graduation, the maker's budget withdrawal, resale buy and sell, the maker's fee claim and a redemption, asserting the balances each step moves and the DAMM v2 positions after graduation. Each suite makes its own keys and mint, so suites can share a validator.
+- To run a second validator next to a shared one, set `LOCALNET_RPC_PORT` (the faucet, gossip and dynamic ports move next to it) and `LOCALNET_LEDGER`, then point the tests at it with `LOCALNET_RPC_URL`. `SOLANA_BIN` names the Solana CLI directory if it is not on `PATH`. `LOCALNET_CLONE_URL` changes the cluster it clones from.
+- `bash scripts/localnet/dump.sh <dir>` saves the programs and configs to files. `LOCALNET_DUMPS=<dir>` then starts a validator from them without cloning over a public RPC.
+
+CI (`.github/workflows/ci.yml`) runs two jobs on every PR and push to `main`:
+
+- **check** runs install with the frozen lockfile, both typechecks, lint, unit tests and a devnet production build. It needs no secrets.
+- **localnet** runs the whole localnet suite on a fresh validator. It uses the pinned Solana CLI (v4.3.0 from `release.anza.xyz`, cached) and program and account dumps from mainnet, cached per week and per lockfile.
 
 ### Deploy (Railway)
 

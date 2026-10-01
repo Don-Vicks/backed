@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
+jobs:
+  # Typecheck, lint, unit tests and a production build: the GATE without a validator.
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck core
+        run: pnpm -C packages/core exec tsc --noEmit
+      - name: Typecheck web
+        run: pnpm --dir apps/web exec next typegen && pnpm --dir apps/web exec tsc --noEmit
+      - name: Lint web
+        run: pnpm --filter @preorder/web lint
+      - name: Unit tests
+        run: pnpm core:test
+      - uses: actions/cache@v4
+        with:
+          path: apps/web/.next/cache
+          key: next-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/**/*.ts', 'apps/web/**/*.tsx', 'packages/core/src/**/*.ts') }}
+          restore-keys: next-${{ hashFiles('pnpm-lock.yaml') }}-
+      - name: Build web
+        # No secrets: a devnet build needs none. The store goes to a throwaway directory.
+        env:
+          NETWORK: devnet
+          DATA_DIR: ${{ runner.temp }}/data
+        run: pnpm --filter @preorder/web build
+
+  # The localnet suite (create → graduate → resale → redeem and every other suite under
+  # packages/core/src/__tests__/localnet/) on a fresh validator running the mainnet DBC, DAMM v2,
+  # Metaplex and Locker programs. Programs and migration configs are dumped from mainnet once a week
+  # and cached, so most runs never touch a public RPC.
+  localnet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOLANA_VERSION: v4.3.0 # keep in step with the CLI used to develop against localnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Cache Solana CLI
+        id: solana-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/solana/${{ env.SOLANA_VERSION }}
+          key: solana-cli-${{ env.SOLANA_VERSION }}-x86_64-linux
+      - name: Install Solana CLI
+        if: steps.solana-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/solana/$SOLANA_VERSION
+          curl -sSfL --retry 5 --retry-all-errors \
+            "https://release.anza.xyz/$SOLANA_VERSION/solana-release-x86_64-unknown-linux-gnu.tar.bz2" \
+            | tar -xj -C ~/.cache/solana/$SOLANA_VERSION
+      - name: Add Solana CLI to PATH
+        run: |
+          echo "$HOME/.cache/solana/$SOLANA_VERSION/solana-release/bin" >> "$GITHUB_PATH"
+          "$HOME/.cache/solana/$SOLANA_VERSION/solana-release/bin/solana" --version
+
+      - name: Week
+        id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache mainnet program and account dumps
+        uses: actions/cache@v4
+        with:
+          path: .localnet/dumps
+          # The SDK version decides which programs and configs are needed; the week bounds staleness
+          # against mainnet program upgrades.
+          key: localnet-dumps-${{ steps.week.outputs.week }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: localnet-dumps-${{ steps.week.outputs.week }}-
+      - name: Dump programs and accounts from mainnet (only what the cache lacks)
+        run: bash scripts/localnet/dump.sh .localnet/dumps
+
+      - name: Start a fresh validator
+        env:
+          LOCALNET_LEDGER: ${{ runner.temp }}/ledger
+          LOCALNET_DUMPS: .localnet/dumps
+        run: bash scripts/localnet/start.sh
+      - name: Localnet tests
+        run: pnpm core:test:localnet
+      - name: Validator log
+        if: failure()
+        run: tail -n 200 "${{ runner.temp }}/ledger/start.log" "${{ runner.temp }}/ledger/validator.log" || true
+      - name: Stop the validator
+        if: always()
+        env:
+          LOCALNET_LEDGER: ${{ runner.temp }}/ledger
+        run: bash scripts/localnet/stop.sh
