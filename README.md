@@ -34,6 +34,8 @@ The maker fills in a plain form. `campaignToConfig()` ([`packages/core/src/engin
 | **Resale floor and royalties** | `creatorPermanentLockedLiquidityPercentage: 15`, `partnerPermanentLockedLiquidityPercentage: 5`, `creatorLiquidityPercentage: 0` | 20% of resale liquidity is locked forever, so vouchers always have a market. Fees are split by liquidity, so the maker's royalty per trade is **pool fee × (1 − Meteora's protocol share) × the maker's share of pool liquidity**, all read from chain: 95% of the liquidity at graduation, 75% once fully unlocked. On localnet a 5% pool paid 0.15 USDC on a 3 USDC buy: 0.03 to Meteora's 20% protocol share, 0.114 to the maker (3.8% of the trade) and 0.006 to the platform; fully unlocked, the same pool pays the maker 3%. |
 | **Curve trading fees** | `creatorTradingFeePercentage: 50`, `dynamicFeeEnabled` | After Meteora's 20% protocol fee, the maker earns half of the curve's trading fees. Both fee streams are claimed in one transaction. |
 | **Affiliate links** | swap `referralTokenAccount` | Share links carry `?ref=<wallet>`. On referred buys, the sharer gets DBC's referral cut (20% of the protocol fee). The buyer pays nothing extra. |
+| **Platform revenue** | `feeClaimer` / `leftoverReceiver` (the platform's fee claimer), `claimPartnerTradingFeeToReceiver`, DAMM v2 `claimPositionFee2`, `withdrawLeftover` | The partner side has code behind it: [`platform.ts`](packages/core/src/platform.ts) reads what the platform is owed on every campaign from chain (`/platform` shows it) and builds the claims: partner curve fees and the partner resale position's fees to a treasury, and the leftover vouchers, which are burned in the same transaction because they were never sold. On localnet a campaign left 2 raw units of leftover: the rest of its base vault after graduation is Meteora's migration fee. Surplus and the partner's share of the graduation payout are claimed too when non-zero, which they never are for Backed configs (the curve ends at the goal, an ExactIn buy past it fails, and the maker takes the whole payout). |
+| **On-chain listing** | `createPoolMetadata`, `createPartnerMetadata` | After create, the maker signs a second transaction that writes the campaign's name, page URL and image into its DBC pool metadata; the campaign page links it. The platform's own partner listing is a one-off script. |
 | **No reused configs** | `createConfigAndPool` (one transaction, platform key = `feeClaimer`) | Each campaign gets its own config, created in the same transaction as its pool. Nobody can launch another pool on a campaign's terms. |
 
 ### Why we build the curve ourselves
@@ -103,7 +105,9 @@ packages/core       All Solana logic, shared by the scripts and the web server
   vesting.ts        ship-window LP vesting by trust tier (pure, also used in the browser)
   unlock.ts         "Unlock production funds" (remove released LP + burn), backer floor, on-chain terms
   redemptions.ts    on-chain burn verification, shipping records, maker sign-in
-  scripts/          lifecycle proof, launch, API smoke tests
+  platform.ts       the platform's side (DBC partner): earnings across campaigns, claims, leftover burn
+  metadata.ts       on-chain listings: DBC pool metadata (maker) and partner metadata (platform)
+  scripts/          lifecycle proof, launch, API smoke tests, platform claims, partner listing
 ```
 
 - **Wallet flow.** The server builds each transaction and the browser wallet signs it. Campaign creation is signed by the platform key (the DBC partner) and the fresh config and mint keys on the server, then by the maker's wallet as pool creator.
@@ -137,7 +141,11 @@ pnpm core:test:localnet                               # checks against a local v
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
+pnpm --filter @preorder/core platform:claim [--unsigned] [--keep-leftover] [pool ...]   # collect the platform's fees and leftover
+pnpm --filter @preorder/core partner:metadata [--unsigned]                              # one-off: the platform's on-chain partner listing
 ```
+
+The two platform scripts sign with the platform key (`PLATFORM_SECRET_KEY`, else `keys/<network>/platform.json`) when it is the fee claimer the campaign's config names. Otherwise, or with `--unsigned`, they print each transaction as unsigned base58 with the fee claimer as signer and fee payer, ready to import into a Squads multisig. `/platform` shows the same numbers read-only.
 
 ### Configuration
 
@@ -145,7 +153,7 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 
 - **`NETWORK`** (`localnet`, `devnet` or `mainnet`) is the only network switch. The scripts and the server read it at runtime; `next.config.ts` bakes it and the matching browser RPC (`PUBLIC_RPC_URL`, else a keyless default) into the bundle, so **changing it needs a rebuild**. `/api/health` returns 503 if the running server and the build disagree. `NETWORK=mainnet` switches to real USDC and mainnet RPC; the faucet only runs on devnet and localnet.
 - **`PUBLIC_BASE_URL`** is the app's https origin. It goes into immutable on-chain metadata URIs and Blink icons, so it is required off localnet (`RAILWAY_PUBLIC_DOMAIN` is the fallback). Creating a campaign fails fast without it. Creating campaigns from a laptop on devnet therefore needs a public https URL (a tunnel); use localnet for local work.
-- **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching.
+- **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching. `PLATFORM_TREASURY` is where `platform:claim` sends claimed USDC (default: the fee claimer).
 - **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history. `VESTING_SCHEDULE_OVERRIDE` (JSON, seconds) replaces the tier ship-window schedule so a campaign unlocks in seconds; it is ignored on devnet and mainnet.
 
 ### Deploy (Railway)
@@ -163,4 +171,4 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 
 ## Business model
 
-Backed is the DBC **partner** on every campaign. It earns the partner half of curve trading fees (after Meteora's 20% protocol fee) and the fees on its 5% permanently locked share of each resale pool. Makers pay nothing upfront. First users are merch drops, indie hardware and game-key pre-orders, and hackathon teams. Later, a Shopify plugin so any store can offer pre-orders with a built-in resale market.
+Backed is the DBC **partner** on every campaign. It earns the partner half of curve trading fees (after Meteora's 20% protocol fee) and the fees on its 5% permanently locked share of each resale pool. `pnpm --filter @preorder/core platform:claim` collects both, and `/platform` shows them. Makers pay nothing upfront. First users are merch drops, indie hardware and game-key pre-orders, and hackathon teams. Later, a Shopify plugin so any store can offer pre-orders with a built-in resale market.

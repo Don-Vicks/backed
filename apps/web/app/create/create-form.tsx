@@ -120,6 +120,11 @@ export function CreateForm() {
       const { pool, ...built } = await api<BuiltTx & { pool: string }>("/api/campaigns", { campaign, maker: publicKey.toBase58(), verifiedSocial });
       const signature = await signAndSend(built, "Launch campaign");
       await api("/api/campaigns/confirm", { pool, signature });
+      // Optional second transaction: the on-chain listing. Skipping it or a failure doesn't stop the
+      // launch; the maker can publish it later from the campaign page.
+      await api<BuiltTx>(`/api/campaigns/${pool}/listing`, { wallet: publicKey.toBase58() })
+        .then((listing) => signAndSend(listing, "Publish on-chain listing"))
+        .catch(() => undefined);
       router.push(`/c/${pool}`);
     } catch (e) {
       if (!(e instanceof Error && /cancelled|rejected/i.test(e.message))) toast.error(e instanceof Error ? e.message : "Launch failed");

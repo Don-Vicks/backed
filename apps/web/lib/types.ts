@@ -1,8 +1,11 @@
 // Shapes shared by the API routes and the client (no server imports here).
-import type { Campaign, CampaignLive, CampaignRecord, ConfigField, LpTerms, PricingSummary, ResaleConfig, TrustResult, VestingSchedule } from "@preorder/core";
+import type { Campaign, CampaignLive, CampaignRecord, ConfigField, Listing, LpTerms, PlatformEarnings, PricingSummary, ResaleConfig, TrustResult, VestingSchedule } from "@preorder/core";
 
 // terms, resaleFee: the resale-liquidity split and the resale pool fee, read from the on-chain config (campaign page only).
-export type CampaignWithLive = CampaignRecord & { live: CampaignLive | null; terms?: LpTerms | null; resaleFee?: ResaleConfig | null };
+// listing: the DBC pool metadata the maker published (null: none yet, undefined: not read).
+export type CampaignWithLive = CampaignRecord & { live: CampaignLive | null; terms?: LpTerms | null; resaleFee?: ResaleConfig | null; listing?: (Listing & { address: string }) | null };
+// /api/platform: the partner's earnings across campaigns, the claimer new campaigns get, and its listing.
+export type PlatformResponse = PlatformEarnings & { feeClaimer: string | null; treasury: string | null; listing: Listing | null };
 export type PreviewResponse = {
   trust: TrustResult | null;
   pricing: PricingSummary | null;
@@ -11,4 +14,4 @@ export type PreviewResponse = {
   fields: ConfigField[];
   error: string | null;
 };
-export type { Campaign, CampaignLive, CampaignRecord, ConfigField, LpTerms, PricingSummary, ResaleConfig, TrustResult, VestingSchedule };
+export type { Campaign, CampaignLive, CampaignRecord, ConfigField, Listing, LpTerms, PlatformEarnings, PricingSummary, ResaleConfig, TrustResult, VestingSchedule };

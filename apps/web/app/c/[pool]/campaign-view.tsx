@@ -81,6 +81,14 @@ function Loaded({ c }: { c: CampaignWithLive }) {
             <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
               {short(c.maker)}
             </a>
+            {c.listing && (
+              <>
+                {" · "}
+                <a href={explorerAccount(c.listing.address)} target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">
+                  Listed on-chain
+                </a>
+              </>
+            )}
           </p>
         </div>
 
@@ -259,6 +267,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [shipFor, setShipFor] = useState<string | null>(null); // burn signature awaiting shipping details
+  const [listed, setListed] = useState(false); // published from this page; the server re-reads it within a minute
 
   const usdcAmount = Number(amount);
   const debouncedAmount = useDebounced(usdcAmount, 350);
@@ -334,6 +343,22 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
       refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Graduation failed", { id });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // The maker's on-chain listing (DBC pool metadata), when it wasn't sent right after create.
+  async function publishListing() {
+    if (!publicKey) return setVisible(true);
+    setBusy("listing");
+    try {
+      const built = await api<BuiltTx>(`/api/campaigns/${c.pool}/listing`, { wallet: publicKey.toBase58() });
+      await signAndSend(built, "Publish on-chain listing");
+      setListed(true);
+      refresh();
+    } catch (e) {
+      if (e instanceof Error && !/cancelled|rejected|failed:/i.test(e.message)) toast.error(e.message);
     } finally {
       setBusy(null);
     }
@@ -455,6 +480,19 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
       {live.status === "reselling" && <ResalePanel c={c} run={run} busy={busy} vouchers={vouchers} />}
 
       {isMaker && <MakerPanel c={c} run={run} busy={busy} />}
+
+      {isMaker && c.listing === null && !listed && (
+        <div className="rounded-xl border border-border bg-card p-5">
+          <p className="font-medium">On-chain listing</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Publish the campaign’s name, page and image in its DBC pool metadata, so anyone reading the pool on chain finds this page. You pay a little SOL
+            for the account.
+          </p>
+          <Button className="mt-4 w-full" variant="secondary" onClick={publishListing} disabled={!!busy}>
+            {busy === "listing" ? "Publishing…" : "Publish listing"}
+          </Button>
+        </div>
+      )}
 
       {publicKey && vouchers > 0 && (
         <div className="rounded-xl border border-border bg-card p-5">

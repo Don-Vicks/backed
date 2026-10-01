@@ -9,6 +9,8 @@
     "lifecycle": "ts-node src/scripts/lifecycle.ts",
     "test": "node -r ts-node/register --test src/__tests__/*.test.ts",
     "launch": "ts-node src/scripts/launch.ts",
+    "platform:claim": "ts-node src/scripts/platform-claim.ts",
+    "partner:metadata": "ts-node src/scripts/partner-metadata.ts",
     "test:localnet": "LOCALNET=1 node -r ts-node/register --test src/__tests__/localnet/*.test.ts"
   },
   "dependencies": {

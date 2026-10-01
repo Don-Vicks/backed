@@ -71,7 +71,8 @@ function removableLiquidity(position: PositionState, now: number): BN {
   return position.unlockedLiquidity.add(BN.min(available, position.vestedLiquidity))
 }
 
-function withdrawAmounts(cpAmm: CpAmm, poolState: PoolState, liquidityDelta: BN) {
+// What removing `liquidityDelta` pays out at today's pool price (token A = vouchers, token B = USDC).
+export function withdrawAmounts(cpAmm: CpAmm, poolState: PoolState, liquidityDelta: BN) {
   if (liquidityDelta.isZero()) return { outAmountA: new BN(0), outAmountB: new BN(0) }
   return cpAmm.getWithdrawQuote({
     liquidityDelta,
