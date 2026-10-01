@@ -26,7 +26,7 @@ https://web-production-e2262.up.railway.app (devnet; press "Get test USDC" after
 (optional)
 
 **Pitch deck or Loom/video**
-Record the 3-minute Loom from [`docs/demo-script.md`](demo-script.md), or use the pitch deck (https://claude.ai/artifact/RpwieLyVcUzk4uh5KchqmH; check it opens when signed out before pasting it). The walkthrough with screenshots is [`docs/walkthrough.md`](walkthrough.md).
+Record the 3-minute Loom from [`docs/demo-script.md`](demo-script.md), or use the pitch deck: https://claude.ai/artifact/RpwieLyVcUzk4uh5KchqmH (anyone with the link can open it). The walkthrough with screenshots is [`docs/walkthrough.md`](walkthrough.md).
 
 **Did you submit this project to the official Crypto World's Fair Hackathon on Colosseum?**
 (Yes/No; submit there too, then paste the Colosseum project and profile links)
