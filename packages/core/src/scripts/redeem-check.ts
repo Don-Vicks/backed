@@ -9,7 +9,7 @@ import { getCampaign } from '../store'
 import { buildResaleSwapTx } from '../resale'
 import { ordersMessage } from '../redemptions'
 
-const BASE = 'http://localhost:3100'
+const BASE = process.env.WEB_URL || 'http://localhost:3100'
 const post = async (p: string, b: unknown) => { const r = await fetch(BASE + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }); return { status: r.status, body: await r.json() } }
 
 async function main() {

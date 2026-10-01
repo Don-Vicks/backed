@@ -1,23 +1,34 @@
 // Redemptions: a backer burns 1+ whole voucher on-chain, then submits shipping details off-chain.
 // The server only records a redemption after checking the burn itself on-chain.
-import fs from 'fs'
-import path from 'path'
+// Shipping details are stored sealed (AES-256-GCM, seal.ts) and only opened for the maker.
 import bs58 from 'bs58'
 import nacl from 'tweetnacl'
 import { Connection, PublicKey } from '@solana/web3.js'
-import { getNetwork } from './network'
-import { repoRoot } from './paths'
 import { VOUCHER_DECIMALS } from './engine'
+import { db, redemptionAad } from './db'
+import { openJsonAny, sealJson, shippingKeys } from './seal'
 import type { CampaignRecord } from './store'
 
 export type Shipping = { name: string; email: string; address: string; country: string }
 export type Redemption = { pool: string; signature: string; wallet: string; units: number; shipping: Shipping; createdAt: string }
 
-const redemptionsPath = () => path.join(repoRoot(), 'data', `redemptions.${getNetwork().name}.json`)
-const readAll = (): Redemption[] => (fs.existsSync(redemptionsPath()) ? JSON.parse(fs.readFileSync(redemptionsPath(), 'utf8')) : [])
+type RedemptionRow = { signature: string; pool: string; wallet: string; units: number; created_at: string; shipping_ct: string }
 
-export function listRedemptions(pool: string): Redemption[] {
-  return readAll().filter((r) => r.pool === pool)
+// A listed redemption whose shipping details no key opens (SHIPPING_KEY changed without
+// SHIPPING_KEY_PREVIOUS) comes back with shipping: null and an error; the other rows still show.
+export type ListedRedemption = Omit<Redemption, 'shipping'> & { shipping: Shipping | null; error?: string }
+
+export function listRedemptions(pool: string): ListedRedemption[] {
+  const rows = db().prepare('SELECT * FROM redemptions WHERE pool = ? ORDER BY created_at DESC, rowid DESC').all(pool) as RedemptionRow[]
+  const keys = shippingKeys()
+  return rows.map((r) => {
+    const base = { pool: r.pool, signature: r.signature, wallet: r.wallet, units: r.units, createdAt: r.created_at }
+    try {
+      return { ...base, shipping: openJsonAny<Shipping>(r.shipping_ct, redemptionAad(r.signature), keys) }
+    } catch (e) {
+      return { ...base, shipping: null, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
 }
 
 // Returns the number of whole vouchers the wallet burned in this transaction, or throws.
@@ -38,11 +49,17 @@ export async function verifyBurn(connection: Connection, record: CampaignRecord,
   return units
 }
 
+// One redemption per burn signature (the primary key), so a burn can never be claimed twice.
 export function saveRedemption(r: Redemption) {
-  const all = readAll()
-  if (all.some((x) => x.signature === r.signature)) throw new Error('This redemption was already submitted')
-  fs.mkdirSync(path.dirname(redemptionsPath()), { recursive: true })
-  fs.writeFileSync(redemptionsPath(), JSON.stringify([r, ...all], null, 2))
+  const sealed = sealJson(r.shipping, redemptionAad(r.signature))
+  try {
+    db()
+      .prepare('INSERT INTO redemptions (signature, pool, wallet, units, created_at, shipping_ct) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(r.signature, r.pool, r.wallet, r.units, r.createdAt, sealed)
+  } catch (e) {
+    if (e instanceof Error && /UNIQUE constraint failed: redemptions\.signature/.test(e.message)) throw new Error('This redemption was already submitted')
+    throw e
+  }
 }
 
 // Maker sign-in: the wallet signs ordersMessage(), a short, time-stamped message; valid for 10 minutes.

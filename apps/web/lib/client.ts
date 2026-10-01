@@ -24,12 +24,13 @@ function fromBase64(b64: string) {
 }
 
 // Takes a server-built transaction, has the wallet sign it, sends it and waits for confirmation.
+// onSent runs once the RPC accepted the transaction (it may still land after a confirm timeout).
 export function useSignAndSend() {
   const { connection } = useConnection();
   const { signTransaction, publicKey } = useWallet();
 
   return useCallback(
-    async (built: BuiltTx, label: string) => {
+    async (built: BuiltTx, label: string, { onSent }: { onSent?: (signature: string) => void } = {}) => {
       if (!publicKey || !signTransaction) throw new Error("Connect a wallet first");
       const toastId = toast.loading(`${label}: approve in your wallet`);
       try {
@@ -37,6 +38,7 @@ export function useSignAndSend() {
         const signed = await signTransaction(tx);
         toast.loading(`${label}: sending`, { id: toastId });
         const signature = await connection.sendRawTransaction(signed.serialize(), { maxRetries: 3 });
+        onSent?.(signature);
         toast.loading(`${label}: confirming`, { id: toastId });
         const result = await connection.confirmTransaction(
           { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: built.lastValidBlockHeight },

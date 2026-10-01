@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -15,6 +15,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, useSignAndSend, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
+import { confirmLaunch, setPendingLaunch, usePendingLaunch, type PendingLaunch } from "@/lib/pending-launch";
+import { FinishListing } from "./finish-listing";
 import { units, usd } from "@/lib/format";
 import type { Campaign, PreviewResponse } from "@/lib/types";
 
@@ -96,14 +98,61 @@ export function CreateForm() {
 
   const blocking = pricing.error ?? preview?.error ?? (!name.trim() ? "Name the product" : null);
 
+  // A sent launch that is not listed yet: finish it (once automatically on load) rather than launch twice.
+  const pendingLaunch = usePendingLaunch();
+  const [listing, setListing] = useState(false);
+  async function finishListing(launch: PendingLaunch) {
+    setListing(true);
+    try {
+      if ((await confirmLaunch(launch)) === "gone") {
+        setPendingLaunch(null);
+        toast.error("That launch never landed on-chain. You can launch again.");
+        return;
+      }
+      setPendingLaunch(null);
+      router.push(`/c/${launch.pool}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Listing failed");
+    } finally {
+      setListing(false);
+    }
+  }
+  const autoFinished = useRef<string | null>(null);
+  const autoFinish = useEffectEvent((launch: PendingLaunch) => {
+    if (autoFinished.current === launch.pool) return;
+    autoFinished.current = launch.pool;
+    void finishListing(launch);
+  });
+  useEffect(() => {
+    if (pendingLaunch && !launching) autoFinish(pendingLaunch);
+  }, [pendingLaunch, launching]);
+
   async function launch() {
     if (!publicKey) return setVisible(true);
     setLaunching(true);
     try {
       const { pool, ...built } = await api<BuiltTx & { pool: string }>("/api/campaigns", { campaign, maker: publicKey.toBase58(), verifiedSocial });
-      const signature = await signAndSend(built, "Launch campaign");
-      await api("/api/campaigns/confirm", { pool, signature });
-      router.push(`/c/${pool}`);
+      autoFinished.current = pool;
+      // Remembered as soon as the RPC accepts the transaction: if it lands but this page loses track, the
+      // banner finishes it. A rejected prompt or a failed preflight never gets here, so nothing is left behind.
+      const sent = { current: false };
+      let pending: PendingLaunch;
+      try {
+        const signature = await signAndSend(built, "Launch campaign", {
+          onSent: (signature) => {
+            sent.current = true;
+            setPendingLaunch({ pool, signature, name: campaign.name, at: Date.now() });
+          },
+        });
+        pending = { pool, signature, name: campaign.name, at: Date.now() };
+      } catch (e) {
+        // Landed but failed: the pool was never created. A confirm timeout keeps it (it may still land).
+        if (sent.current && e instanceof Error && /failed on-chain/i.test(e.message)) setPendingLaunch(null);
+        throw e;
+      }
+      setPendingLaunch(pending);
+      setLaunching(false);
+      await finishListing(pending);
     } catch (e) {
       if (!(e instanceof Error && /cancelled|rejected/i.test(e.message))) toast.error(e instanceof Error ? e.message : "Launch failed");
     } finally {
@@ -217,7 +266,10 @@ export function CreateForm() {
         </fieldset>
 
         <div className="flex flex-col gap-2">
-          <Button type="submit" size="lg" disabled={launching || (!!publicKey && !!blocking)}>
+          {pendingLaunch && !launching && (
+            <FinishListing launch={pendingLaunch} busy={listing} onFinish={() => finishListing(pendingLaunch)} onDiscard={() => setPendingLaunch(null)} />
+          )}
+          <Button type="submit" size="lg" disabled={launching || listing || !!pendingLaunch || (!!publicKey && !!blocking)}>
             {!publicKey ? "Connect wallet to launch" : launching ? "Launching…" : "Launch campaign"}
           </Button>
           {publicKey && blocking && <p className="text-sm text-destructive" role="alert">{blocking}</p>}

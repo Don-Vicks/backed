@@ -9,7 +9,10 @@
     "lifecycle": "ts-node src/scripts/lifecycle.ts",
     "test": "node -r ts-node/register --test src/__tests__/*.test.ts",
     "launch": "ts-node src/scripts/launch.ts",
-    "test:localnet": "LOCALNET=1 node -r ts-node/register --test src/__tests__/localnet/*.test.ts"
+    "reconcile": "ts-node src/scripts/reconcile.ts",
+    "inspect": "ts-node src/scripts/inspect.ts",
+    "seed:localnet": "ts-node src/scripts/seed-localnet.ts",
+    "test:localnet": "LOCALNET=1 node -r ts-node/register --test 'src/__tests__/localnet/**/*.test.ts'"
   },
   "dependencies": {
     "@meteora-ag/cp-amm-sdk": "1.5.0",
