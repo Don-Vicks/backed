@@ -5,6 +5,7 @@ import path from 'path'
 import BN from 'bn.js'
 import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js'
 import { createBurnInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token'
+import { CpAmm } from '@meteora-ag/cp-amm-sdk'
 import {
   DAMM_V2_MIGRATION_FEE_ADDRESS,
   DynamicBondingCurveClient,
@@ -61,14 +62,24 @@ export async function readResaleConfig(connection: Connection, config: PublicKey
   const c = await dbcClient(connection).state.getPoolConfig(config)
   if (!c) throw new Error(`config ${key} not found`)
   const migrationFeeOption = c.migrationFeeOption as MigrationFeeOption
+  // Customizable: the DBC config says whether the volatility fee is on. A fixed option: the DAMM v2
+  // config it migrates into does; if that read fails, claim no volatility fee and don't cache.
+  const dynamicFee =
+    migrationFeeOption === MigrationFeeOption.Customizable
+      ? c.migratedDynamicFee === 1
+      : await fixedOptionDynamicFee(connection, migrationFeeOption).catch(() => null)
   const out: ResaleConfig = {
     migrationFeeOption,
     poolFeeBps: resalePoolFeeBps(migrationFeeOption, c.migratedPoolFeeBps),
-    // The fixed DAMM v2 migration configs all have the dynamic fee on.
-    dynamicFee: migrationFeeOption !== MigrationFeeOption.Customizable || c.migratedDynamicFee === 1,
+    dynamicFee: dynamicFee ?? false,
   }
-  resaleConfigCache.set(key, out)
+  if (dynamicFee !== null) resaleConfigCache.set(key, out)
   return out
+}
+
+async function fixedOptionDynamicFee(connection: Connection, migrationFeeOption: MigrationFeeOption): Promise<boolean> {
+  const damm = await new CpAmm(connection).fetchConfigState(dammV2MigrationConfig(migrationFeeOption))
+  return damm.poolFees.dynamicFee.initialized !== 0
 }
 
 export function dammV2MigrationConfig(migrationFeeOption: MigrationFeeOption): PublicKey {

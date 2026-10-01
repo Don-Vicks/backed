@@ -156,7 +156,12 @@ function ResaleTerms({ c }: { c: CampaignWithLive }) {
   const t = c.terms;
   if (!t) {
     // The config read failed (e.g. a rate-limited RPC): unknown is not the same as "all locked".
-    return <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="How resale liquidity is split and locked is fixed in this campaign’s on-chain config. Verify it below." />;
+    return (
+      <>
+        <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="How resale liquidity is split and locked is fixed in this campaign’s on-chain config. Verify it below." />
+        <RoyaltyTerm c={c} />
+      </>
+    );
   }
   if (!t.vesting) {
     return (
@@ -185,11 +190,14 @@ function ResaleTerms({ c }: { c: CampaignWithLive }) {
   );
 }
 
-// The resale pool fee (the maker's royalty), from the DBC config. Its split follows the liquidity terms.
+// The resale pool fee (the maker's royalty), from the DBC config. Its split follows the liquidity terms,
+// left out when they could not be read.
 function RoyaltyTerm({ c }: { c: CampaignWithLive }) {
   const fee = c.resaleFee;
   const t = c.terms;
-  if (!fee || !t) return null;
+  if (!fee) return null;
+  const charge = `Every resale pays a ${fee.poolFeeBps / 100}% fee in USDC${fee.dynamicFee ? ", more when the price moves fast" : ""}.`;
+  if (!t) return <Term icon={<Coins aria-hidden="true" />} title="Resale royalty" body={`${charge} After Meteora’s protocol share, it goes to the resale pool’s liquidity positions, the maker’s included.`} />;
   const maker = t.creatorPermanentPct + t.creatorVestingPct + t.creatorUnlockedPct;
   const split = t.creatorVestingPct
     ? `the maker’s positions earn ${maker}% of what is left at graduation and ${Math.round((t.creatorPermanentPct * 100) / (t.creatorPermanentPct + t.partnerPermanentPct))}% once fully unlocked`
@@ -198,7 +206,7 @@ function RoyaltyTerm({ c }: { c: CampaignWithLive }) {
     <Term
       icon={<Coins aria-hidden="true" />}
       title="Resale royalty"
-      body={`Every resale pays a ${fee.poolFeeBps / 100}% fee in USDC${fee.dynamicFee ? ", more when the price moves fast" : ""}. After Meteora’s protocol share, ${split}.`}
+      body={`${charge} After Meteora’s protocol share, ${split}.`}
     />
   );
 }
