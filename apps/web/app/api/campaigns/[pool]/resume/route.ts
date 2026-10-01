@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
-import { buildCreatePoolTx, dbcClient, getPending, saveCampaign, savePending, takePending } from "@preorder/core";
-import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, serialize } from "@/lib/server";
+import { buildCreatePoolTx, dbcClient, getPending, saveCampaign, savePending, schemas, takePending } from "@preorder/core";
+import { BadRequest, connection, errorResponse, finalizeForWallet, readJson, requestLog, serialize } from "@/lib/server";
 
 const nothingToResume = (error: string) => Response.json({ error }, { status: 404 });
 
@@ -9,10 +9,11 @@ const nothingToResume = (error: string) => Response.json({ error }, { status: 40
 // moves the pending record to the new pool address. When the original pool exists after all, it is
 // listed and no transaction comes back.
 export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[pool]/resume">) {
+  const log = requestLog("POST /api/campaigns/[pool]/resume");
   try {
     const { pool } = await ctx.params;
-    const raw: unknown = await req.json().catch(() => null);
-    const maker = publicKey(raw && typeof raw === "object" ? (raw as { maker?: unknown }).maker : undefined, "maker");
+    const { maker } = await readJson(req, schemas.resumeCampaign);
+    log.wallet = maker.toBase58();
     const record = getPending(pool);
     if (!record) return nothingToResume("Nothing to resume for this campaign: launch it again");
     if (record.maker !== maker.toBase58()) throw new BadRequest("Only the maker can finish this launch");
@@ -36,6 +37,6 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[pool
     takePending(pool);
     return Response.json({ txs: [serialize(built.tx)], pool: built.pool.toBase58() });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

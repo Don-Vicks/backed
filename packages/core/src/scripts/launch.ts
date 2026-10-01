@@ -27,7 +27,7 @@ async function main() {
   let trust: TrustResult
   const forced = arg('tier') as TrustTierName | undefined
   if (forced) {
-    trust = { ...scoreSignals({ walletAgeDays: 0, txCount: 0, fundedByFreshWallet: false, verifiedSocial: false }), tier: forced, maxMakerSharePct: MAX_MAKER_SHARE[forced], reasons: [`Tier set manually to ${forced}`] }
+    trust = { ...scoreSignals({ walletAgeDays: 0, txCount: 0, fundedByFreshWallet: false, truncated: false }), tier: forced, maxMakerSharePct: MAX_MAKER_SHARE[forced], reasons: [`Tier set manually to ${forced}`] }
   } else {
     trust = await trustTier(new Connection(trustRpcUrl()), w.maker.publicKey)
   }

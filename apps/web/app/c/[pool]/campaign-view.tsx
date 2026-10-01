@@ -20,7 +20,7 @@ import { api, quoteErrorMessage, ReportedError, useSignAndSend, type BuiltTx } f
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { ShippingForm } from "@/components/shipping-form";
-import { explorerAccount, short, units, usd } from "@/lib/format";
+import { IS_TEST_NETWORK, explorerAccount, short, units, usd } from "@/lib/format";
 import type { BuyQuote, CampaignWithLive, SellQuote } from "@/lib/types";
 
 export function CampaignView({ pool }: { pool: string }) {
@@ -38,7 +38,8 @@ export function CampaignView({ pool }: { pool: string }) {
       </div>
     );
   }
-  if (isError) {
+  // A failed poll keeps the last data on screen under a banner; only a first load that fails shows this.
+  if (isError && !data) {
     return (
       <div className="rounded-xl border border-border bg-card p-6">
         <p className="font-medium">Couldn’t load this campaign</p>
@@ -50,7 +51,16 @@ export function CampaignView({ pool }: { pool: string }) {
       </div>
     );
   }
-  return <Loaded c={data.campaign} />;
+  return (
+    <>
+      {isError && (
+        <p role="status" className="mb-4 rounded-lg border border-border bg-muted px-4 py-2 text-sm text-muted-foreground">
+          Live data is delayed. Showing the last update; it refreshes on its own.
+        </p>
+      )}
+      <Loaded c={data.campaign} />
+    </>
+  );
 }
 
 function Loaded({ c }: { c: CampaignWithLive }) {
@@ -216,6 +226,9 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     retry: false,
   });
   const quote = quoteEnabled ? quoteData ?? null : null;
+  // What the buy would take: all of it, or only what is left to the goal.
+  const needUsdc = quote?.capped ? quote.spentUsdc : usdcAmount;
+  const shortOfUsdc = !!publicKey && !!balances.data && usdcAmount > 0 && balances.data.usdc < needUsdc;
 
   const isMaker = publicKey?.toBase58() === c.maker;
   const vouchers = balances.data?.vouchers ?? 0;
@@ -242,15 +255,16 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     if (!publicKey) return setVisible(true);
     setBusy(kind);
     try {
-      const built = await api<BuiltTx & { quote?: BuyQuote }>("/api/tx", { kind, pool: c.pool, wallet: publicKey.toBase58(), ...extra });
+      const build = () => api<BuiltTx & { quote?: BuyQuote }>("/api/tx", { kind, pool: c.pool, wallet: publicKey.toBase58(), ...extra });
+      const built = await build();
       // The last buy before the goal only takes what is left; say so in the toasts.
       if (kind === "buy" && built.quote?.capped) label = `${label} with ${usd(built.quote.spentUsdc)}: the goal is reached`;
-      const signature = await signAndSend(built, label);
+      const signature = await signAndSend(built, label, build);
       if (kind === "redeem") setShipFor(signature);
       if (kind === "sell") setExitAmount("");
       refresh();
     } catch (e) {
-      if (e instanceof Error && !/cancelled|rejected|failed:/i.test(e.message)) toast.error(e.message);
+      if (!(e instanceof ReportedError)) toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
     }
@@ -264,9 +278,15 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     setBusy("migrate");
     const alreadyDone = (id?: string | number) => toast.success("Already graduated. The resale market is open.", { id });
     try {
-      const built = await api<Partial<BuiltTx> & { already?: boolean }>(`/api/campaigns/${c.pool}/migrate`, { wallet: publicKey.toBase58() });
+      const build = () => api<Partial<BuiltTx> & { already?: boolean }>(`/api/campaigns/${c.pool}/migrate`, { wallet: publicKey.toBase58() });
+      const built = await build();
       if (built.already || !built.tx) alreadyDone();
-      else await signAndSend(built as BuiltTx, "Graduate to the resale market");
+      else
+        await signAndSend(built as BuiltTx, "Graduate to the resale market", async () => {
+          const again = await build();
+          if (again.already || !again.tx) throw new Error("Already graduated"); // handled below as already done
+          return again as BuiltTx;
+        });
       refresh();
     } catch (e) {
       const now = await api<{ campaign: CampaignWithLive }>(`/api/campaigns/${c.pool}`).catch(() => null);
@@ -302,7 +322,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
           <Label htmlFor="amount">Back with (USDC)</Label>
           <div className="mt-2 flex gap-2">
             <Input id="amount" type="number" inputMode="decimal" min={0.01} step={0.01} value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono" />
-            <Button type="submit" disabled={!!busy || !(usdcAmount > 0)}>{busy === "buy" ? "Backing…" : "Back this"}</Button>
+            <Button type="submit" disabled={!!busy || !(usdcAmount > 0) || shortOfUsdc}>{busy === "buy" ? "Backing…" : "Back this"}</Button>
           </div>
           <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
             {quoteEnabled && quoteError ? (
@@ -321,8 +341,10 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
             ) : null}
           </p>
           {publicKey && balances.data && (
-            <p className="text-xs text-muted-foreground">
-              Wallet: <span className="font-mono">{usd(balances.data.usdc)}</span> USDC
+            <p className={`text-xs ${shortOfUsdc ? "text-destructive" : "text-muted-foreground"}`}>
+              {shortOfUsdc ? "You have " : "Wallet: "}
+              <span className="font-mono">{usd(balances.data.usdc)}</span> USDC
+              {shortOfUsdc && (IS_TEST_NETWORK ? ". Get some with “Get test USDC” at the top." : ". Add USDC to your wallet to back this.")}
             </p>
           )}
         </form>

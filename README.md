@@ -48,15 +48,16 @@ The upfront share is capped by a trust tier scored from the maker wallet's **pub
 | Wallet age | up to +40 |
 | Transaction count | up to +25 |
 | First funded by a brand-new wallet | −20 |
-| Verified social account (demo flag) | +25 |
 
 | Tier | Score | Max upfront share |
 |---|---|---|
-| A | ≥ 70 | 40% |
+| A | ≥ 65 | 40% |
 | B | ≥ 40 | 25% |
 | C | < 40 | 10% |
 
-A new or throwaway wallet can still run a campaign, but it takes less upfront and more of the raise stays in the locked resale pool. The "verified social" input is a demo stand-in, not a real social check.
+Only on-chain signals count, so tier A takes both a year of history and 500+ transactions. The lookup walks back up to 10 pages (10,000 signatures) within an 8-second budget. A longer history is marked truncated: its age is scored as a lower bound ("≥ N days") and the first funder is not checked. A failed lookup is never read as a new wallet: the create form says the check is unavailable and launching returns 503 until it works.
+
+A new or throwaway wallet can still run a campaign, but it takes less upfront and more of the raise stays in the locked resale pool.
 
 ---
 
@@ -118,11 +119,12 @@ In the app, connect Phantom, Solflare or Backpack on **devnet** and click **Get 
 Other commands:
 
 ```bash
-pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in, config)
+pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, request schemas, caches, sign-in, config)
 pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): create (every share, split, maker-paid), graduation, swaps, slippage, referrals
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
+pnpm --filter @preorder/core api-negative            # bad input, status gates and rate limits against a localnet server at WEB_URL: no 5xx
 ```
 
 ### Configuration
@@ -135,6 +137,15 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 - **`ADMIN_TOKEN`** unlocks the platform-paid graduation (`POST /api/campaigns/<pool>/migrate` with `Authorization: Bearer …`). Use a random token of at least 32 characters (`openssl rand -hex 32`); empty or shorter disables that path, and a wrong token gets 401.
 - **`PRIORITY_FEE_MAX_MICROLAMPORTS`** caps the compute-unit price added to wallet transactions and the admin graduation (default 1,000,000). `/api/health` fails while it is not a whole number ≥ 1000.
 - **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history.
+
+### API safeguards
+
+- Every JSON body is capped at 32 KB and checked against a zod schema (`packages/core/src/requests.ts`); bad input is a 400 that says what is wrong.
+- 4xx answers carry a message for the user. Anything else is a 500 with a generic message and a request id, and the server logs one JSON line with `reqId`, `route`, `wallet`, `sig` and the error. Faucet sends, confirmed creates, redemptions and platform-paid graduations log a JSON line with their signature too.
+- Per-IP token buckets on create, preview, quotes, faucet, graduation and the Blink POST (429 when empty). The client IP is the `X-Forwarded-For` entry `TRUSTED_PROXY_HOPS` from the right.
+- Faucet (devnet/localnet): one claim per wallet per 24 h, 5 per IP and 300 in total per day. `RATE_LIMITS=off` lifts the limits on localnet only.
+- Live campaign state is cached per pool for 3 s with concurrent reads coalesced, and the listing reads pools and mints in batched `getMultipleAccountsInfo` calls; configs are read once. The pages keep the last data under a "delayed" banner when a poll fails.
+- Status gates: buy and sell only while funding, withdraw and resale swaps only after graduation (409), quotes only for listed campaigns (404); the Blink is disabled with the right copy outside funding or when its live state can't be read, and its POST answers 422.
 
 ### Deploy (Railway)
 

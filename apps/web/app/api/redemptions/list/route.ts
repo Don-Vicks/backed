@@ -1,12 +1,14 @@
-import { getCampaign, listRedemptions, verifyWalletMessage } from "@preorder/core";
-import { BadRequest, errorResponse, publicKey } from "@/lib/server";
+import { getCampaign, HttpError, listRedemptions, schemas, verifyWalletMessage } from "@preorder/core";
+import { BadRequest, errorResponse, publicKey, readJson, requestLog } from "@/lib/server";
 
 // Maker-only: the maker's wallet signs a time-stamped message to see shipping details.
 export async function POST(req: Request) {
+  const log = requestLog("POST /api/redemptions/list");
   try {
-    const { pool, message, signature } = (await req.json()) as { pool: string; message: string; signature: string };
+    const { pool: poolKey, message, signature } = await readJson(req, schemas.ordersSignIn);
+    const pool = poolKey.toBase58();
     const record = getCampaign(pool);
-    if (!record) throw new BadRequest("Unknown campaign");
+    if (!record) throw new HttpError("Campaign not found", 404);
     if (!message.includes(pool)) throw new BadRequest("Message is for a different campaign");
     try {
       verifyWalletMessage(message, signature, publicKey(record.maker));
@@ -15,6 +17,6 @@ export async function POST(req: Request) {
     }
     return Response.json({ redemptions: listRedemptions(pool) });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

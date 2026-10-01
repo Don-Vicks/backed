@@ -76,3 +76,39 @@ export function getMetadata(id: string): TokenMetadata | undefined {
   // ids come from the URL; ignore inherited keys like __proto__
   return Object.hasOwn(all, id) ? all[id] : undefined
 }
+
+// Rate limits: one token bucket per key (an IP on a route), refilled at refillPerSec up to capacity.
+// Returns false when the bucket is empty. Buckets idle for a day are dropped (they would be full).
+type RateBucket = { tokens: number; updatedAt: number }
+const ratePath = () => path.join(repoRoot(), 'data', `rate.${getNetwork().name}.json`)
+export const RATE_RETENTION_MS = 24 * 60 * 60_000
+
+export function takeRateToken(key: string, capacity: number, refillPerSec: number, now = Date.now()): boolean {
+  // A Map, so a key like "__proto__" is just a key.
+  const all = new Map<string, RateBucket>(fs.existsSync(ratePath()) ? Object.entries(JSON.parse(fs.readFileSync(ratePath(), 'utf8'))) : [])
+  const row = all.get(key)
+  const available = row ? Math.min(capacity, row.tokens + (Math.max(0, now - row.updatedAt) / 1000) * refillPerSec) : capacity
+  const ok = available >= 1
+  all.set(key, { tokens: ok ? available - 1 : available, updatedAt: now })
+  for (const [k, b] of all) if (now - b.updatedAt > RATE_RETENTION_MS) all.delete(k)
+  fs.mkdirSync(path.dirname(ratePath()), { recursive: true })
+  fs.writeFileSync(ratePath(), JSON.stringify(Object.fromEntries(all)))
+  return ok
+}
+
+// Faucet claims (devnet/localnet), kept for 30 days: longer than any faucet window.
+type FaucetClaim = { wallet: string; ip: string | null; claimedAt: number }
+const faucetPath = () => path.join(repoRoot(), 'data', `faucet-claims.${getNetwork().name}.json`)
+export const FAUCET_RETENTION_MS = 30 * 24 * 60 * 60_000
+const readFaucetClaims = (): FaucetClaim[] => (fs.existsSync(faucetPath()) ? JSON.parse(fs.readFileSync(faucetPath(), 'utf8')) : [])
+
+export function recordFaucetClaim(wallet: string, ip: string | null, now = Date.now()) {
+  const kept = readFaucetClaims().filter((c) => now - c.claimedAt <= FAUCET_RETENTION_MS)
+  fs.mkdirSync(path.dirname(faucetPath()), { recursive: true })
+  fs.writeFileSync(faucetPath(), JSON.stringify([{ wallet, ip, claimedAt: now }, ...kept]))
+}
+
+// Claims since a time, optionally for one wallet or one IP (both unset: all claims).
+export function countFaucetClaims(sinceMs: number, by: { wallet?: string; ip?: string } = {}): number {
+  return readFaucetClaims().filter((c) => c.claimedAt >= sinceMs && (!by.wallet || c.wallet === by.wallet) && (!by.ip || c.ip === by.ip)).length
+}

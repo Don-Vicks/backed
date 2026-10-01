@@ -8,45 +8,52 @@ import {
   buildRedeemTx,
   buildResaleSwapTx,
   buildSellBackTx,
+  DEFAULT_SLIPPAGE_BPS,
   formatRawAmount,
   getCampaign,
+  HttpError,
   resolveReferral,
-  slippageBps,
+  schemas,
   summarizeBuyQuote,
   summarizeSellQuote,
   toVoucherRaw,
   VOUCHER_DECIMALS,
   type BuyQuote,
+  type CampaignStatus,
   type SellQuote,
 } from "@preorder/core";
-import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, serialize } from "@/lib/server";
+import { BadRequest, connection, errorResponse, finalizeForWallet, liveOrUnavailable, readJson, requestLog, serialize } from "@/lib/server";
 
-type Body = {
-  kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "resaleBuy" | "resaleSell";
-  pool: string;
-  wallet: string;
-  usdc?: number;
-  vouchers?: number; // sell / resaleSell; sell defaults to the whole balance
-  ref?: string;
-  slippageBps?: number; // 10–500, default 100
+// The campaign status each kind needs, and what to say otherwise (409). The program would reject these
+// anyway, but only after the wallet prompt and a failed transaction.
+const NEEDS: Partial<Record<string, [CampaignStatus, string]>> = {
+  buy: ["funding", "This campaign has reached its goal"],
+  sell: ["funding", "Exits close once the goal is reached"],
+  withdraw: ["reselling", "The production budget unlocks when the campaign graduates"],
+  resaleBuy: ["reselling", "The resale market opens after graduation"],
+  resaleSell: ["reselling", "The resale market opens after graduation"],
 };
 
 // Unsigned transactions for the connected wallet to sign and send.
 export async function POST(req: Request) {
+  const log = requestLog("POST /api/tx");
   try {
-    const body = (await req.json()) as Body;
-    const wallet = publicKey(body.wallet);
-    const record = getCampaign(body.pool);
-    if (!record) throw new BadRequest("Unknown campaign");
+    const body = await readJson(req, schemas.tx);
+    const wallet = body.wallet;
+    log.wallet = wallet.toBase58();
+    const record = getCampaign(body.pool.toBase58());
+    if (!record) throw new HttpError("Campaign not found", 404);
+    const need = NEEDS[body.kind];
+    if (need && (await liveOrUnavailable(record, log)).status !== need[0]) throw new HttpError(need[1], 409);
     const conn = connection();
     const pool = new PublicKey(record.pool);
     const baseMint = new PublicKey(record.baseMint);
-    const bps = slippageBps(body.slippageBps);
+    const bps = body.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
 
     let tx;
     let quote: BuyQuote | SellQuote | undefined; // what the curve swap was built from, for the UI
     if (body.kind === "buy") {
-      if (!(body.usdc && body.usdc > 0)) throw new BadRequest("Enter an amount");
+      if (!body.usdc) throw new BadRequest("Enter an amount");
       // A bad, self or unusable referral is dropped silently: it must never block the buy.
       const referral = await resolveReferral(conn, new PublicKey(record.usdcMint), body.ref, wallet);
       const built = await buildBuyTx(conn, wallet, pool, body.usdc, { referral, slippageBps: bps });
@@ -56,7 +63,6 @@ export async function POST(req: Request) {
       const account = await getAccount(conn, getAssociatedTokenAddressSync(baseMint, wallet)).catch(() => null);
       if (!account || account.amount === BigInt(0)) throw new BadRequest("You hold no vouchers for this campaign");
       const held = new BN(account.amount.toString());
-      if (body.vouchers !== undefined && !(Number(body.vouchers) > 0)) throw new BadRequest("Enter an amount");
       // Checked in UI units before converting, so an absurd amount is this 400, not a conversion error.
       const heldUnits = formatRawAmount(account.amount, VOUCHER_DECIMALS);
       if (Number(body.vouchers) > Number(heldUnits)) throw new BadRequest(`You hold ${heldUnits} vouchers`);
@@ -75,16 +81,16 @@ export async function POST(req: Request) {
       tx = await buildMakerClaimTx(conn, record);
       if (!tx) throw new BadRequest("Nothing to claim yet");
     } else if (body.kind === "resaleBuy") {
-      if (!(body.usdc && body.usdc > 0)) throw new BadRequest("Enter an amount");
+      if (!body.usdc) throw new BadRequest("Enter an amount");
       tx = await buildResaleSwapTx(conn, record, wallet, "buy", body.usdc, bps);
     } else if (body.kind === "resaleSell") {
-      if (!(body.vouchers && body.vouchers > 0)) throw new BadRequest("Enter an amount");
+      if (!body.vouchers) throw new BadRequest("Enter an amount");
       tx = await buildResaleSwapTx(conn, record, wallet, "sell", body.vouchers, bps);
     } else {
       throw new BadRequest("Unknown transaction kind");
     }
     return Response.json({ ...serialize(await finalizeForWallet(tx, wallet)), ...(quote && { quote }) });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

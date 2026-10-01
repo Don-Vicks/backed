@@ -7,10 +7,10 @@ import { parseNetwork } from './network'
 export type TrustTierName = 'A' | 'B' | 'C'
 
 export type TrustSignals = {
-  walletAgeDays: number
-  txCount: number // capped at the number of signatures fetched
+  walletAgeDays: number // a lower bound when truncated
+  txCount: number // signatures seen, capped by the history walk
   fundedByFreshWallet: boolean // first funder was itself created within 7 days of funding
-  verifiedSocial: boolean
+  truncated: boolean // history is longer than the walk: the true first transaction (and funder) is unknown
 }
 
 export type TrustResult = {
@@ -22,22 +22,26 @@ export type TrustResult = {
 }
 
 export const MAX_MAKER_SHARE: Record<TrustTierName, number> = { A: 40, B: 25, C: 10 }
+export const TIER_A_MIN_SCORE = 65
+export const TIER_B_MIN_SCORE = 40
 
 export function scoreSignals(signals: TrustSignals): TrustResult {
   const reasons: string[] = []
   let score = 0
 
+  // A truncated walk only proves the wallet is at least this old, and it is scored as exactly that.
+  const age = `${signals.truncated ? '≥ ' : ''}${Math.floor(signals.walletAgeDays)} days`
   if (signals.walletAgeDays >= 365) {
     score += 40
-    reasons.push(`Wallet is ${Math.floor(signals.walletAgeDays)} days old (+40)`)
+    reasons.push(`Wallet is ${age} old (+40)`)
   } else if (signals.walletAgeDays >= 90) {
     score += 25
-    reasons.push(`Wallet is ${Math.floor(signals.walletAgeDays)} days old (+25)`)
+    reasons.push(`Wallet is ${age} old (+25)`)
   } else if (signals.walletAgeDays >= 14) {
     score += 10
-    reasons.push(`Wallet is ${Math.floor(signals.walletAgeDays)} days old (+10)`)
+    reasons.push(`Wallet is ${age} old (+10)`)
   } else {
-    reasons.push(`Wallet is new: ${Math.floor(signals.walletAgeDays)} days (+0)`)
+    reasons.push(`Wallet is new: ${age} (+0)`)
   }
 
   if (signals.txCount >= 500) {
@@ -55,36 +59,40 @@ export function scoreSignals(signals: TrustSignals): TrustResult {
     reasons.push('First funded by a wallet that was itself brand new (−20)')
   }
 
-  if (signals.verifiedSocial) {
-    score += 25
-    reasons.push('Verified social account (+25)')
-  }
+  if (signals.truncated) reasons.push('History is too long to walk to the first transaction, so the first funder is not checked')
 
+  // Only on-chain signals count: A needs both a year of history and 500+ transactions.
   score = Math.max(0, Math.min(100, score))
-  const tier: TrustTierName = score >= 70 ? 'A' : score >= 40 ? 'B' : 'C'
+  const tier: TrustTierName = score >= TIER_A_MIN_SCORE ? 'A' : score >= TIER_B_MIN_SCORE ? 'B' : 'C'
   return { tier, score, maxMakerSharePct: MAX_MAKER_SHARE[tier], reasons, signals }
 }
 
-const MAX_SIGNATURES = 1000
+// How far back a lookup walks: up to HISTORY_PAGES pages of signatures, within one time budget shared by
+// the wallet and its funder. Past either limit the result is marked truncated rather than guessed.
+const PAGE_SIZE = 1000
+export const HISTORY_PAGES = 10
+export const HISTORY_BUDGET_MS = 8_000
 
-async function oldestSignature(connection: Connection, address: PublicKey) {
+type HistoryLimits = { maxPages: number; deadline: number }
+
+async function walkHistory(connection: Pick<Connection, 'getSignaturesForAddress'>, address: PublicKey, limits: HistoryLimits) {
   let before: string | undefined
   let count = 0
   let oldest: { signature: string; blockTime?: number | null } | undefined
-  // Walk back at most MAX_SIGNATURES; older history only matters for the age score.
-  while (count < MAX_SIGNATURES) {
-    const page = await connection.getSignaturesForAddress(address, { before, limit: 1000 })
-    if (page.length === 0) break
-    count += page.length
-    oldest = page[page.length - 1]
+  for (let page = 0; ; page++) {
+    if (page >= limits.maxPages || Date.now() > limits.deadline) return { count, oldest, truncated: true }
+    const sigs = await connection.getSignaturesForAddress(address, { before, limit: PAGE_SIZE })
+    if (sigs.length === 0) break
+    count += sigs.length
+    oldest = sigs[sigs.length - 1]
     before = oldest.signature
-    if (page.length < 1000) break
+    if (sigs.length < PAGE_SIZE) break
   }
-  return { count, oldest }
+  return { count, oldest, truncated: false }
 }
 
 // The first transaction of a wallet is usually the SOL transfer that funded it.
-async function firstFunder(connection: Connection, signature: string, wallet: PublicKey) {
+async function firstFunder(connection: Pick<Connection, 'getParsedTransaction'>, signature: string, wallet: PublicKey) {
   const tx = await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 })
   for (const ix of tx?.transaction.message.instructions ?? []) {
     if ('parsed' in ix && ix.program === 'system' && ix.parsed?.type === 'transfer') {
@@ -95,30 +103,33 @@ async function firstFunder(connection: Connection, signature: string, wallet: Pu
   return null
 }
 
+// Throws when the RPC fails: callers must not mistake a failed lookup for a new wallet.
 export async function readTrustSignals(
-  mainnet: Connection,
+  mainnet: Pick<Connection, 'getSignaturesForAddress' | 'getParsedTransaction'>,
   wallet: PublicKey,
-  opts: { verifiedSocial?: boolean } = {},
+  opts: { maxPages?: number; budgetMs?: number } = {},
 ): Promise<TrustSignals> {
   const now = Date.now() / 1000
-  const { count, oldest } = await oldestSignature(mainnet, wallet)
+  const limits = { maxPages: opts.maxPages ?? HISTORY_PAGES, deadline: Date.now() + (opts.budgetMs ?? HISTORY_BUDGET_MS) }
+  const { count, oldest, truncated } = await walkHistory(mainnet, wallet, limits)
   const walletAgeDays = oldest?.blockTime ? (now - oldest.blockTime) / 86400 : 0
 
+  // Only a complete walk reaches the funding transaction; a truncated one stops somewhere in between.
   let fundedByFreshWallet = false
-  if (oldest?.blockTime) {
+  if (!truncated && oldest?.blockTime) {
     const funder = await firstFunder(mainnet, oldest.signature, wallet)
     if (funder) {
-      const funderHistory = await oldestSignature(mainnet, funder)
+      const funderHistory = await walkHistory(mainnet, funder, limits)
       const funderBorn = funderHistory.oldest?.blockTime
-      fundedByFreshWallet = funderHistory.count < MAX_SIGNATURES && !!funderBorn && oldest.blockTime - funderBorn < 7 * 86400
+      fundedByFreshWallet = !funderHistory.truncated && !!funderBorn && oldest.blockTime - funderBorn < 7 * 86400
     }
   }
 
-  return { walletAgeDays, txCount: count, fundedByFreshWallet, verifiedSocial: !!opts.verifiedSocial }
+  return { walletAgeDays, txCount: count, fundedByFreshWallet, truncated }
 }
 
-export async function trustTier(mainnet: Connection, wallet: PublicKey, opts: { verifiedSocial?: boolean } = {}) {
-  return scoreSignals(await readTrustSignals(mainnet, wallet, opts))
+export async function trustTier(mainnet: Connection, wallet: PublicKey) {
+  return scoreSignals(await readTrustSignals(mainnet, wallet))
 }
 
 // Localnet only: TRUST_FIXTURES='{"<wallet>": {"walletAgeDays": 800, "txCount": 900}}' stands in for
@@ -133,5 +144,10 @@ export function trustFixture(wallet: string, env: NodeJS.ProcessEnv = process.en
   }
   const f = fixtures[wallet]
   if (!f) return null
-  return { walletAgeDays: 0, txCount: 0, fundedByFreshWallet: false, verifiedSocial: false, ...f }
+  return {
+    walletAgeDays: f.walletAgeDays ?? 0,
+    txCount: f.txCount ?? 0,
+    fundedByFreshWallet: f.fundedByFreshWallet ?? false,
+    truncated: f.truncated ?? false,
+  }
 }

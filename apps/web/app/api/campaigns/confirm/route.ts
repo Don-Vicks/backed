@@ -1,10 +1,13 @@
-import { dbcClient, saveCampaign, takePending } from "@preorder/core";
-import { BadRequest, connection, errorResponse } from "@/lib/server";
+import { dbcClient, saveCampaign, schemas, takePending } from "@preorder/core";
+import { BadRequest, connection, errorResponse, logLine, readJson, requestLog } from "@/lib/server";
 
 // Called after the maker's wallet sent the create transaction: verifies the pool exists, then lists it.
 export async function POST(req: Request) {
+  const log = requestLog("POST /api/campaigns/confirm");
   try {
-    const { pool, signature } = (await req.json()) as { pool: string; signature: string };
+    const { pool: poolKey, signature } = await readJson(req, schemas.confirmCampaign);
+    const pool = poolKey.toBase58();
+    log.sig = signature;
     const conn = connection();
     const status = await conn.getSignatureStatus(signature, { searchTransactionHistory: true });
     if (status.value?.err) throw new BadRequest("The create transaction failed on-chain");
@@ -13,8 +16,9 @@ export async function POST(req: Request) {
     const record = takePending(pool);
     if (!record) throw new BadRequest("Unknown campaign");
     saveCampaign({ ...record, createSignature: signature });
+    logLine("info", { reqId: log.reqId, route: log.route, wallet: record.maker, sig: signature, pool, event: "campaign listed" });
     return Response.json({ ok: true, pool });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }

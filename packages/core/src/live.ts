@@ -1,7 +1,7 @@
 // Live, read-only views of a campaign for the web app (numbers already in human units).
 import BN from 'bn.js'
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js'
-import { createAssociatedTokenAccountIdempotentInstruction, createMintToInstruction, getAssociatedTokenAddressSync, getMint } from '@solana/spl-token'
+import { createAssociatedTokenAccountIdempotentInstruction, createMintToInstruction, getAssociatedTokenAddressSync, unpackMint } from '@solana/spl-token'
 import { SwapMode, getPriceFromSqrtPrice } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { dbcClient, getUsdcMint, quoteCurveSwap, resalePoolAddress, toUsdcRaw, toVoucherRaw } from './chain'
 import { DEFAULT_SLIPPAGE_BPS, SwapError, summarizeBuyQuote, summarizeSellQuote, type BuyQuote, type SellQuote } from './swaps'
@@ -10,6 +10,7 @@ import type { CampaignRecord } from './store'
 import { getNetwork, isTestNetwork } from './network'
 import { loadKeypair } from './wallets'
 import { send } from './tx'
+import { LruMap, ttlCache } from './cache'
 
 export type CampaignStatus = 'funding' | 'funded' | 'reselling'
 
@@ -27,16 +28,78 @@ export type CampaignLive = {
 
 const toNum = (bn: BN, decimals: number) => Number(bn.toString()) / 10 ** decimals
 
-export async function readCampaignLive(connection: Connection, record: CampaignRecord): Promise<CampaignLive> {
-  const client = dbcClient(connection)
-  const pool = new PublicKey(record.pool)
-  const virtualPool = await client.state.getPool(pool)
-  if (!virtualPool) throw new Error(`pool ${record.pool} not found`)
-  const s = virtualPool.poolState
+type DbcState = ReturnType<typeof dbcClient>['state']
+type PoolConfigAccount = NonNullable<Awaited<ReturnType<DbcState['getPoolConfig']>>>
+type PoolState = NonNullable<Awaited<ReturnType<DbcState['getPool']>>>['poolState']
+
+// Every viewer polls, so live state is read at most once per pool per LIVE_TTL_MS and concurrent reads
+// of one pool share a request. Configs never change after creation: they are read once.
+export const LIVE_TTL_MS = 3_000
+const liveCache = ttlCache<CampaignLive>(LIVE_TTL_MS)
+const configCache = new LruMap<string, PoolConfigAccount>(5000)
+
+export function readCampaignLive(connection: Connection, record: CampaignRecord): Promise<CampaignLive> {
+  return liveCache.get(record.pool, async () => {
+    const [live] = await fetchCampaignsLive(connection, [record])
+    if (!live) throw new Error(`pool ${record.pool} not found`)
+    return live
+  })
+}
+
+// The listing: cached pools as they are, the rest in batched reads. null for a pool that can't be read.
+export async function readCampaignsLive(connection: Connection, records: CampaignRecord[]): Promise<(CampaignLive | null)[]> {
+  const out = records.map((r) => liveCache.fresh(r.pool) ?? null)
+  const missing = records.flatMap((r, i) => (out[i] ? [] : [i]))
+  if (missing.length) {
+    const fetched = await fetchCampaignsLive(connection, missing.map((i) => records[i]))
+    missing.forEach((i, j) => {
+      out[i] = fetched[j]
+      if (fetched[j]) liveCache.set(records[i].pool, fetched[j]!)
+    })
+  }
+  return out
+}
+
+async function getAccounts(connection: Connection, keys: PublicKey[]) {
+  const chunks: PublicKey[][] = []
+  for (let i = 0; i < keys.length; i += 100) chunks.push(keys.slice(i, i + 100)) // RPC limit per call
+  return (await Promise.all(chunks.map((c) => connection.getMultipleAccountsInfo(c, 'confirmed')))).flat()
+}
+
+// Pools and mints in one getMultipleAccountsInfo (per 100 accounts), then any config not cached yet.
+async function fetchCampaignsLive(connection: Connection, records: CampaignRecord[]): Promise<(CampaignLive | null)[]> {
+  const coder = dbcClient(connection).state.program.coder.accounts
+  const infos = await getAccounts(connection, records.flatMap((r) => [new PublicKey(r.pool), new PublicKey(r.baseMint)]))
+  const pools = records.map((_, i) => {
+    const info = infos[2 * i]
+    try {
+      return info ? (coder.decode('virtualPool', info.data).poolState as PoolState) : null
+    } catch {
+      return null // not a DBC pool
+    }
+  })
+  const configKeys = [...new Set(pools.flatMap((p) => (p && !configCache.get(p.config.toBase58()) ? [p.config.toBase58()] : [])))]
+  if (configKeys.length) {
+    const configInfos = await getAccounts(connection, configKeys.map((k) => new PublicKey(k)))
+    configInfos.forEach((info, i) => {
+      if (info) configCache.set(configKeys[i], coder.decode('poolConfig', info.data) as PoolConfigAccount)
+    })
+  }
+  return records.map((record, i) => {
+    const s = pools[i]
+    const config = s && configCache.get(s.config.toBase58())
+    const mintInfo = infos[2 * i + 1]
+    if (!s || !config || !mintInfo) return null
+    return campaignLive(record, s, config, unpackMint(new PublicKey(record.baseMint), mintInfo).supply)
+  })
+}
+
+function campaignLive(record: CampaignRecord, s: PoolState, config: PoolConfigAccount, mintSupply: bigint): CampaignLive {
   const price = getPriceFromSqrtPrice(s.sqrtPrice, VOUCHER_DECIMALS, USDC_DECIMALS).toNumber()
-  const mint = await getMint(connection, new PublicKey(record.baseMint))
   const migrated = Number(s.isMigrated) === 1
-  const progress = migrated ? 1 : await client.state.getPoolQuoteTokenCurveProgress(pool)
+  // As the SDK's getPoolQuoteTokenCurveProgress computes it, from the accounts already read.
+  const threshold = Number(config.migrationQuoteThreshold.toString())
+  const progress = migrated ? 1 : Math.min(1, Math.max(0, threshold > 0 ? Number(s.quoteReserve.toString()) / threshold : 0))
 
   // Tier = last tier whose start price is at or below the current price.
   const tiers = record.campaign.plan.tiers
@@ -51,7 +114,7 @@ export async function readCampaignLive(connection: Connection, record: CampaignR
     raisedUsdc: toNum(s.quoteReserve, USDC_DECIMALS),
     goalUsdc: record.goalUsdc,
     priceUsdc: price,
-    unitsSold: migrated ? record.campaign.plan.tiers.reduce((a, t) => a + t.units, 0) : toNum(new BN(mint.supply.toString()).sub(s.baseReserve), VOUCHER_DECIMALS),
+    unitsSold: migrated ? record.campaign.plan.tiers.reduce((a, t) => a + t.units, 0) : toNum(new BN(mintSupply.toString()).sub(s.baseReserve), VOUCHER_DECIMALS),
     tierIndex,
     makerBudgetWithdrawn: (Number((s as { migrationFeeWithdrawStatus?: number }).migrationFeeWithdrawStatus ?? 0) & 0b10) !== 0,
     resalePool: migrated ? resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint)).toBase58() : null,

@@ -54,7 +54,6 @@ export function CreateForm() {
   const [finalPrice, setFinalPrice] = useState("38");
   const [makerShare, setMakerShare] = useState(10);
   const [dropWindow, setDropWindow] = useState<number>(DEFAULT_DROP_BOT_WINDOW_SEC);
-  const [verifiedSocial, setVerifiedSocial] = useState(false);
   const [launching, setLaunching] = useState(false);
   // A split create whose config landed but whose pool did not: launching again finishes it on that config.
   const [resumePool, setResumePool] = useState<string | null>(null);
@@ -91,7 +90,7 @@ export function CreateForm() {
   }, [campaign.plan]);
 
   // Trust tier + on-chain field mapping from the server (debounced).
-  const previewInput = useDebounced(JSON.stringify({ campaign, maker: publicKey?.toBase58(), verifiedSocial }), 450);
+  const previewInput = useDebounced(JSON.stringify({ campaign, maker: publicKey?.toBase58() }), 450);
   const previewQuery = useQuery({
     queryKey: ["preview", previewInput],
     queryFn: () => api<PreviewResponse & { caps: Record<string, number> }>("/api/preview", JSON.parse(previewInput)),
@@ -113,7 +112,7 @@ export function CreateForm() {
       const maker = publicKey.toBase58();
       const { pool, txs } = resumePool
         ? await api<{ txs: BuiltTx[]; pool: string }>(`/api/campaigns/${resumePool}/resume`, { maker })
-        : await api<{ txs: BuiltTx[]; pool: string }>("/api/campaigns", { campaign, maker, verifiedSocial });
+        : await api<{ txs: BuiltTx[]; pool: string }>("/api/campaigns", { campaign, maker });
       if (txs.length > 1) toast.info("Two steps in one approval. Your wallet may warn that step 2 will fail: it can’t see the config step 1 creates.");
       if (txs.length) {
         try {
@@ -231,12 +230,6 @@ export function CreateForm() {
             </div>
             <p className="text-xs text-muted-foreground">Bots that rush the launch pay a {DROP_BOT_START_FEE_BPS / 100}% fee that falls to {NORMAL_FEE_BPS / 100}% over this window.</p>
           </div>
-          <label className="flex items-start gap-3 text-sm">
-            <input type="checkbox" checked={verifiedSocial} onChange={(e) => setVerifiedSocial(e.target.checked)} className="mt-0.5 size-4 accent-primary" />
-            <span>
-              I’ve verified my X account <span className="text-muted-foreground">(demo flag: stands in for a real social check)</span>
-            </span>
-          </label>
         </fieldset>
 
         <div className="flex flex-col gap-2">
@@ -254,7 +247,13 @@ export function CreateForm() {
       </form>
 
       <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:self-start" aria-live="polite">
-        <TrustCard preview={preview} loading={previewLoading && !preview} connected={!!publicKey} />
+        <TrustCard
+          preview={preview}
+          loading={previewLoading && !preview}
+          connected={!!publicKey}
+          failed={previewQuery.isError || !!preview?.trustUnavailable}
+          retry={() => previewQuery.refetch()}
+        />
         <div className="rounded-xl border border-border bg-card p-5">
           <h2 className="font-heading text-2xl">What backers see</h2>
           {pricing.ok ? (
@@ -285,8 +284,10 @@ export function CreateForm() {
             </ul>
           ) : previewLoading ? (
             <div className="mt-4 grid gap-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-8" />)}</div>
-          ) : (
+          ) : blocking ? (
             <p className="mt-3 text-sm text-muted-foreground">Fix the highlighted inputs to see the config.</p>
+          ) : (
+            <p className="mt-3 text-sm text-muted-foreground">The config preview is unavailable right now.</p>
           )}
         </div>
       </aside>
@@ -303,7 +304,19 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TrustCard({ preview, loading, connected }: { preview: PreviewResponse | null; loading: boolean; connected: boolean }) {
+function TrustCard({
+  preview,
+  loading,
+  connected,
+  failed,
+  retry,
+}: {
+  preview: PreviewResponse | null;
+  loading: boolean;
+  connected: boolean;
+  failed: boolean;
+  retry: () => void;
+}) {
   const trust = preview?.trust;
   return (
     <div className="rounded-xl border border-border bg-card p-5">
@@ -317,6 +330,11 @@ function TrustCard({ preview, loading, connected }: { preview: PreviewResponse |
         <p className="mt-2 text-sm text-muted-foreground">Connect your wallet to see your tier. It’s scored from your wallet’s public mainnet history.</p>
       ) : loading ? (
         <div className="mt-3 grid gap-2"><Skeleton className="h-4" /><Skeleton className="h-4 w-2/3" /></div>
+      ) : failed && !trust ? (
+        <div className="mt-2 text-sm" role="alert">
+          <p className="text-muted-foreground">Your trust check is unavailable right now, so your tier and cap are unknown. Launching needs it.</p>
+          <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={retry}>Check again</Button>
+        </div>
       ) : trust ? (
         <ul className="mt-3 grid gap-1 text-sm text-muted-foreground">
           {trust.reasons.map((r) => (

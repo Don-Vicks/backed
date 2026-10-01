@@ -4,6 +4,7 @@ import type { BuyQuote, Campaign, CampaignLive, CampaignRecord, ConfigField, Pri
 export type CampaignWithLive = CampaignRecord & { live: CampaignLive | null };
 export type PreviewResponse = {
   trust: TrustResult | null;
+  trustUnavailable: boolean; // the maker's trust lookup failed; trust is null and nothing was cached
   pricing: PricingSummary | null;
   onChain: { goalUsdc: number; preorderUnits: number; resaleUnits: number; totalUnits: number } | null;
   fields: ConfigField[];

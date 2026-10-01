@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import { Transaction } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { toast } from "sonner";
+import { friendlyTxError, isExpiredTxError, isUserRejection } from "@preorder/core/src/tx-errors";
 import { explorerTx } from "@/lib/format";
 
 // A failed API call. `status` tells a message meant for the user (4xx) from a server fault (5xx).
@@ -48,9 +49,22 @@ export class ReportedError extends Error {
   }
 }
 
-function report(e: unknown, label: string, toastId: string | number, landed = 0): ReportedError {
+// Simulation logs, program error codes and RPC internals are for the console, not the toast.
+const looksRaw = (message: string) => message.length > 160 || /logs?:|program log|simulation failed|custom program error|instructionerror|0x[0-9a-f]+/i.test(message);
+
+// The toast text for a failed transaction: cancelled, a known failure in plain language, or a generic line.
+export function txErrorText(e: unknown, label: string): string {
   const message = e instanceof Error ? e.message : String(e);
-  const text = message.includes("User rejected") ? `${label}: cancelled` : `${label} failed: ${message}`;
+  if (isUserRejection(message)) return `${label}: cancelled`;
+  const friendly = friendlyTxError(message);
+  if (friendly) return `${label} failed. ${friendly}`;
+  if (looksRaw(message)) return `${label} failed. Something went wrong; try again.`;
+  return `${label} failed: ${message}`;
+}
+
+function report(e: unknown, label: string, toastId: string | number, landed = 0): ReportedError {
+  const text = txErrorText(e, label);
+  if (!text.endsWith(": cancelled")) console.error(label, e);
   toast.error(text, { id: toastId });
   return new ReportedError(text, toastId, landed, { cause: e });
 }
@@ -63,26 +77,39 @@ function fromBase64(b64: string) {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 }
 
-// Takes a server-built transaction, has the wallet sign it, sends it and waits for confirmation.
+// Takes a server-built transaction, has the wallet sign it, sends it and waits for confirmation. With
+// `rebuild`, a transaction whose blockhash expired (a slow approval, a congested network) is built
+// again and the wallet asked once more.
 export function useSignAndSend() {
   const { connection } = useConnection();
   const { signTransaction, publicKey } = useWallet();
 
   return useCallback(
-    async (built: BuiltTx, label: string) => {
+    async (built: BuiltTx, label: string, rebuild?: () => Promise<BuiltTx>) => {
       if (!publicKey || !signTransaction) throw new Error("Connect a wallet first");
       const toastId = toast.loading(`${label}: approve in your wallet`);
-      try {
-        const tx = Transaction.from(fromBase64(built.tx));
+      const attempt = async (b: BuiltTx) => {
+        const tx = Transaction.from(fromBase64(b.tx));
         const signed = await signTransaction(tx);
         toast.loading(`${label}: sending`, { id: toastId });
         const signature = await connection.sendRawTransaction(signed.serialize(), { maxRetries: 3 });
         toast.loading(`${label}: confirming`, { id: toastId });
         const result = await connection.confirmTransaction(
-          { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: built.lastValidBlockHeight },
+          { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: b.lastValidBlockHeight },
           "confirmed",
         );
-        if (result.value.err) throw new Error("Transaction failed on-chain");
+        if (result.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(result.value.err)}`);
+        return signature;
+      };
+      try {
+        let signature: string;
+        try {
+          signature = await attempt(built);
+        } catch (e) {
+          if (!rebuild || !(e instanceof Error) || !isExpiredTxError(e.message)) throw e;
+          toast.loading(`${label}: that one expired, approve the new one`, { id: toastId });
+          signature = await attempt(await rebuild());
+        }
         toast.success(label, {
           id: toastId,
           action: { label: "View", onClick: () => window.open(explorerTx(signature), "_blank", "noopener") },
@@ -124,7 +151,7 @@ export function useSignAndSendAll() {
             { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: built[i].lastValidBlockHeight },
             "confirmed",
           );
-          if (result.value.err) throw new Error("Transaction failed on-chain");
+          if (result.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(result.value.err)}`);
           landed++;
         }
         toast.success(label, {

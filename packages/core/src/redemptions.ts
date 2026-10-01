@@ -9,6 +9,7 @@ import { getNetwork } from './network'
 import { repoRoot } from './paths'
 import { VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
+import { HttpError } from './errors'
 
 export type Shipping = { name: string; email: string; address: string; country: string }
 export type Redemption = { pool: string; signature: string; wallet: string; units: number; shipping: Shipping; createdAt: string }
@@ -20,11 +21,12 @@ export function listRedemptions(pool: string): Redemption[] {
   return readAll().filter((r) => r.pool === pool)
 }
 
-// Returns the number of whole vouchers the wallet burned in this transaction, or throws.
+// Returns the number of whole vouchers the wallet burned in this transaction. Throws an HttpError for
+// a burn that doesn't count; RPC failures propagate as they are.
 export async function verifyBurn(connection: Connection, record: CampaignRecord, signature: string, wallet: PublicKey): Promise<number> {
   const tx = await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' })
-  if (!tx) throw new Error('Burn transaction not found yet; try again in a few seconds')
-  if (tx.meta?.err) throw new Error('Burn transaction failed on-chain')
+  if (!tx) throw new HttpError('Burn transaction not found yet; try again in a few seconds', 409)
+  if (tx.meta?.err) throw new HttpError('Burn transaction failed on-chain', 400)
   let burned = BigInt(0)
   for (const ix of tx.transaction.message.instructions) {
     if (!('parsed' in ix) || ix.program !== 'spl-token') continue
@@ -34,13 +36,13 @@ export async function verifyBurn(connection: Connection, record: CampaignRecord,
     }
   }
   const units = Number(burned / BigInt(10 ** VOUCHER_DECIMALS))
-  if (units < 1) throw new Error('That transaction does not burn a whole voucher from your wallet for this campaign')
+  if (units < 1) throw new HttpError('That transaction does not burn a whole voucher from your wallet for this campaign', 400)
   return units
 }
 
 export function saveRedemption(r: Redemption) {
   const all = readAll()
-  if (all.some((x) => x.signature === r.signature)) throw new Error('This redemption was already submitted')
+  if (all.some((x) => x.signature === r.signature)) throw new HttpError('This redemption was already submitted', 409)
   fs.mkdirSync(path.dirname(redemptionsPath()), { recursive: true })
   fs.writeFileSync(redemptionsPath(), JSON.stringify([r, ...all], null, 2))
 }

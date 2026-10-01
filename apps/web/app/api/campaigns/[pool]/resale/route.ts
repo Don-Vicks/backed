@@ -1,8 +1,9 @@
 import { getCampaign, readMakerEarnings, readResale } from "@preorder/core";
-import { connection, errorResponse } from "@/lib/server";
+import { connection, errorResponse, requestLog } from "@/lib/server";
 
 // Resale pool state (after graduation) and the maker's earnings (curve fees exist before graduation too).
 export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[pool]/resale">) {
+  const log = requestLog("GET /api/campaigns/[pool]/resale");
   try {
     const { pool } = await ctx.params;
     const record = getCampaign(pool);
@@ -12,6 +13,6 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[pool
     const maker = resale?.maker ?? (await readMakerEarnings(conn, record));
     return Response.json({ resale, maker });
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, log);
   }
 }
