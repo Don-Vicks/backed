@@ -11,8 +11,11 @@ import {
   SwapMode,
   deriveDammV2PoolAddress,
   deriveDbcPoolAddress,
+  type SwapQuote2Params,
+  type SwapQuote2Result,
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { getNetwork } from './network'
+import { SwapError, chainNow, slippageBps, toSwapError } from './swaps'
 import { keysDir, platformFeeClaimer } from './wallets'
 import { MIGRATION_FEE_OPTION, USDC_DECIMALS, VOUCHER_DECIMALS, campaignToConfig, type Campaign } from './engine'
 import type { TrustTierName } from './trust'
@@ -83,27 +86,85 @@ export async function buildCreateCampaignTx(args: {
   return { tx, extraSigners: [config, baseMint], config: config.publicKey, baseMint: baseMint.publicKey, pool, pricing, onChain, fields }
 }
 
-export async function buildBuyTx(connection: Connection, buyer: PublicKey, pool: PublicKey, usdc: number, referralTokenAccount: PublicKey | null = null) {
-  return dbcClient(connection).pool.swap2({
+// Quote a curve swap against the live pool at the chain's clock, so the fee schedule matches
+// what the program charges. Throws a SwapError the routes can show when the curve can't take it.
+type CurveSwap = { swapBaseForQuote: boolean; hasReferral?: boolean; slippageBps?: number } & (
+  | { swapMode: SwapMode.ExactIn | SwapMode.PartialFill; amountIn: BN }
+  | { swapMode: SwapMode.ExactOut; amountOut: BN }
+)
+
+export async function quoteCurveSwap(connection: Connection, pool: PublicKey, swap: CurveSwap): Promise<SwapQuote2Result> {
+  const client = dbcClient(connection)
+  const [virtualPool, now] = await Promise.all([
+    client.state.getPool(pool).catch((e) => {
+      if (/discriminator/i.test(e instanceof Error ? e.message : '')) return null // some other account
+      throw e
+    }),
+    chainNow(connection),
+  ])
+  if (!virtualPool) throw new SwapError('Campaign pool not found', 404)
+  const config = await client.state.getPoolConfig(virtualPool.poolState.config)
+  try {
+    return client.pool.swapQuote2({
+      ...swap,
+      virtualPool,
+      config,
+      hasReferral: swap.hasReferral ?? false,
+      eligibleForFirstSwapWithMinFee: false,
+      currentPoint: new BN(now),
+      slippageBps: slippageBps(swap.slippageBps),
+    } as SwapQuote2Params)
+  } catch (e) {
+    throw toSwapError(e)
+  }
+}
+
+export type SwapOptions = { referral?: PublicKey | null; slippageBps?: number }
+
+// Back with USDC. PartialFill so the last buy stops exactly at the goal and refunds the rest;
+// the quote's minimumAmountOut makes a front-run (or a stale quote) fail instead of filling worse.
+export async function buildBuyTx(connection: Connection, buyer: PublicKey, pool: PublicKey, usdc: number, opts: SwapOptions = {}) {
+  const referralTokenAccount = opts.referral ?? null
+  const amountIn = toUsdcRaw(usdc)
+  const quote = await quoteCurveSwap(connection, pool, {
+    swapBaseForQuote: false,
+    swapMode: SwapMode.PartialFill,
+    amountIn,
+    hasReferral: !!referralTokenAccount,
+    slippageBps: opts.slippageBps,
+  })
+  if (!quote.minimumAmountOut?.gtn(0)) throw new SwapError('Amount is too small to buy any vouchers', 400)
+  const tx = await dbcClient(connection).pool.swap2({
     owner: buyer,
     pool,
     swapBaseForQuote: false,
     referralTokenAccount,
-    swapMode: SwapMode.PartialFill, // the last buy before the goal only fills up to the goal
-    amountIn: toUsdcRaw(usdc),
-    minimumAmountOut: new BN(0),
+    swapMode: SwapMode.PartialFill,
+    amountIn,
+    minimumAmountOut: quote.minimumAmountOut,
   })
+  return { tx, quote }
 }
 
-export async function buildSellBackTx(connection: Connection, seller: PublicKey, pool: PublicKey, vouchersRaw: BN) {
-  return dbcClient(connection).pool.swap({
+// Exit on the curve: sell vouchersRaw back for USDC (ExactIn) with the quote's minimum.
+export async function buildSellBackTx(connection: Connection, seller: PublicKey, pool: PublicKey, vouchersRaw: BN, opts: Omit<SwapOptions, 'referral'> = {}) {
+  const quote = await quoteCurveSwap(connection, pool, {
+    swapBaseForQuote: true,
+    swapMode: SwapMode.ExactIn,
+    amountIn: vouchersRaw,
+    slippageBps: opts.slippageBps,
+  })
+  if (!quote.minimumAmountOut?.gtn(0)) throw new SwapError('Amount is too small to sell', 400)
+  const tx = await dbcClient(connection).pool.swap2({
     owner: seller,
     pool,
-    amountIn: vouchersRaw,
-    minimumAmountOut: new BN(0),
     swapBaseForQuote: true,
     referralTokenAccount: null,
+    swapMode: SwapMode.ExactIn,
+    amountIn: vouchersRaw,
+    minimumAmountOut: quote.minimumAmountOut,
   })
+  return { tx, quote }
 }
 
 export async function buildMigrateTx(connection: Connection, payer: PublicKey, pool: PublicKey) {

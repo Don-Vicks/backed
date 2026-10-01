@@ -19,6 +19,7 @@ import { CpAmm } from '@meteora-ag/cp-amm-sdk'
 import { explorerAccount, getConnection, getNetwork, trustRpcUrl } from '../network'
 import { keysDir, loadWallets } from '../wallets'
 import { send } from '../tx'
+import { DEFAULT_SLIPPAGE_BPS, chainNow } from '../swaps'
 import { trustTier, type TrustTierName } from '../trust'
 import { VOUCHER_DECIMALS, type Campaign } from '../engine'
 import {
@@ -148,20 +149,19 @@ async function main() {
   const quoteBuy = async (usdc: number) => {
     const virtualPool = (await client.state.getPool(pool))!
     const config = (await client.state.getPoolConfig(virtualPool.poolState.config))!
-    const slot = await connection.getSlot()
     return client.pool.swapQuote({
       virtualPool,
       config,
       swapBaseForQuote: false,
       amountIn: toUsdcRaw(usdc),
-      slippageBps: 100,
+      slippageBps: DEFAULT_SLIPPAGE_BPS,
       hasReferral: false,
       eligibleForFirstSwapWithMinFee: false,
-      currentPoint: new BN((await connection.getBlockTime(slot))!),
+      currentPoint: new BN(await chainNow(connection)),
     })
   }
   const buy = async (buyer: Keypair, usdc: number) =>
-    send(connection, await buildBuyTx(connection, buyer.publicKey, pool, usdc), [buyer], `${name(buyer)} backs ${usdc} USDC`)
+    send(connection, (await buildBuyTx(connection, buyer.publicKey, pool, usdc)).tx, [buyer], `${name(buyer)} backs ${usdc} USDC`)
 
   // Drop-bot window ---------------------------------------------------------
   await step('dropWindow', '4. Drop-bot fee: quote at launch, then after the window', async () => {
@@ -182,7 +182,7 @@ async function main() {
   await step('sellBack', '6. backer1 exits: sells all vouchers back on the curve', async () => {
     const vouchers = await balanceOf(connection, baseMint, w.backer1.publicKey)
     const before = await balanceOf(connection, usdcMint, w.backer1.publicKey)
-    const sig = await send(connection, await buildSellBackTx(connection, w.backer1.publicKey, pool, vouchers), [w.backer1], 'sell back')
+    const sig = await send(connection, (await buildSellBackTx(connection, w.backer1.publicKey, pool, vouchers)).tx, [w.backer1], 'sell back')
     const after = await balanceOf(connection, usdcMint, w.backer1.publicKey)
     console.log(`    sold ${fmt(vouchers)} vouchers for ${fmt(after.sub(before))} USDC (paid 4.0000)`)
     return sig
@@ -229,9 +229,9 @@ async function main() {
     const quote = cpAmm.getQuote({
       inAmount: amountIn,
       inputTokenMint: baseMint,
-      slippage: 1,
+      slippage: DEFAULT_SLIPPAGE_BPS, // basis points
       poolState,
-      currentTime: (await connection.getBlockTime(slot))!,
+      currentTime: await chainNow(connection),
       currentSlot: slot,
       tokenADecimal: 6,
       tokenBDecimal: 6,

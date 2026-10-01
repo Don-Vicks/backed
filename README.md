@@ -26,11 +26,13 @@ The maker fills in a plain form. `campaignToConfig()` ([`packages/core/src/engin
 | **Drop-bot window** | `baseFee`: `FeeSchedulerExponential` | Scalpers rushing a drop are the same as snipers. The fee starts at 50% and falls to 1% over 5–30 min. (DBC deprecated the rate limiter for new pools in SDK 1.5.12, so there is no per-buy size limit.) |
 | **Limited edition** | `tokenSupply` (fixed), `tokenUpdateAuthority: Immutable` | The supply cap is the production cap, and nobody can mint more. Post-migration supply is set to exactly the curve units plus the resale units, and the program burns the unused swap buffer. |
 | **Price in dollars** | `quoteMint` = USDC, `collectFeeMode: QuoteToken` | Product prices shouldn't move with SOL. All fees are collected in USDC. |
-| **Exit before the goal** | *(DBC sells are always open)* | A backer can sell back along the curve at any time before graduation. It isn't a refund: it pays the current curve price. |
+| **Exit before the goal** | *(DBC sells are always open)* | A backer can sell back any number of vouchers along the curve at any time before graduation. It isn't a refund: it pays the current curve price. |
+| **Last buy stops at the goal** | `swap2` with `SwapMode.PartialFill` | A buy larger than what is left only takes what reaches the goal and leaves the rest in the wallet. The quote uses the same mode, so it shows "Only $X left to the goal" instead of failing. |
+| **Slippage protection** | `swapQuote2` → `minimumAmountOut` | Every curve and resale swap carries a minimum output from a quote at the chain's clock (default 1%, requests may set 0.1–5%). A front-run between quote and signature makes the swap fail instead of filling at a worse price. |
 | **Resale market** | `migrationOption: MET_DAMM_V2`, `migrationFeeOption: FixedBps200` | Graduation opens a 2%-fee DAMM v2 pool, so vouchers stay liquid after the pre-order. |
 | **Resale royalties** | `creatorPermanentLockedLiquidityPercentage: 80`, `partnerPermanentLockedLiquidityPercentage: 20` | 100% of resale liquidity is locked forever. Locked positions still earn trading fees, so the maker earns on every resale. |
 | **Curve trading fees** | `creatorTradingFeePercentage: 50`, `dynamicFeeEnabled` | After Meteora's 20% protocol fee, the maker earns half of the curve's trading fees. Both fee streams are claimed in one transaction. |
-| **Affiliate links** | swap `referralTokenAccount` | Share links carry `?ref=<wallet>`. On referred buys, the sharer gets DBC's referral cut (20% of the protocol fee). The buyer pays nothing extra. |
+| **Affiliate links** | swap `referralTokenAccount` | Share links carry `?ref=<wallet>`. On referred buys, the sharer gets DBC's referral cut (20% of the protocol fee). The buyer pays nothing extra. A ref that is the buyer, malformed, or without a usable USDC account is dropped, never failing the buy. |
 | **No reused configs** | `createConfigAndPool` (one transaction, platform key = `feeClaimer`) | Each campaign gets its own config, created in the same transaction as its pool. Nobody can launch another pool on a campaign's terms. |
 
 ### Why we build the curve ourselves
@@ -83,6 +85,7 @@ packages/core       All Solana logic, shared by the scripts and the web server
   trust.ts          maker trust tier from mainnet wallet history
   chain.ts          transaction builders: create, buy, exit, graduate, withdraw, redeem
   live.ts           live campaign state, quotes, devnet/localnet faucet
+  swaps.ts          slippage, chain clock, referral resolution, quote summaries
   network.ts        NETWORK switch (localnet, devnet, mainnet), RPC and explorer links
   resale.ts         DAMM v2 resale pool, quotes, swaps, maker earnings + claim
   redemptions.ts    on-chain burn verification, shipping records, maker sign-in
@@ -116,7 +119,7 @@ Other commands:
 
 ```bash
 pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, sign-in, config)
-pnpm core:test:localnet                               # checks against a local validator (LOCALNET_RPC_URL)
+pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): swaps, slippage, referrals
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)

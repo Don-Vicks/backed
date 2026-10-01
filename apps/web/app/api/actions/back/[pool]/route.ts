@@ -1,6 +1,6 @@
 // Solana Action (Blink) for backing a campaign straight from a shared link.
 // Spec: https://solana.com/docs/advanced/actions
-import { buildBuyTx, getCampaign, getNetwork, readCampaignLive } from "@preorder/core";
+import { DEFAULT_SLIPPAGE_BPS, SwapError, buildBuyTx, getCampaign, getNetwork, readCampaignLive, resolveReferral, summarizeBuyQuote } from "@preorder/core";
 import { PublicKey } from "@solana/web3.js";
 import { connection, finalizeForWallet, publicOrigin } from "@/lib/server";
 
@@ -94,19 +94,22 @@ export async function POST(req: Request, ctx: RouteContext<"/api/actions/back/[p
     } catch {
       return json({ message: "Invalid account" }, 400);
     }
-    const ref = url.searchParams.get("ref");
-    let referral: PublicKey | null = null;
-    if (ref && ref !== account) {
-      const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
-      referral = getAssociatedTokenAddressSync(new PublicKey(record.usdcMint), new PublicKey(ref), true);
-    }
-    const tx = await finalizeForWallet(await buildBuyTx(connection(), wallet, new PublicKey(pool), amount, referral), wallet);
+    const conn = connection();
+    // A bad, self or unusable referral is dropped silently: it must never block the buy.
+    const referral = await resolveReferral(conn, new PublicKey(record.usdcMint), url.searchParams.get("ref"), wallet);
+    const built = await buildBuyTx(conn, wallet, new PublicKey(record.pool), amount, { referral });
+    const tx = await finalizeForWallet(built.tx, wallet);
+    const quote = summarizeBuyQuote(built.quote, DEFAULT_SLIPPAGE_BPS);
+    const message = quote.capped
+      ? `Backed ${record.campaign.name} with $${quote.spentUsdc.toFixed(2)}, the last of the goal; the rest stays in your wallet.`
+      : `Backed ${record.campaign.name} with $${amount}. Your vouchers are in your wallet.`;
     return json({
       type: "transaction",
       transaction: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"),
-      message: `Backed ${record.campaign.name} with $${amount}. Your vouchers are in your wallet.`,
+      message,
     });
   } catch (e) {
+    if (e instanceof SwapError) return json({ message: e.message }, e.status);
     return json({ message: e instanceof Error ? e.message : "Something went wrong" }, 500);
   }
 }

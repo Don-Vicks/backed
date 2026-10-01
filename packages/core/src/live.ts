@@ -2,8 +2,9 @@
 import BN from 'bn.js'
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js'
 import { createAssociatedTokenAccountIdempotentInstruction, createMintToInstruction, getAssociatedTokenAddressSync, getMint } from '@solana/spl-token'
-import { getPriceFromSqrtPrice } from '@meteora-ag/dynamic-bonding-curve-sdk'
-import { dbcClient, getUsdcMint, resalePoolAddress, toUsdcRaw } from './chain'
+import { SwapMode, getPriceFromSqrtPrice } from '@meteora-ag/dynamic-bonding-curve-sdk'
+import { dbcClient, getUsdcMint, quoteCurveSwap, resalePoolAddress, toUsdcRaw, toVoucherRaw } from './chain'
+import { DEFAULT_SLIPPAGE_BPS, SwapError, summarizeBuyQuote, summarizeSellQuote, type BuyQuote, type SellQuote } from './swaps'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
 import { getNetwork, isTestNetwork } from './network'
@@ -57,29 +58,34 @@ export async function readCampaignLive(connection: Connection, record: CampaignR
   }
 }
 
-export type BuyQuote = { vouchers: number; feeUsdc: number; feePct: number; minVouchers: number }
-
-export async function quoteBuy(connection: Connection, poolAddress: string, usdc: number): Promise<BuyQuote> {
-  const client = dbcClient(connection)
-  const virtualPool = (await client.state.getPool(poolAddress))!
-  const config = (await client.state.getPoolConfig(virtualPool.poolState.config))!
-  const slot = await connection.getSlot()
-  const q = client.pool.swapQuote({
-    virtualPool,
-    config,
+// Buy quote in the same mode the transaction uses (PartialFill): near the goal it reports the
+// capped spend instead of failing, and once the goal is reached it throws a 409 SwapError.
+export async function quoteBuy(connection: Connection, poolAddress: string, usdc: number, bps = DEFAULT_SLIPPAGE_BPS): Promise<BuyQuote> {
+  const q = await quoteCurveSwap(connection, poolKey(poolAddress), {
     swapBaseForQuote: false,
+    swapMode: SwapMode.PartialFill,
     amountIn: toUsdcRaw(usdc),
-    slippageBps: 100,
-    hasReferral: false,
-    eligibleForFirstSwapWithMinFee: false,
-    currentPoint: new BN((await connection.getBlockTime(slot))!),
+    slippageBps: bps,
   })
-  const feeUsdc = toNum(q.tradingFee.add(q.protocolFee), USDC_DECIMALS)
-  return {
-    vouchers: toNum(q.outputAmount, VOUCHER_DECIMALS),
-    feeUsdc,
-    feePct: (feeUsdc / usdc) * 100,
-    minVouchers: toNum(q.minimumAmountOut, VOUCHER_DECIMALS),
+  return summarizeBuyQuote(q, bps)
+}
+
+// Exit quote: vouchers back to the curve for USDC (ExactIn), as buildSellBackTx sells them.
+export async function quoteSell(connection: Connection, poolAddress: string, vouchers: number, bps = DEFAULT_SLIPPAGE_BPS): Promise<SellQuote> {
+  const q = await quoteCurveSwap(connection, poolKey(poolAddress), {
+    swapBaseForQuote: true,
+    swapMode: SwapMode.ExactIn,
+    amountIn: toVoucherRaw(vouchers),
+    slippageBps: bps,
+  })
+  return summarizeSellQuote(q, bps)
+}
+
+function poolKey(address: string) {
+  try {
+    return new PublicKey(address)
+  } catch {
+    throw new SwapError('pool is not a valid Solana address', 400)
   }
 }
 

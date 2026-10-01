@@ -21,9 +21,7 @@ import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { ShippingForm } from "@/components/shipping-form";
 import { explorerAccount, short, units, usd } from "@/lib/format";
-import type { CampaignWithLive } from "@/lib/types";
-
-type Quote = { vouchers: number; feeUsdc: number; feePct: number; minVouchers: number };
+import type { BuyQuote, CampaignWithLive, SellQuote } from "@/lib/types";
 
 export function CampaignView({ pool }: { pool: string }) {
   const { data, isPending, isError, error, refetch } = useQuery({
@@ -173,10 +171,11 @@ function useBalances(c: CampaignWithLive) {
       const read = async (mint: string) => {
         const ata = getAssociatedTokenAddressSync(new PublicKey(mint), publicKey!);
         const bal = await connection.getTokenAccountBalance(ata).catch(() => null);
-        return bal ? Number(bal.value.uiAmount ?? 0) : 0;
+        return bal ? Number(bal.value.uiAmount ?? 0) : null; // null: no token account yet
       };
       const [vouchers, usdc] = await Promise.all([read(c.baseMint), read(c.usdcMint)]);
-      return { vouchers, usdc };
+      // Referral fees are paid into the sharer's USDC account, so a link is only worth sharing once it exists.
+      return { vouchers: vouchers ?? 0, usdc: usdc ?? 0, hasUsdcAccount: usdc !== null };
     },
   });
 }
@@ -191,6 +190,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const ref = searchParams.get("ref") ?? undefined;
   const balances = useBalances(c);
   const [amount, setAmount] = useState("10");
+  const [exitAmount, setExitAmount] = useState(""); // empty = the whole balance
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [shipFor, setShipFor] = useState<string | null>(null); // burn signature awaiting shipping details
@@ -198,12 +198,27 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const usdcAmount = Number(amount);
   const debouncedAmount = useDebounced(usdcAmount, 350);
   const quoteEnabled = live.status === "funding" && debouncedAmount > 0;
-  const { data: quoteData } = useQuery({
+  const { data: quoteData, error: quoteError } = useQuery({
     queryKey: ["quote", c.pool, debouncedAmount, live.raisedUsdc],
-    queryFn: () => api<Quote>("/api/quote", { pool: c.pool, usdc: debouncedAmount }),
+    queryFn: () => api<BuyQuote>("/api/quote", { pool: c.pool, usdc: debouncedAmount }),
     enabled: quoteEnabled,
+    retry: false,
   });
   const quote = quoteEnabled ? quoteData ?? null : null;
+
+  const isMaker = publicKey?.toBase58() === c.maker;
+  const vouchers = balances.data?.vouchers ?? 0;
+  const exitVouchers = exitAmount === "" ? vouchers : Number(exitAmount);
+  const exitTooMuch = exitVouchers > vouchers;
+  const debouncedExit = useDebounced(exitVouchers, 350);
+  const sellQuoteEnabled = live.status === "funding" && debouncedExit > 0 && debouncedExit <= vouchers;
+  const { data: sellQuoteData, error: sellQuoteError } = useQuery({
+    queryKey: ["sellQuote", c.pool, debouncedExit, live.raisedUsdc],
+    queryFn: () => api<SellQuote>("/api/quote", { pool: c.pool, side: "sell", vouchers: debouncedExit }),
+    enabled: sellQuoteEnabled,
+    retry: false,
+  });
+  const sellQuote = sellQuoteEnabled ? sellQuoteData ?? null : null;
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["campaign", c.pool] });
@@ -215,9 +230,12 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     if (!publicKey) return setVisible(true);
     setBusy(kind);
     try {
-      const built = await api<BuiltTx>("/api/tx", { kind, pool: c.pool, wallet: publicKey.toBase58(), ...extra });
+      const built = await api<BuiltTx & { quote?: BuyQuote }>("/api/tx", { kind, pool: c.pool, wallet: publicKey.toBase58(), ...extra });
+      // The last buy before the goal only takes what is left; say so in the toasts.
+      if (kind === "buy" && built.quote?.capped) label = `${label} with ${usd(built.quote.spentUsdc)}: the goal is reached`;
       const signature = await signAndSend(built, label);
       if (kind === "redeem") setShipFor(signature);
+      if (kind === "sell") setExitAmount("");
       refresh();
     } catch (e) {
       if (e instanceof Error && !/cancelled|rejected|failed:/i.test(e.message)) toast.error(e.message);
@@ -242,14 +260,11 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
 
   async function copyShare() {
     const url = new URL(window.location.href);
-    url.search = publicKey ? `?ref=${publicKey.toBase58()}` : "";
+    url.search = publicKey && balances.data?.hasUsdcAccount ? `?ref=${publicKey.toBase58()}` : "";
     await navigator.clipboard.writeText(url.toString());
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
-
-  const isMaker = publicKey?.toBase58() === c.maker;
-  const vouchers = balances.data?.vouchers ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -267,9 +282,16 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
             <Button type="submit" disabled={!!busy || !(usdcAmount > 0)}>{busy === "buy" ? "Backing…" : "Back this"}</Button>
           </div>
           <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
-            {quote ? (
+            {quoteEnabled && quoteError ? (
+              <span className="text-destructive">{quoteError.message}</span>
+            ) : quote ? (
               <>
-                ≈ <span className="font-mono text-foreground">{units(quote.vouchers)}</span> vouchers · fee{" "}
+                {quote.capped && (
+                  <>
+                    Only <span className="font-mono text-foreground">{usd(quote.spentUsdc)}</span> left to the goal: you’ll spend that, the rest stays in your wallet.{" "}
+                  </>
+                )}
+                ≈ <span className="font-mono text-foreground">{units(quote.vouchers)}</span> vouchers (at least {units(quote.minVouchers)}) · fee{" "}
                 <span className={`font-mono ${quote.feePct > 5 ? "text-primary" : ""}`}>{quote.feePct.toFixed(1)}%</span>
                 {quote.feePct > 5 && " (drop-bot window still open)"}
               </>
@@ -305,9 +327,44 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
           </div>
           <div className="mt-4 grid gap-2">
             {live.status === "funding" && (
-              <Button variant="secondary" onClick={() => run("sell", "Exit at curve price")} disabled={!!busy}>
-                {busy === "sell" ? "Exiting…" : "Exit at the curve price"}
-              </Button>
+              <form
+                className="grid gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  // No amount = the exact on-chain balance, so "all" never leaves dust behind.
+                  run("sell", `Exit ${units(exitVouchers)} vouchers`, exitAmount === "" ? {} : { vouchers: exitVouchers });
+                }}
+              >
+                <Label htmlFor="exit-amount">Exit with (vouchers)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="exit-amount"
+                    type="number"
+                    inputMode="decimal"
+                    min={0.000001}
+                    step="any"
+                    placeholder={`All (${units(vouchers)})`}
+                    value={exitAmount}
+                    onChange={(e) => setExitAmount(e.target.value)}
+                    className="font-mono"
+                  />
+                  <Button type="submit" variant="secondary" disabled={!!busy || !(exitVouchers > 0) || exitTooMuch}>
+                    {busy === "sell" ? "Exiting…" : "Exit"}
+                  </Button>
+                </div>
+                <p className="min-h-5 text-sm text-muted-foreground" aria-live="polite">
+                  {exitTooMuch ? (
+                    <span className="text-destructive">You hold {units(vouchers)} vouchers.</span>
+                  ) : sellQuoteEnabled && sellQuoteError ? (
+                    <span className="text-destructive">{sellQuoteError.message}</span>
+                  ) : sellQuote ? (
+                    <>
+                      ≈ <span className="font-mono text-foreground">{usd(sellQuote.usdc)}</span> (at least {usd(sellQuote.minUsdc)}) · fee{" "}
+                      <span className={`font-mono ${sellQuote.feePct > 5 ? "text-primary" : ""}`}>{sellQuote.feePct.toFixed(1)}%</span>
+                    </>
+                  ) : null}
+                </p>
+              </form>
             )}
             {live.status === "reselling" && (
               <Button onClick={() => run("redeem", "Redeem 1 voucher")} disabled={!!busy || vouchers < 1}>

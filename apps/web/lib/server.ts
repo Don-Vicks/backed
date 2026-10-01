@@ -7,6 +7,7 @@ import {
   readTrustSignals,
   resolvePublicOrigin,
   scoreSignals,
+  SwapError,
   trustFixture,
   trustRpcUrl,
   type TrustResult,
@@ -65,7 +66,7 @@ export class BadRequest extends Error {}
 
 export function errorResponse(e: unknown) {
   const message = e instanceof Error ? e.message : String(e);
-  const status = e instanceof BadRequest ? 400 : 500;
+  const status = e instanceof BadRequest ? 400 : e instanceof SwapError ? e.status : 500;
   if (status === 500) console.error(e);
   return Response.json({ error: message }, { status });
 }

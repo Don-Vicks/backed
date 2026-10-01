@@ -7,6 +7,7 @@ import { CpAmm, getPriceFromSqrtPrice, getUnClaimLpFee } from '@meteora-ag/cp-am
 import { dbcClient, resalePoolAddress } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
+import { DEFAULT_SLIPPAGE_BPS, chainNow, slippageBps } from './swaps'
 
 export type ResaleSide = 'buy' | 'sell' // buy = USDC → vouchers, sell = vouchers → USDC
 
@@ -74,20 +75,19 @@ export async function readResale(connection: Connection, record: CampaignRecord)
   }
 }
 
-async function quoteRaw(connection: Connection, record: CampaignRecord, side: ResaleSide, amount: number) {
+async function quoteRaw(connection: Connection, record: CampaignRecord, side: ResaleSide, amount: number, bps: number) {
   const cpAmm = new CpAmm(connection)
   const pool = resalePool(record)
-  const poolState = await cpAmm.fetchPoolState(pool)
-  const slot = await connection.getSlot()
+  const [poolState, slot, now] = await Promise.all([cpAmm.fetchPoolState(pool), connection.getSlot(), chainNow(connection)])
   const inputMint = side === 'buy' ? poolState.tokenBMint : poolState.tokenAMint
   const inDecimals = side === 'buy' ? USDC_DECIMALS : VOUCHER_DECIMALS
   const inAmount = new BN(Math.round(amount * 10 ** inDecimals))
   const quote = cpAmm.getQuote({
     inAmount,
     inputTokenMint: inputMint,
-    slippage: 1, // percent
+    slippage: slippageBps(bps), // basis points
     poolState,
-    currentTime: (await connection.getBlockTime(slot))!,
+    currentTime: now,
     currentSlot: slot,
     tokenADecimal: VOUCHER_DECIMALS,
     tokenBDecimal: USDC_DECIMALS,
@@ -97,8 +97,8 @@ async function quoteRaw(connection: Connection, record: CampaignRecord, side: Re
 
 export type ResaleQuote = { out: number; minOut: number; feeUsdcEquivalent: number; priceImpactPct: number }
 
-export async function quoteResale(connection: Connection, record: CampaignRecord, side: ResaleSide, amount: number): Promise<ResaleQuote> {
-  const { quote } = await quoteRaw(connection, record, side, amount)
+export async function quoteResale(connection: Connection, record: CampaignRecord, side: ResaleSide, amount: number, bps = DEFAULT_SLIPPAGE_BPS): Promise<ResaleQuote> {
+  const { quote } = await quoteRaw(connection, record, side, amount, bps)
   const outDecimals = side === 'buy' ? VOUCHER_DECIMALS : USDC_DECIMALS
   const inDecimals = side === 'buy' ? USDC_DECIMALS : VOUCHER_DECIMALS
   return {
@@ -109,8 +109,8 @@ export async function quoteResale(connection: Connection, record: CampaignRecord
   }
 }
 
-export async function buildResaleSwapTx(connection: Connection, record: CampaignRecord, wallet: PublicKey, side: ResaleSide, amount: number) {
-  const { cpAmm, pool, poolState, inputMint, inAmount, quote } = await quoteRaw(connection, record, side, amount)
+export async function buildResaleSwapTx(connection: Connection, record: CampaignRecord, wallet: PublicKey, side: ResaleSide, amount: number, bps = DEFAULT_SLIPPAGE_BPS) {
+  const { cpAmm, pool, poolState, inputMint, inAmount, quote } = await quoteRaw(connection, record, side, amount, bps)
   return cpAmm.swap({
     payer: wallet,
     pool,

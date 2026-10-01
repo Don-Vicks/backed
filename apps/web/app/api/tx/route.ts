@@ -1,7 +1,22 @@
 import BN from "bn.js";
 import { PublicKey } from "@solana/web3.js";
 import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { buildBuyTx, buildMakerClaimTx, buildMakerWithdrawTx, buildRedeemTx, buildResaleSwapTx, buildSellBackTx, getCampaign } from "@preorder/core";
+import {
+  buildBuyTx,
+  buildMakerClaimTx,
+  buildMakerWithdrawTx,
+  buildRedeemTx,
+  buildResaleSwapTx,
+  buildSellBackTx,
+  getCampaign,
+  resolveReferral,
+  slippageBps,
+  summarizeBuyQuote,
+  summarizeSellQuote,
+  toVoucherRaw,
+  type BuyQuote,
+  type SellQuote,
+} from "@preorder/core";
 import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, serialize } from "@/lib/server";
 
 type Body = {
@@ -9,8 +24,9 @@ type Body = {
   pool: string;
   wallet: string;
   usdc?: number;
-  vouchers?: number;
+  vouchers?: number; // sell / resaleSell; sell defaults to the whole balance
   ref?: string;
+  slippageBps?: number; // 10–500, default 100
 };
 
 // Unsigned transactions for the connected wallet to sign and send.
@@ -23,16 +39,27 @@ export async function POST(req: Request) {
     const conn = connection();
     const pool = new PublicKey(record.pool);
     const baseMint = new PublicKey(record.baseMint);
+    const bps = slippageBps(body.slippageBps);
 
     let tx;
+    let quote: BuyQuote | SellQuote | undefined; // what the curve swap was built from, for the UI
     if (body.kind === "buy") {
       if (!(body.usdc && body.usdc > 0)) throw new BadRequest("Enter an amount");
-      const referral = body.ref ? getAssociatedTokenAddressSync(new PublicKey(record.usdcMint), publicKey(body.ref, "ref"), true) : null;
-      tx = await buildBuyTx(conn, wallet, pool, body.usdc, referral);
+      // A bad, self or unusable referral is dropped silently: it must never block the buy.
+      const referral = await resolveReferral(conn, new PublicKey(record.usdcMint), body.ref, wallet);
+      const built = await buildBuyTx(conn, wallet, pool, body.usdc, { referral, slippageBps: bps });
+      tx = built.tx;
+      quote = summarizeBuyQuote(built.quote, bps);
     } else if (body.kind === "sell") {
       const account = await getAccount(conn, getAssociatedTokenAddressSync(baseMint, wallet)).catch(() => null);
       if (!account || account.amount === BigInt(0)) throw new BadRequest("You hold no vouchers for this campaign");
-      tx = await buildSellBackTx(conn, wallet, pool, new BN(account.amount.toString()));
+      const held = new BN(account.amount.toString());
+      if (body.vouchers !== undefined && !(Number(body.vouchers) > 0)) throw new BadRequest("Enter an amount");
+      const amount = body.vouchers === undefined ? held : toVoucherRaw(Number(body.vouchers));
+      if (amount.gt(held)) throw new BadRequest(`You hold ${Number(account.amount) / 1e6} vouchers`);
+      const built = await buildSellBackTx(conn, wallet, pool, amount, { slippageBps: bps });
+      tx = built.tx;
+      quote = summarizeSellQuote(built.quote, bps);
     } else if (body.kind === "redeem") {
       tx = buildRedeemTx(wallet, baseMint);
     } else if (body.kind === "withdraw") {
@@ -44,14 +71,14 @@ export async function POST(req: Request) {
       if (!tx) throw new BadRequest("Nothing to claim yet");
     } else if (body.kind === "resaleBuy") {
       if (!(body.usdc && body.usdc > 0)) throw new BadRequest("Enter an amount");
-      tx = await buildResaleSwapTx(conn, record, wallet, "buy", body.usdc);
+      tx = await buildResaleSwapTx(conn, record, wallet, "buy", body.usdc, bps);
     } else if (body.kind === "resaleSell") {
       if (!(body.vouchers && body.vouchers > 0)) throw new BadRequest("Enter an amount");
-      tx = await buildResaleSwapTx(conn, record, wallet, "sell", body.vouchers);
+      tx = await buildResaleSwapTx(conn, record, wallet, "sell", body.vouchers, bps);
     } else {
       throw new BadRequest("Unknown transaction kind");
     }
-    return Response.json(serialize(await finalizeForWallet(tx, wallet)));
+    return Response.json({ ...serialize(await finalizeForWallet(tx, wallet)), ...(quote && { quote }) });
   } catch (e) {
     return errorResponse(e);
   }
