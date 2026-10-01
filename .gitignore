@@ -9,3 +9,6 @@ out/
 data/
 .brand-preview/
 .localnet/
+test-results/
+playwright-report/
+blob-report/

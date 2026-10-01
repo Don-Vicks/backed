@@ -1,6 +1,6 @@
 # Walkthrough: one campaign, start to finish
 
-Every screenshot below comes from the real web app driven through a browser (Playwright, Chromium) with wallet-standard test wallets. It runs against a local validator loaded with the **mainnet** Meteora DBC, DAMM v2, Metaplex and Locker program binaries and every DAMM v2 migration config (`scripts/localnet/start.sh`). Each step is a real on-chain transaction. The only localnet-specific settings are a seconds-long vesting schedule (`VESTING_SCHEDULE_OVERRIDE`) so the unlock fits in a demo, and a trust fixture that gives the demo maker tier A.
+Every screenshot below comes from the real web app driven through a browser (Playwright, Chromium) with wallet-standard test wallets: it is the CI browser suite ([`apps/web/e2e/lifecycle.spec.ts`](../apps/web/e2e/lifecycle.spec.ts)) run with `E2E_SHOTS=docs/walkthrough`, so the pictures and the tested flow are the same thing. It runs against a local validator loaded with the **mainnet** Meteora DBC, DAMM v2, Metaplex and Locker program binaries and every DAMM v2 migration config (`scripts/localnet/start.sh`). Each step is a real on-chain transaction. The only localnet-specific settings are a seconds-long vesting schedule (`VESTING_SCHEDULE_OVERRIDE`) so the unlock fits in a demo, and a trust fixture that gives the demo maker tier A.
 
 Cast: a **maker**, three **backers** and a **referrer**. The product is a hoodie: 7 units, two early-bird tiers.
 
@@ -25,7 +25,7 @@ One click sends `createConfigAndPool`, or `createConfig` + `createPool` when a l
 
 ![Back units](walkthrough/03-back-units.png)
 
-Backers choose a number of units, not dollars. Buys use DBC's `SwapMode.ExactOut` with a slippage-protected maximum taken from `swapQuote2`. The quote shows the fee while the drop-bot window is open. A backer who opened a referral link (`?ref=`) pays nothing extra, and the referrer gets DBC's referral cut: backer2's wallet rose by $0.02. Campaign numbers update as soon as the trade confirms.
+Backers choose a number of units, not dollars. Buys use DBC's `SwapMode.ExactOut` with a slippage-protected maximum taken from `swapQuote2`. The quote shows the fee while the drop-bot window is open. A backer who opened a referral link (`?ref=`) pays nothing extra, and the referrer gets DBC's referral cut: backer2's wallet rose by $0.06 (the buy came seconds after launch, while the drop-bot fee was still near 15%). Campaign numbers update as soon as the trade confirms.
 
 ## 4. Exit before the goal, at the curve price
 
@@ -37,7 +37,7 @@ Before graduation a backer can sell any number of vouchers back along the curve 
 
 ![Goal reached](walkthrough/05-goal-reached.png)
 
-The last backer's buy is capped at what's left ("Back the last 4.5"), using `PartialFill` so it stops exactly at the goal: $35.33 / $35.33, 7 / 7. Anyone can graduate the campaign. The clicking wallet pays the migration (about 0.033 SOL), and Meteora's keeper may do it first on mainnet.
+The last backer asks for 5 units with 5.5 left. A whole-unit buy would strand the last half voucher, so the button becomes "Back the last 5.5" and the buy uses `PartialFill` to stop exactly at the goal: $35.33 / $35.33, 7 / 7. Anyone can graduate the campaign. The clicking wallet pays the migration (about 0.033 SOL), and Meteora's keeper may do it first on mainnet.
 
 ## 6. Graduation opens the resale market (DAMM v2, Customizable fee)
 
@@ -100,9 +100,15 @@ At 390px the title comes first, then the price and the Back panel, then the tier
 Reproduce it:
 
 ```bash
-bash scripts/localnet/start.sh                      # validator with mainnet Meteora programs
+bash scripts/localnet/start.sh                                     # validator with mainnet Meteora programs
+E2E_SHOTS=$PWD/docs/walkthrough bash apps/web/e2e/run-localnet.sh  # seeds, builds, starts the app, runs the browser suite, saves these screenshots
+pnpm core:test:localnet                                            # the same lifecycle as chain tests
+```
+
+To click around yourself instead:
+
+```bash
 PREORDER_ROOT=$(mktemp -d) pnpm core:seed:localnet   # wallets, mock USDC, .env.localnet
 set -a; . $PREORDER_ROOT/.env.localnet; set +a
 pnpm build && pnpm start                            # http://localhost:3000
-LOCALNET=1 pnpm core:test:localnet                  # the same lifecycle as chain tests
 ```

@@ -49,12 +49,12 @@ jobs:
         run: pnpm --filter @preorder/web build
 
   # The localnet suite (create → graduate → resale → redeem and every other suite under
-  # packages/core/src/__tests__/localnet/) on a fresh validator running the mainnet DBC, DAMM v2,
-  # Metaplex and Locker programs. Programs and migration configs are dumped from mainnet once a week
+  # packages/core/src/__tests__/localnet/), then the browser suite, on a fresh validator running the
+  # mainnet DBC, DAMM v2, Metaplex and Locker programs. Programs and migration configs are dumped from mainnet once a week
   # and cached, so most runs never touch a public RPC.
   localnet:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       SOLANA_VERSION: v4.3.0 # keep in step with the CLI used to develop against localnet
     steps:
@@ -114,6 +114,22 @@ jobs:
         run: bash scripts/localnet/start.sh
       - name: Localnet tests
         run: pnpm core:test:localnet
+      # The same lifecycle again, clicked through the real app in Chromium with keypair wallets:
+      # launch, back, exit, graduate, resale, withdraw, claim, unlock, redeem and ship, link previews,
+      # the Blink and phone layouts (apps/web/e2e/lifecycle.spec.ts).
+      - name: Install Chromium
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Browser tests
+        run: bash apps/web/e2e/run-localnet.sh
+      - name: Upload the browser report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 7
       - name: Validator log
         if: failure()
         run: tail -n 200 "${{ runner.temp }}/ledger/start.log" "${{ runner.temp }}/ledger/validator.log" || true
