@@ -15,7 +15,9 @@
     "api-negative": "ts-node src/scripts/api-negative.ts",
     "platform:claim": "ts-node src/scripts/platform-claim.ts",
     "partner:metadata": "ts-node src/scripts/partner-metadata.ts",
-    "test:localnet": "LOCALNET=1 node -r ts-node/register --test 'src/__tests__/localnet/**/*.test.ts'"
+    "test:localnet": "LOCALNET=1 node -r ts-node/register --test 'src/__tests__/localnet/**/*.test.ts'",
+    "seed:demo": "ts-node src/scripts/seed-demo.ts",
+    "campaigns": "ts-node src/scripts/campaigns.ts"
   },
   "dependencies": {
     "@meteora-ag/cp-amm-sdk": "1.5.0",

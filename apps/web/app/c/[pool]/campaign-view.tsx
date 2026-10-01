@@ -23,6 +23,7 @@ import { RedeemPanel } from "@/components/redeem-panel";
 import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
+import { imageSrc } from "@/lib/image-src";
 import type { BuyQuote, CampaignWithLive, SellQuote, UnitsQuote } from "@/lib/types";
 
 export function CampaignView({ pool }: { pool: string }) {
@@ -102,7 +103,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
 
         {c.campaign.image && (
           // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL
-          <img src={c.campaign.image} alt={c.campaign.name} className="aspect-[16/9] w-full rounded-xl border border-border object-cover" />
+          <img src={imageSrc(c.campaign.image)} alt={c.campaign.name} className="aspect-[16/9] w-full rounded-xl border border-border object-cover" />
         )}
         {c.campaign.description && <p className="text-lg text-muted-foreground">{c.campaign.description}</p>}
       </div>

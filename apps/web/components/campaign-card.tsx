@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { imageSrc } from "@/lib/image-src";
 import { usd, units } from "@/lib/format";
 import type { CampaignWithLive } from "@/lib/types";
 
@@ -17,7 +18,7 @@ export function CampaignCard({ c }: { c: CampaignWithLive }) {
       <div className="aspect-[16/9] bg-muted">
         {c.campaign.image ? (
           // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URLs on arbitrary hosts
-          <img src={c.campaign.image} alt="" className="h-full w-full object-cover" />
+          <img src={imageSrc(c.campaign.image)} alt="" className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full items-center justify-center font-heading text-5xl text-muted-foreground">{c.campaign.symbol}</div>
         )}
@@ -48,7 +49,7 @@ export function CampaignCard({ c }: { c: CampaignWithLive }) {
         ) : (
           <p className="text-sm text-muted-foreground">Live data unavailable right now.</p>
         )}
-        <p className="mt-auto text-xs text-muted-foreground">Maker trust tier {c.trust.tier}</p>
+        <p className="mt-auto text-xs text-muted-foreground">Maker trust level {c.trust.tier}</p>
       </div>
     </Link>
   );

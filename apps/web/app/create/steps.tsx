@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhotoField } from "@/components/photo-field";
 import { Progress } from "@/components/ui/progress";
+import { imageSrc } from "@/lib/image-src";
 import { units, usd } from "@/lib/format";
 import type { ConfigField, PricingSummary, TrustResult, VestingSchedule } from "@/lib/types";
 
@@ -450,7 +451,7 @@ export function CampaignPreview(p: {
       <div className="aspect-[16/9] bg-muted">
         {p.image.trim() ? (
           // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL on an arbitrary host
-          <img src={p.image.trim()} alt="" className="h-full w-full object-cover" />
+          <img src={imageSrc(p.image.trim())} alt="" className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full items-center justify-center font-heading text-6xl text-muted-foreground" aria-hidden="true">
             {initials}
