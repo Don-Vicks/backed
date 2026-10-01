@@ -8,7 +8,6 @@ import { MAX_TIERS } from "@preorder/core/src/pricing";
 import {
   DESCRIPTION_MAX_CHARS,
   DROP_BOT_START_FEE_BPS,
-  IMAGE_URL_MAX_CHARS,
   NAME_MAX_BYTES,
   NORMAL_FEE_BPS,
 } from "@preorder/core/src/campaign-input";
@@ -18,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PhotoField } from "@/components/photo-field";
 import { Progress } from "@/components/ui/progress";
 import { units, usd } from "@/lib/format";
 import type { ConfigField, PricingSummary, TrustResult, VestingSchedule } from "@/lib/types";
@@ -92,7 +92,8 @@ export function ProductStep(p: {
   description: string;
   setDescription: (v: string) => void;
   image: string;
-  setImage: (v: string) => void;
+  imagePreview: string | null;
+  setImage: (url: string, previewSrc: string | null) => void;
 }) {
   return (
     <section aria-labelledby="step-1" className="grid gap-5">
@@ -115,13 +116,7 @@ export function ProductStep(p: {
           className={textareaClass}
         />
       </div>
-      <div className="grid gap-2">
-        <Label htmlFor="image">
-          Photo link <span className="text-muted-foreground">(optional)</span>
-        </Label>
-        <Input id="image" type="url" inputMode="url" placeholder="https://…" maxLength={IMAGE_URL_MAX_CHARS} value={p.image} onChange={(e) => p.setImage(e.target.value)} />
-        <Hint>Paste a link to a photo of the product. Campaigns with a photo get more backers.</Hint>
-      </div>
+      <PhotoField image={p.image} previewSrc={p.imagePreview} onChange={p.setImage} />
     </section>
   );
 }

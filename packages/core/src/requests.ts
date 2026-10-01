@@ -192,6 +192,8 @@ export const RATE_LIMITS = {
   trust: { capacity: 5, perSec: 1 / 30 },
   // A campaign read that skips the live-state cache (after a graduation, to see it at once).
   fresh: { capacity: 10, perSec: 1 / 5 },
+  // Product photo uploads: a few per minute is plenty for a maker setting up a campaign.
+  upload: { capacity: 6, perSec: 1 / 20 },
 } as const satisfies Record<string, { capacity: number; perSec: number }>
 
 export type RateLimitName = keyof typeof RATE_LIMITS

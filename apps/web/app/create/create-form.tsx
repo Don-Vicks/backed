@@ -41,6 +41,13 @@ export function CreateForm() {
   const symbol = symbolInput ?? deriveTicker(name);
   const [description, setDescription] = useState("Heavyweight cotton hoodie, printed after the goal is reached.");
   const [image, setImage] = useState("");
+  // A local copy of an uploaded photo, shown at once (the uploaded URL is what the campaign stores).
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const changeImage = (url: string, previewSrc: string | null) => {
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    setImage(url);
+    setImagePreview(previewSrc);
+  };
   const [tiers, setTiers] = useState<TierInput[]>([
     { units: "20", startPrice: "25" },
     { units: "30", startPrice: "30" },
@@ -260,7 +267,7 @@ export function CreateForm() {
       >
         <StepIndicator step={step} maxStep={maxStep} onGo={go} />
 
-        {step === 1 && <ProductStep name={name} setName={setName} description={description} setDescription={setDescription} image={image} setImage={setImage} />}
+        {step === 1 && <ProductStep name={name} setName={setName} description={description} setDescription={setDescription} image={image} imagePreview={imagePreview} setImage={changeImage} />}
         {step === 2 && (
           <PriceStep
             tiers={tiers}
@@ -332,7 +339,7 @@ export function CreateForm() {
       </form>
 
       <aside className="lg:sticky lg:top-24 lg:self-start" aria-label="Live preview">
-        <CampaignPreview name={name} description={description} image={image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
+        <CampaignPreview name={name} description={description} image={imagePreview ?? image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
       </aside>
     </div>
   );

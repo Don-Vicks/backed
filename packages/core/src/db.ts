@@ -126,6 +126,19 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX pending_redemptions_created_at ON pending_redemptions(created_at);
     `,
   },
+  {
+    // Product photos the makers upload. Kept in the database (so they ride on the same volume as
+    // everything else), keyed by a hash of their bytes so the same photo is stored once.
+    name: '0003_images',
+    sql: `
+      CREATE TABLE images (
+        id TEXT PRIMARY KEY,
+        mime TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        bytes BLOB NOT NULL
+      );
+    `,
+  },
 ]
 
 // node:sqlite prints an ExperimentalWarning on first load (Node 22); keep it out of the logs.
