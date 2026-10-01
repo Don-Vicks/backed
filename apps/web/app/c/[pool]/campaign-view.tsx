@@ -79,8 +79,8 @@ function Loaded({ c }: { c: CampaignWithLive }) {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={live.status === "funding" ? "secondary" : "default"}>{statusLabel}</Badge>
-            <Badge variant="outline">
-              <ShieldCheck aria-hidden="true" /> Maker tier {c.trust.tier}
+            <Badge variant="outline" title="Scored from the maker’s wallet history on Solana. Higher levels can take more money upfront and get the rest sooner.">
+              <ShieldCheck aria-hidden="true" /> Maker trust level {c.trust.tier}
             </Badge>
           </div>
           <h1 className="mt-3 font-heading text-5xl tracking-tight sm:text-6xl">{c.campaign.name}</h1>
@@ -129,6 +129,8 @@ function Loaded({ c }: { c: CampaignWithLive }) {
       </aside>
 
       <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-2">
+        <HowItWorks c={c} />
+
         <section aria-labelledby="tiers-title" className="rounded-xl border border-border bg-card p-5">
           <h2 id="tiers-title" className="font-heading text-2xl">Early-bird tiers</h2>
           <ol className="mt-3 divide-y divide-border">
@@ -158,9 +160,9 @@ function Loaded({ c }: { c: CampaignWithLive }) {
           <h2 id="terms-title" className="font-heading text-2xl">Locked-in terms</h2>
           <p className="text-sm text-muted-foreground">Set on-chain at launch. Nobody, including the maker, can change them.</p>
           <ul className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-            <Term icon={<Timer aria-hidden="true" />} title="Drop-bot window" body={`Fee starts at ${c.campaign.dropBot.startFeeBps / 100}% and falls to ${c.campaign.normalFeeBps / 100}% over ${Math.round(c.campaign.dropBot.windowSec / 60)} min.`} />
-            <Term icon={<Lock aria-hidden="true" />} title="Limited edition" body={`At most ${units(c.totalUnits)} vouchers will ever exist. No one can mint more.`} />
-            <Term icon={<ShieldCheck aria-hidden="true" />} title="Maker’s upfront share" body={`${plan.makerSharePct}% of the raise at graduation (tier ${c.trust.tier} cap ${c.trust.maxMakerSharePct}%).`} />
+            <Term icon={<Timer aria-hidden="true" />} title="Launch-rush protection" body={`For the first ${Math.round(c.campaign.dropBot.windowSec / 60)} min, buying costs an extra fee that starts at ${c.campaign.dropBot.startFeeBps / 100}% and falls to ${c.campaign.normalFeeBps / 100}%, so bots can’t grab the cheap items.`} />
+            <Term icon={<Lock aria-hidden="true" />} title="Limited edition" body={`At most ${units(c.totalUnits)} vouchers will ever exist. Nobody can create more.`} />
+            <Term icon={<ShieldCheck aria-hidden="true" />} title="Maker’s upfront share" body={`${plan.makerSharePct}% of the money raised is paid to the maker when the goal is reached. The rest is released after shipping. (Trust level ${c.trust.tier} allows up to ${c.trust.maxMakerSharePct}%.)`} />
             <ResaleTerms c={c} />
           </ul>
           <a href={explorerAccount(c.config)} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex items-center gap-1 text-sm text-primary underline-offset-4 hover:underline">
@@ -169,6 +171,54 @@ function Loaded({ c }: { c: CampaignWithLive }) {
         </section>
       </div>
     </div>
+  );
+}
+
+// The whole deal in three plain sentences, for someone who has never seen a bonding curve.
+function HowItWorks({ c }: { c: CampaignWithLive }) {
+  const live = c.live!;
+  const funded = live.status !== "funding";
+  const days = c.campaign.shipDays;
+  const steps: { title: string; body: string; done: boolean }[] = [
+    {
+      title: funded ? "Backed" : "You back it",
+      body: funded
+        ? "Backers paid in early, and the earliest paid the least. Each pre-order is a voucher for one item."
+        : `You pay today’s price of ${usd(live.priceUsdc)} and get a voucher for one item. The price rises as more people join, so earlier is cheaper.`,
+      done: funded,
+    },
+    {
+      title: funded ? "Goal reached" : `At ${usd(live.goalUsdc, Number.isInteger(live.goalUsdc) ? 0 : 2)} raised, it’s funded`,
+      body: funded
+        ? `${c.campaign.name} is funded. The maker has their production money and is making it.`
+        : `The maker gets paid and starts making ${c.campaign.name}. Until then, you can sell your voucher back at the current price.`,
+      done: funded,
+    },
+    {
+      title: days ? `It ships within ${days} days of the goal` : "You claim your item",
+      body: days
+        ? `${live.status === "reselling" ? "Redeem your voucher below" : "After the goal you redeem your voucher"} and enter your address to get your item. Prefer not to wait? Resell the voucher to someone else.`
+        : "The maker didn’t set a ship date on this older campaign. After the goal you redeem your voucher and enter your address to get your item.",
+      done: false,
+    },
+  ];
+  return (
+    <section aria-labelledby="how-title" className="rounded-xl border border-border bg-card p-5">
+      <h2 id="how-title" className="font-heading text-2xl">How this pre-order works</h2>
+      <ol className="mt-3 grid gap-4">
+        {steps.map((st, i) => (
+          <li key={st.title} className="flex gap-3">
+            <span className={`mt-0.5 grid size-7 shrink-0 place-items-center rounded-full font-mono text-xs ${st.done ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>
+              {st.done ? <Check aria-hidden="true" className="size-3.5" /> : i + 1}
+            </span>
+            <span>
+              <span className="block font-medium">{st.title}</span>
+              <span className="text-sm text-muted-foreground">{st.body}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -199,12 +249,12 @@ function ResaleTerms({ c }: { c: CampaignWithLive }) {
       <Term
         icon={<Hourglass aria-hidden="true" />}
         title="Ship window"
-        body={`${ship}The maker’s ${t.creatorVestingPct}% of resale liquidity pays for production. It unlocks in steps from ${formatAfterGoal(firstReleaseSec(t.vesting))} to ${formatAfterGoal(vestingEndSec(t.vesting))}. Until then it backs the resale market.`}
+        body={`${ship}The maker’s production money (${t.creatorVestingPct}% of the resale pool) is released in steps from ${formatAfterGoal(firstReleaseSec(t.vesting))} to ${formatAfterGoal(vestingEndSec(t.vesting))}. Until then it stays in the pool, backing the resale market.`}
       />
       <Term
         icon={<Lock aria-hidden="true" />}
         title="Resale floor"
-        body={`${floor}% of resale liquidity is locked forever, so vouchers always have a market. Every position earns its share of resale fees.`}
+        body={`${floor}% of the resale pool is locked forever, so vouchers always have a buyer.`}
       />
       <RoyaltyTerm c={c} />
     </>
