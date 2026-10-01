@@ -1,7 +1,7 @@
-import { getCampaign, readMakerEarnings, readResale } from "@preorder/core";
+import { getCampaign, readBackerFloor, readMakerEarnings, readResale } from "@preorder/core";
 import { connection, errorResponse } from "@/lib/server";
 
-// Resale pool state (after graduation) and the maker's earnings (curve fees exist before graduation too).
+// Resale pool state (after graduation), the backer floor and the maker's earnings (curve fees exist before graduation too).
 export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[pool]/resale">) {
   try {
     const { pool } = await ctx.params;
@@ -10,7 +10,9 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/campaigns/[pool
     const conn = connection();
     const resale = await readResale(conn, record);
     const maker = resale?.maker ?? (await readMakerEarnings(conn, record));
-    return Response.json({ resale, maker });
+    // Exit value of one voucher now, and at the permanent floor once all vesting is withdrawn.
+    const floor = resale ? await readBackerFloor(conn, record, 1).catch(() => null) : null;
+    return Response.json({ resale, maker, floor });
   } catch (e) {
     return errorResponse(e);
   }

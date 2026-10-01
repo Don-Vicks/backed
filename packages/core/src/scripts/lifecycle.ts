@@ -204,7 +204,7 @@ async function main() {
     const { tx, extraSigners } = await buildMigrateTx(connection, w.platform.publicKey, pool)
     const sig = await send(connection, tx, [w.platform, ...extraSigners], 'migrateToDammV2')
     const supply = (await getMint(connection, baseMint)).supply
-    console.log(`    voucher supply after graduation: ${fmt(supply)} units (buffer burned)`)
+    console.log(`    voucher supply after graduation: ${fmt(supply)} units (fixed supply: nothing minted or burned)`)
     return sig
   })
   const resalePool = resalePoolAddress(baseMint, usdcMint)

@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Keypair } from '@solana/web3.js'
-import { validateConfigParameters } from '@meteora-ag/dynamic-bonding-curve-sdk'
-import { campaignToConfig, type Campaign } from '../engine'
+import { MAX_LOCK_DURATION_IN_SECONDS, calculateLockedLiquidityBpsAtTime, validateConfigParameters } from '@meteora-ag/dynamic-bonding-curve-sdk'
+import { campaignToConfig, vestingScheduleOverride, type Campaign } from '../engine'
+import { DAY, WEEK, vestingEndSec } from '../vesting'
 import { MAX_MAKER_SHARE, type TrustTierName } from '../trust'
 
 const hoodie = (makerSharePct: number): Campaign => ({
@@ -39,4 +40,87 @@ test('on-chain goal and units match the plan', () => {
 
 test('maker share above the trust-tier cap is rejected', () => {
   assert.throws(() => campaignToConfig(hoodie(MAX_MAKER_SHARE.C + 1), 'C'), /cap for trust tier C/)
+})
+
+const withShip = (makerSharePct: number, shipDays?: number): Campaign => ({ ...hoodie(makerSharePct), shipDays })
+
+for (const tier of ['A', 'B', 'C'] as TrustTierName[]) {
+  test(`tier ${tier}: every allowed share × ship date passes SDK validation with 5/15/80 vesting`, () => {
+    for (const shipDays of [14, 60, 180]) {
+      for (let share = 1; share <= MAX_MAKER_SHARE[tier]; share++) {
+        const { params } = campaignToConfig(withShip(share, shipDays), tier)
+        assert.doesNotThrow(
+          () => validateConfigParameters({ ...params, leftoverReceiver: Keypair.generate().publicKey } as any),
+          `tier ${tier}, share ${share}%, ship day ${shipDays}`,
+        )
+      }
+    }
+  })
+}
+
+test('LP split: 5% partner and 15% creator permanent, 80% creator vesting, nothing unlocked', () => {
+  const { params, vesting } = campaignToConfig(withShip(25, 60), 'B')
+  assert.equal(params.partnerLiquidityPercentage, 0)
+  assert.equal(params.partnerPermanentLockedLiquidityPercentage, 5)
+  assert.equal(params.creatorLiquidityPercentage, 0)
+  assert.equal(params.creatorPermanentLockedLiquidityPercentage, 15)
+  assert.equal(params.partnerLiquidityVestingInfo.vestingPercentage, 0)
+  const v = params.creatorLiquidityVestingInfo
+  assert.deepEqual(
+    { pct: v.vestingPercentage, bps: v.bpsPerPeriod, n: v.numberOfPeriods, freq: v.frequency, cliff: v.cliffDurationFromMigrationTime },
+    { pct: 80, bps: 750, n: 12, freq: WEEK, cliff: (60 + 14) * DAY },
+  )
+  assert.deepEqual(vesting, { cliffSec: 74 * DAY, periods: 12, periodSec: WEEK, bpsPerPeriod: 750 })
+})
+
+test('locked liquidity: at least 10% at day 1, exactly the 20% floor once fully vested', () => {
+  for (const tier of ['A', 'B', 'C'] as TrustTierName[]) {
+    for (const shipDays of [14, 60, 180]) {
+      const { params, vesting } = campaignToConfig(withShip(MAX_MAKER_SHARE[tier], shipDays), tier)
+      const locked = (t: number) =>
+        calculateLockedLiquidityBpsAtTime(
+          params.partnerPermanentLockedLiquidityPercentage,
+          params.creatorPermanentLockedLiquidityPercentage,
+          params.partnerLiquidityVestingInfo,
+          params.creatorLiquidityVestingInfo,
+          t,
+        )
+      assert.ok(locked(DAY) >= 1000, `tier ${tier} day 1: ${locked(DAY)}`)
+      assert.ok(locked(DAY) >= 9999, `tier ${tier}: everything is still locked on day 1`)
+      assert.equal(locked(vestingEndSec(vesting)), 2000, `tier ${tier} ship ${shipDays} at the end`)
+      assert.ok(vestingEndSec(vesting) <= MAX_LOCK_DURATION_IN_SECONDS)
+    }
+  }
+})
+
+test('campaigns without a ship date (older records) default to 30 days', () => {
+  assert.deepEqual(campaignToConfig(hoodie(10), 'C').vesting, campaignToConfig(withShip(10, 30), 'C').vesting)
+})
+
+test('ship date outside 14–180 whole days is rejected', () => {
+  for (const d of [13, 181, 30.5]) assert.throws(() => campaignToConfig(withShip(10, d), 'C'), /ship date/)
+})
+
+test('VESTING_SCHEDULE_OVERRIDE applies on localnet only and is validated', () => {
+  const VESTING_SCHEDULE_OVERRIDE = JSON.stringify({ cliffSec: 20, periods: 2, periodSec: 10, bpsPerPeriod: 2500 })
+  assert.deepEqual(vestingScheduleOverride({ NETWORK: 'localnet', VESTING_SCHEDULE_OVERRIDE }), { cliffSec: 20, periods: 2, periodSec: 10, bpsPerPeriod: 2500 })
+  assert.equal(vestingScheduleOverride({ NETWORK: 'devnet', VESTING_SCHEDULE_OVERRIDE }), null)
+  assert.equal(vestingScheduleOverride({ NETWORK: 'mainnet', VESTING_SCHEDULE_OVERRIDE }), null)
+  assert.equal(vestingScheduleOverride({ NETWORK: 'localnet' }), null)
+  assert.throws(() => vestingScheduleOverride({ NETWORK: 'localnet', VESTING_SCHEDULE_OVERRIDE: '{' }), /not valid JSON/)
+  const tooMuch = JSON.stringify({ cliffSec: 20, periods: 3, periodSec: 10, bpsPerPeriod: 4000 })
+  assert.throws(() => vestingScheduleOverride({ NETWORK: 'localnet', VESTING_SCHEDULE_OVERRIDE: tooMuch }), /more than 100%/)
+})
+
+test('the short localnet schedule still passes SDK validation', () => {
+  const prev = { NETWORK: process.env.NETWORK, VESTING_SCHEDULE_OVERRIDE: process.env.VESTING_SCHEDULE_OVERRIDE }
+  Object.assign(process.env, { NETWORK: 'localnet', VESTING_SCHEDULE_OVERRIDE: JSON.stringify({ cliffSec: 20, periods: 2, periodSec: 10, bpsPerPeriod: 2500 }) })
+  try {
+    const { params, vesting } = campaignToConfig(hoodie(40), 'A')
+    assert.deepEqual(vesting, { cliffSec: 20, periods: 2, periodSec: 10, bpsPerPeriod: 2500 })
+    assert.equal(params.creatorLiquidityVestingInfo.frequency, 10)
+    assert.doesNotThrow(() => validateConfigParameters({ ...params, leftoverReceiver: Keypair.generate().publicKey } as any))
+  } finally {
+    for (const [k, v] of Object.entries(prev)) v === undefined ? delete process.env[k] : (process.env[k] = v)
+  }
 })

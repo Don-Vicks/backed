@@ -4,8 +4,11 @@
 // curve and adds a 25% swap buffer, which moves the goal away from what the maker asked for.
 // Instead the curve liquidity is solved per tier so each tier sells exactly its units, the goal is
 // the exact quote needed to walk the curve, and the supply is the minimum the program accepts:
-//   pre-migration  = curve units + 25% buffer + resale units
-//   post-migration = curve units + resale units        (the program burns the unused buffer)
+//   supply = curve units + resale units
+// The curve ends at the migration price, so the SDK's swap buffer is 0 and the pre- and
+// post-migration supplies are equal: nothing is minted or burned at graduation.
+//
+// After graduation the maker is paid from the resale pool on a ship-window schedule (vesting.ts).
 import BN from 'bn.js'
 import Decimal from 'decimal.js'
 import {
@@ -38,6 +41,19 @@ import {
 } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { priceTiers, type PricingSummary, type TierPlan } from './pricing'
 import { MAX_MAKER_SHARE, type TrustTierName } from './trust'
+import { parseNetwork } from './network'
+import {
+  LP_SPLIT,
+  SHIP_DAYS,
+  cliffReleaseBps,
+  firstReleaseSec,
+  formatAfterGoal,
+  formatDuration,
+  validateSchedule,
+  vestingEndSec,
+  vestingSchedule,
+  type VestingSchedule,
+} from './vesting'
 
 export const VOUCHER_DECIMALS = TokenDecimal.SIX
 export const USDC_DECIMALS = 6
@@ -55,6 +71,7 @@ export type Campaign = {
     windowSec: number // time for the fee to fall to the normal fee
   }
   normalFeeBps: number // fee after the drop window (DBC minimum is 25)
+  shipDays?: number // promised ship date in days after the goal (14–180); sets the LP vesting cliff
 }
 
 export type ConfigField = { input: string; value: string; dbcField: string; dbcValue: string }
@@ -63,7 +80,23 @@ export type CampaignConfig = {
   params: ConfigParameters
   pricing: PricingSummary
   onChain: { goalUsdc: number; preorderUnits: number; resaleUnits: number; totalUnits: number }
+  vesting: VestingSchedule // the maker's LP vesting, seconds after graduation
   fields: ConfigField[] // what the maker typed → what it became on-chain (UI panel + README)
+}
+
+// Localnet only: VESTING_SCHEDULE_OVERRIDE='{"cliffSec":20,"periods":2,"periodSec":10,"bpsPerPeriod":2500}'
+// replaces the tier schedule so tests and the e2e demo can unlock in seconds. Ignored on devnet and mainnet.
+export function vestingScheduleOverride(env: NodeJS.ProcessEnv = process.env): VestingSchedule | null {
+  if (!env.VESTING_SCHEDULE_OVERRIDE?.trim() || parseNetwork(env.NETWORK) !== 'localnet') return null
+  let s: VestingSchedule
+  try {
+    s = JSON.parse(env.VESTING_SCHEDULE_OVERRIDE)
+  } catch {
+    throw new Error('VESTING_SCHEDULE_OVERRIDE is not valid JSON')
+  }
+  const out = { cliffSec: s.cliffSec, periods: s.periods, periodSec: s.periodSec, bpsPerPeriod: s.bpsPerPeriod }
+  validateSchedule(out)
+  return out
 }
 
 const toRaw = (amount: number, decimals: number) => new Decimal(amount).mul(new Decimal(10).pow(decimals))
@@ -80,6 +113,8 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
   if (campaign.dropBot.startFeeBps < campaign.normalFeeBps) throw new Error('drop-bot fee must start above the normal fee')
 
   const pricing = priceTiers(plan)
+  const shipDays = campaign.shipDays ?? SHIP_DAYS.default
+  const vesting = vestingSchedule(tier, shipDays, vestingScheduleOverride())
 
   // Curve: one DBC segment per tier, liquidity solved so the segment sells exactly its units.
   const prices = [...plan.tiers.map((t) => t.startPrice), plan.finalPrice]
@@ -130,6 +165,14 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     DEFAULT_LIQUIDITY_VESTING_INFO_PARAMS.cliffDurationFromMigrationTime,
     DEFAULT_LIQUIDITY_VESTING_INFO_PARAMS.totalDuration,
   )
+  // The SDK's totalDuration is measured after the cliff (frequency = totalDuration / periods).
+  const creatorLiquidityVesting = getLiquidityVestingInfoParams(
+    LP_SPLIT.creatorVestingPct,
+    vesting.bpsPerPeriod,
+    vesting.periods,
+    vesting.cliffSec,
+    vesting.periods * vesting.periodSec,
+  )
 
   const params: ConfigParameters = {
     poolFees: {
@@ -142,12 +185,13 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     tokenType: TokenType.SPLToken,
     tokenDecimal: VOUCHER_DECIMALS,
     migrationQuoteThreshold: threshold,
-    // All resale-pool liquidity is locked forever: vouchers always have a market.
-    // Locked positions still earn trading fees, so the maker earns on every resale.
+    // 20% of resale-pool liquidity is locked forever, so vouchers always have a market. The maker's
+    // other 80% vests on the ship-window schedule and funds production. Every position, locked or
+    // vesting, earns trading fees, so the maker earns on every resale.
     partnerLiquidityPercentage: 0,
-    partnerPermanentLockedLiquidityPercentage: 20,
+    partnerPermanentLockedLiquidityPercentage: LP_SPLIT.partnerPermanentPct,
     creatorLiquidityPercentage: 0,
-    creatorPermanentLockedLiquidityPercentage: 80,
+    creatorPermanentLockedLiquidityPercentage: LP_SPLIT.creatorPermanentPct,
     sqrtStartPrice,
     lockedVesting: getLockedVestingParams(0, 0, 0, 0, 0, VOUCHER_DECIMALS),
     migrationFeeOption: migrated.migrationFeeOption,
@@ -156,7 +200,7 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     migratedPoolFee: migrated.migratedPoolFee,
     poolCreationFee: convertToLamports(0, 9),
     partnerLiquidityVestingInfo: noLiquidityVesting,
-    creatorLiquidityVestingInfo: noLiquidityVesting,
+    creatorLiquidityVestingInfo: creatorLiquidityVesting,
     migratedPoolBaseFeeMode: migrated.migratedPoolBaseFeeMode,
     migratedPoolMarketCapFeeSchedulerParams: migrated.migratedPoolMarketCapFeeSchedulerParams,
     enableFirstSwapWithMinFee: false,
@@ -187,8 +231,10 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     { input: 'Drop-bot window', value: `${campaign.dropBot.startFeeBps / 100}% → ${campaign.normalFeeBps / 100}% over ${campaign.dropBot.windowSec}s`, dbcField: 'baseFee', dbcValue: 'FeeSchedulerExponential' },
     { input: 'Limited edition', value: `${onChain.totalUnits.toFixed(2)} units max`, dbcField: 'tokenSupply + tokenUpdateAuthority', dbcValue: 'fixed post-migration supply, Immutable (no mint)' },
     { input: 'Resale market', value: `${onChain.resaleUnits.toFixed(2)} units + ${usd(pricing.resaleUsdc)} at ${usd(plan.finalPrice)}`, dbcField: 'migrationOption', dbcValue: 'DAMM v2, 2% fee' },
-    { input: 'Resale royalties', value: 'maker earns 80% of resale fees', dbcField: 'creatorPermanentLockedLiquidityPercentage', dbcValue: '80 (partner 20), 100% locked forever' },
+    { input: 'Ship window', value: `ships by day ${shipDays}; the maker's ${LP_SPLIT.creatorVestingPct}% of resale liquidity unlocks from ${formatAfterGoal(firstReleaseSec(vesting))} to ${formatAfterGoal(vestingEndSec(vesting))}`, dbcField: 'creatorLiquidityVestingInfo', dbcValue: `vestingPercentage ${LP_SPLIT.creatorVestingPct}: ${cliffReleaseBps(vesting) / 100}% at the cliff, then ${vesting.periods} × ${vesting.bpsPerPeriod / 100}% every ${formatDuration(vesting.periodSec)}, all by ${formatDuration(vestingEndSec(vesting))}` },
+    { input: 'Resale floor', value: `${LP_SPLIT.partnerPermanentPct + LP_SPLIT.creatorPermanentPct}% of resale liquidity locked forever`, dbcField: 'creator + partnerPermanentLockedLiquidityPercentage', dbcValue: `${LP_SPLIT.creatorPermanentPct} (maker) + ${LP_SPLIT.partnerPermanentPct} (platform)` },
+    { input: 'Resale royalties', value: `maker earns ${100 - LP_SPLIT.partnerPermanentPct}% of resale LP fees, ${LP_SPLIT.creatorPermanentPct * 100 / (LP_SPLIT.creatorPermanentPct + LP_SPLIT.partnerPermanentPct)}% once fully unlocked`, dbcField: 'DAMM v2 position fees', dbcValue: "split by liquidity, after Meteora's protocol share" },
   ]
 
-  return { params, pricing, onChain, fields }
+  return { params, pricing, onChain, vesting, fields }
 }

@@ -1,17 +1,32 @@
 import BN from "bn.js";
-import { PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { buildBuyTx, buildMakerClaimTx, buildMakerWithdrawTx, buildRedeemTx, buildResaleSwapTx, buildSellBackTx, getCampaign } from "@preorder/core";
+import {
+  buildBuyTx,
+  buildMakerClaimTx,
+  buildMakerUnlockTx,
+  buildMakerWithdrawTx,
+  buildRedeemTx,
+  buildResaleSwapTx,
+  buildSellBackTx,
+  getCampaign,
+  onChainCreator,
+} from "@preorder/core";
 import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, serialize } from "@/lib/server";
 
 type Body = {
-  kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "resaleBuy" | "resaleSell";
+  kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell";
   pool: string;
   wallet: string;
   usdc?: number;
   vouchers?: number;
   ref?: string;
 };
+
+// The maker is whoever the DBC pool records as creator on chain, not what our store says.
+async function isMaker(conn: Connection, pool: PublicKey, wallet: PublicKey) {
+  return (await onChainCreator(conn, pool)).equals(wallet);
+}
 
 // Unsigned transactions for the connected wallet to sign and send.
 export async function POST(req: Request) {
@@ -36,12 +51,17 @@ export async function POST(req: Request) {
     } else if (body.kind === "redeem") {
       tx = buildRedeemTx(wallet, baseMint);
     } else if (body.kind === "withdraw") {
-      if (wallet.toBase58() !== record.maker) throw new BadRequest("Only the maker can withdraw the budget");
+      if (!(await isMaker(conn, pool, wallet))) throw new BadRequest("Only the maker can withdraw the budget");
       tx = await buildMakerWithdrawTx(conn, wallet, pool);
     } else if (body.kind === "claim") {
-      if (wallet.toBase58() !== record.maker) throw new BadRequest("Only the maker can claim maker fees");
-      tx = await buildMakerClaimTx(conn, record);
+      if (!(await isMaker(conn, pool, wallet))) throw new BadRequest("Only the maker can claim maker fees");
+      tx = await buildMakerClaimTx(conn, { ...record, maker: wallet.toBase58() });
       if (!tx) throw new BadRequest("Nothing to claim yet");
+    } else if (body.kind === "unlock") {
+      if (!(await isMaker(conn, pool, wallet))) throw new BadRequest("Only the maker can unlock production funds");
+      const built = await buildMakerUnlockTx(conn, record, wallet);
+      if (!built) throw new BadRequest("Nothing to unlock yet");
+      tx = built.tx;
     } else if (body.kind === "resaleBuy") {
       if (!(body.usdc && body.usdc > 0)) throw new BadRequest("Enter an amount");
       tx = await buildResaleSwapTx(conn, record, wallet, "buy", body.usdc);

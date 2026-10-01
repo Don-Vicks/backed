@@ -8,7 +8,7 @@ import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { Check, Copy, ExternalLink, Lock, ShieldCheck, Timer } from "lucide-react";
+import { Check, Copy, ExternalLink, Hourglass, Lock, ShieldCheck, Timer } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { ShippingForm } from "@/components/shipping-form";
 import { explorerAccount, short, units, usd } from "@/lib/format";
+import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import type { CampaignWithLive } from "@/lib/types";
 
 type Quote = { vouchers: number; feeUsdc: number; feePct: number; minVouchers: number };
@@ -118,7 +119,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
             <Term icon={<Timer aria-hidden="true" />} title="Drop-bot window" body={`Fee starts at ${c.campaign.dropBot.startFeeBps / 100}% and falls to ${c.campaign.normalFeeBps / 100}% over ${Math.round(c.campaign.dropBot.windowSec / 60)} min.`} />
             <Term icon={<Lock aria-hidden="true" />} title="Limited edition" body={`At most ${units(c.totalUnits)} vouchers will ever exist. No one can mint more.`} />
             <Term icon={<ShieldCheck aria-hidden="true" />} title="Maker’s upfront share" body={`${plan.makerSharePct}% of the raise at graduation (tier ${c.trust.tier} cap ${c.trust.maxMakerSharePct}%).`} />
-            <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="100% of resale liquidity is locked forever. The maker earns 80% of resale fees." />
+            <ResaleTerms c={c} />
           </ul>
           <a href={explorerAccount(c.config)} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex items-center gap-1 text-sm text-primary underline-offset-4 hover:underline">
             Verify the config on-chain <ExternalLink aria-hidden="true" className="size-3.5" />
@@ -147,6 +148,30 @@ function Loaded({ c }: { c: CampaignWithLive }) {
         <ActionPanel c={c} />
       </aside>
     </div>
+  );
+}
+
+// From the on-chain config. Campaigns created before ship-window vesting lock all resale liquidity.
+function ResaleTerms({ c }: { c: CampaignWithLive }) {
+  const t = c.terms;
+  if (!t?.vesting) {
+    return <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="100% of resale liquidity is locked forever. The maker’s locked position earns a share of every resale fee." />;
+  }
+  const floor = t.partnerPermanentPct + t.creatorPermanentPct;
+  const ship = c.campaign.shipDays ? `The maker promised to ship within ${c.campaign.shipDays} days of the goal. ` : "";
+  return (
+    <>
+      <Term
+        icon={<Hourglass aria-hidden="true" />}
+        title="Ship window"
+        body={`${ship}The maker’s ${t.creatorVestingPct}% of resale liquidity pays for production. It unlocks in steps from ${formatAfterGoal(firstReleaseSec(t.vesting))} to ${formatAfterGoal(vestingEndSec(t.vesting))}. Until then it backs the resale market.`}
+      />
+      <Term
+        icon={<Lock aria-hidden="true" />}
+        title="Resale floor"
+        body={`${floor}% of resale liquidity is locked forever, so vouchers always have a market. Every position earns its share of resale fees.`}
+      />
+    </>
   );
 }
 
@@ -211,7 +236,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     queryClient.invalidateQueries({ queryKey: ["resale", c.pool] });
   };
 
-  async function run(kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "resaleBuy" | "resaleSell", label: string, extra: Record<string, unknown> = {}) {
+  async function run(kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell", label: string, extra: Record<string, unknown> = {}) {
     if (!publicKey) return setVisible(true);
     setBusy(kind);
     try {

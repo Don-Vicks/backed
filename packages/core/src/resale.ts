@@ -7,6 +7,7 @@ import { CpAmm, getPriceFromSqrtPrice, getUnClaimLpFee } from '@meteora-ag/cp-am
 import { dbcClient, resalePoolAddress } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
+import { chainUnixTime, makerLp, type MakerLp } from './unlock'
 
 export type ResaleSide = 'buy' | 'sell' // buy = USDC → vouchers, sell = vouchers → USDC
 
@@ -16,6 +17,7 @@ export type MakerEarnings = {
   resaleFeesUnclaimedUsdc: number // resale-pool fees earned by the maker's locked position, USDC side
   resaleFeesUnclaimedVouchers: number // …and voucher side
   positions: number
+  lp: MakerLp | null // the maker's resale-pool liquidity: unlockable now, still vesting, permanent
 }
 
 export type ResaleView = {
@@ -40,13 +42,15 @@ export async function readMakerEarnings(connection: Connection, record: Campaign
     resaleFeesUnclaimedUsdc: 0,
     resaleFeesUnclaimedVouchers: 0,
     positions: 0,
+    lp: null,
   }
   const cpAmm = new CpAmm(connection)
   const pool = resalePool(record)
   const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
   if (!poolState) return out
-  const positions = await cpAmm.getUserPositionByPool(pool, new PublicKey(record.maker))
+  const [positions, now] = await Promise.all([cpAmm.getUserPositionByPool(pool, new PublicKey(record.maker)), chainUnixTime(connection)])
   out.positions = positions.length
+  out.lp = makerLp(cpAmm, poolState, positions.map((p) => p.positionState), now)
   for (const p of positions) {
     const fee = getUnClaimLpFee(poolState, p.positionState)
     out.resaleFeesUnclaimedVouchers += toNum(fee.feeTokenA, VOUCHER_DECIMALS)

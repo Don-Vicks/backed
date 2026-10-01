@@ -11,10 +11,10 @@ export async function POST(req: Request) {
     const tier = trust?.tier ?? "C";
     let out: PreviewResponse;
     try {
-      const { pricing, onChain, fields } = campaignToConfig(body.campaign, tier);
-      out = { trust, pricing, onChain, fields, error: null };
+      const { pricing, onChain, vesting, fields } = campaignToConfig(body.campaign, tier);
+      out = { trust, pricing, onChain, vesting, fields, error: null };
     } catch (e) {
-      out = { trust, pricing: null, onChain: null, fields: [], error: e instanceof Error ? e.message : String(e) };
+      out = { trust, pricing: null, onChain: null, vesting: null, fields: [], error: e instanceof Error ? e.message : String(e) };
     }
     return Response.json({ ...out, caps: MAX_MAKER_SHARE });
   } catch (e) {

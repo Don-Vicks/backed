@@ -6,7 +6,7 @@ A $30 pre-order sells out, then resells for $300 on StockX, and the maker who ma
 
 1. **Early backers pay less.** A campaign's early-bird tiers are segments of a DBC curve, so the price rises as units sell.
 2. **Reaching the goal funds the maker.** The funding goal *is* the DBC migration threshold. At graduation, the maker's production budget is paid out automatically.
-3. **Vouchers keep a market, and the maker keeps earning.** After graduation the same token trades on a DAMM v2 pool whose liquidity is locked forever, and the maker's locked position earns fees on every resale. Burn one voucher to claim the item.
+3. **Vouchers keep a market, and the maker gets paid on a ship window.** After graduation the same token trades on a DAMM v2 pool. 20% of its liquidity is locked forever; the maker's other 80% unlocks after the promised ship date, on a schedule set by the maker's trust tier, and pays for production. Every position earns fees on every resale. Burn one voucher to claim the item.
 
 No custom program. Every rule comes from DBC config, DAMM v2 and SPL token burns.
 
@@ -24,18 +24,19 @@ The maker fills in a plain form. `campaignToConfig()` ([`packages/core/src/engin
 | **Funding goal** | `migrationQuoteThreshold` | Graduation *is* "funded". The goal is derived from the tiers: each tier raises units × √(start price × end price). |
 | **Maker's upfront share** | `migrationFee.feePercentage`, `creatorFeePercentage: 100` | The production budget comes out of the raise at graduation and is withdrawn with `creatorWithdrawMigrationFee`. The maker's trust tier caps it (below). |
 | **Drop-bot window** | `baseFee`: `FeeSchedulerExponential` | Scalpers rushing a drop are the same as snipers. The fee starts at 50% and falls to 1% over 5–30 min. (DBC deprecated the rate limiter for new pools in SDK 1.5.12, so there is no per-buy size limit.) |
-| **Limited edition** | `tokenSupply` (fixed), `tokenUpdateAuthority: Immutable` | The supply cap is the production cap, and nobody can mint more. Post-migration supply is set to exactly the curve units plus the resale units, and the program burns the unused swap buffer. |
+| **Limited edition** | `tokenSupply` (fixed), `tokenUpdateAuthority: Immutable` | The supply cap is the production cap, and nobody can mint more. Supply is exactly the curve units plus the resale units. The curve ends at the migration price, so there is no swap buffer and nothing is minted or burned at graduation. |
 | **Price in dollars** | `quoteMint` = USDC, `collectFeeMode: QuoteToken` | Product prices shouldn't move with SOL. All fees are collected in USDC. |
 | **Exit before the goal** | *(DBC sells are always open)* | A backer can sell back along the curve at any time before graduation. It isn't a refund: it pays the current curve price. |
 | **Resale market** | `migrationOption: MET_DAMM_V2`, `migrationFeeOption: FixedBps200` | Graduation opens a 2%-fee DAMM v2 pool, so vouchers stay liquid after the pre-order. |
-| **Resale royalties** | `creatorPermanentLockedLiquidityPercentage: 80`, `partnerPermanentLockedLiquidityPercentage: 20` | 100% of resale liquidity is locked forever. Locked positions still earn trading fees, so the maker earns on every resale. |
+| **Ship date** (14–180 days) | `creatorLiquidityVestingInfo`: 80% vesting, cliff and weekly periods by trust tier | The maker's production money beyond the upfront share. DBC writes the schedule into the maker's DAMM v2 position at graduation ("inner vesting"); the maker withdraws each released tranche with **Unlock production funds** (`removeLiquidity`, minimums from `getWithdrawQuote`) and the vouchers that come out are burned in the same transaction, so they stop being owed. Before the cliff the program refuses the withdrawal. |
+| **Resale floor and royalties** | `creatorPermanentLockedLiquidityPercentage: 15`, `partnerPermanentLockedLiquidityPercentage: 5`, `creatorLiquidityPercentage: 0` | 20% of resale liquidity is locked forever, so vouchers always have a market. Fees are split by liquidity: the maker's position earns 95% of resale LP fees at graduation and 75% once fully unlocked (LP fees are what is left after Meteora's protocol share). |
 | **Curve trading fees** | `creatorTradingFeePercentage: 50`, `dynamicFeeEnabled` | After Meteora's 20% protocol fee, the maker earns half of the curve's trading fees. Both fee streams are claimed in one transaction. |
 | **Affiliate links** | swap `referralTokenAccount` | Share links carry `?ref=<wallet>`. On referred buys, the sharer gets DBC's referral cut (20% of the protocol fee). The buyer pays nothing extra. |
 | **No reused configs** | `createConfigAndPool` (one transaction, platform key = `feeClaimer`) | Each campaign gets its own config, created in the same transaction as its pool. Nobody can launch another pool on a campaign's terms. |
 
 ### Why we build the curve ourselves
 
-`buildCurveWithCustomSqrtPrices` sizes the curve from a total supply and adds a 25% swap buffer, which moves the goal away from what the maker asked for. The engine instead solves per-segment liquidity with `base = L·(√P1 − √P0)/(√P0·√P1)` and computes the goal with the SDK's own `getDeltaAmountQuoteUnsigned`. It then sets the minimum supply the program accepts: pre-migration = curve units + buffer + resale units, post-migration = curve units + resale units. On devnet the supply after graduation came to **12.2988 units against 12.30 planned**.
+`buildCurveWithCustomSqrtPrices` sizes the curve from a total supply and adds a 25% swap buffer, which moves the goal away from what the maker asked for. The engine instead solves per-segment liquidity with `base = L·(√P1 − √P0)/(√P0·√P1)` and computes the goal with the SDK's own `getDeltaAmountQuoteUnsigned`. It then sets the minimum supply the program accepts: curve units + resale units, before and after migration. Because the last segment ends at the migration price, the SDK's 25% swap buffer comes to 0. On devnet the supply after graduation came to **12.2988 units against 12.30 planned**.
 
 ### Maker trust tier
 
@@ -54,7 +55,17 @@ The upfront share is capped by a trust tier scored from the maker wallet's **pub
 | B | ≥ 40 | 25% |
 | C | < 40 | 10% |
 
-A new or throwaway wallet can still run a campaign, but it takes less upfront and more of the raise stays in the locked resale pool. The "verified social" input is a demo stand-in, not a real social check.
+The tier also sets the **ship window**: when the maker's vesting 80% of the resale liquidity unlocks ([`vesting.ts`](packages/core/src/vesting.ts)). The split is the same for every tier (partner 5% and maker 15% permanent, maker 80% vesting), so the day-1 lock is 100% and the permanent floor is 20%:
+
+| Tier | Cliff (days after the goal) | Then | Maker reaches* |
+|---|---|---|---|
+| A | max(14, ship date) — 25% of the vesting releases | 6 × 12.5% weekly | 40 + 0.8 × 60 = 88% |
+| B | max(30, ship date + 14) — 10% releases | 12 × 7.5% weekly | 25 + 0.8 × 75 = 85% |
+| C | max(60, ship date + 30) — nothing releases | 20 × 5% weekly | 10 + 0.8 × 90 = 82% |
+
+\* Share of the raise in USDC, assuming no resale trading. Until the cliff, backers who want out can sell into the full resale pool.
+
+A new or throwaway wallet can still run a campaign, but it takes less upfront and waits longer for the rest. The "verified social" input is a demo stand-in, not a real social check.
 
 ---
 
@@ -85,6 +96,8 @@ packages/core       All Solana logic, shared by the scripts and the web server
   live.ts           live campaign state, quotes, devnet/localnet faucet
   network.ts        NETWORK switch (localnet, devnet, mainnet), RPC and explorer links
   resale.ts         DAMM v2 resale pool, quotes, swaps, maker earnings + claim
+  vesting.ts        ship-window LP vesting by trust tier (pure, also used in the browser)
+  unlock.ts         "Unlock production funds" (remove released LP + burn), backer floor, on-chain terms
   redemptions.ts    on-chain burn verification, shipping records, maker sign-in
   scripts/          lifecycle proof, launch, API smoke tests
 ```
@@ -129,7 +142,7 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 - **`NETWORK`** (`localnet`, `devnet` or `mainnet`) is the only network switch. The scripts and the server read it at runtime; `next.config.ts` bakes it and the matching browser RPC (`PUBLIC_RPC_URL`, else a keyless default) into the bundle, so **changing it needs a rebuild**. `/api/health` returns 503 if the running server and the build disagree. `NETWORK=mainnet` switches to real USDC and mainnet RPC; the faucet only runs on devnet and localnet.
 - **`PUBLIC_BASE_URL`** is the app's https origin. It goes into immutable on-chain metadata URIs and Blink icons, so it is required off localnet (`RAILWAY_PUBLIC_DOMAIN` is the fallback). Creating a campaign fails fast without it. Creating campaigns from a laptop on devnet therefore needs a public https URL (a tunnel); use localnet for local work.
 - **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching.
-- **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history.
+- **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history. `VESTING_SCHEDULE_OVERRIDE` (JSON, seconds) replaces the tier ship-window schedule so a campaign unlocks in seconds; it is ignored on devnet and mainnet.
 
 ### Deploy (Railway)
 
@@ -139,11 +152,11 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 
 ## Known limits
 
-- **Trust-minimized, not trustless.** A maker can take the upfront share and never ship. The trust tier limits how much they can take upfront, and the rest stays locked in the resale pool.
+- **Trust-minimized, not trustless.** A maker can take the upfront share and never ship. The trust tier limits how much they can take upfront and how long the rest waits. Vesting is time-based: DBC and DAMM v2 cannot release liquidity when goods ship, so after the ship window a maker who disappears leaves backers a 20% permanent market floor, not a refund.
 - **Exit ≠ refund.** Selling back before the goal pays the current curve price, which can be more or less than the price paid.
 - **Demo storage.** Campaign records, token metadata and shipping details are kept in JSON files on the server. Production needs a database, and encryption for shipping data.
 - **Trust signals are simple.** Wallet age, activity and first funder can be gamed with aged wallets. They are one input, shown openly, and not a verdict.
 
 ## Business model
 
-Backed is the DBC **partner** on every campaign. It earns the partner half of curve trading fees (after Meteora's 20% protocol fee) and the fees on its 20% locked share of each resale pool. Makers pay nothing upfront. First users are merch drops, indie hardware and game-key pre-orders, and hackathon teams. Later, a Shopify plugin so any store can offer pre-orders with a built-in resale market.
+Backed is the DBC **partner** on every campaign. It earns the partner half of curve trading fees (after Meteora's 20% protocol fee) and the fees on its 5% permanently locked share of each resale pool. Makers pay nothing upfront. First users are merch drops, indie hardware and game-key pre-orders, and hackathon teams. Later, a Shopify plugin so any store can offer pre-orders with a built-in resale market.
