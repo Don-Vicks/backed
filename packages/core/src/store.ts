@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { getNetwork } from './network'
 import { repoRoot } from './paths'
+import type { MigrationFeeOption } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import type { Campaign, ConfigField } from './engine'
 import type { TrustResult } from './trust'
 
@@ -19,6 +20,9 @@ export type CampaignRecord = {
   goalUsdc: number
   totalUnits: number
   fields: ConfigField[]
+  // The DAMM v2 config the pool migrates into (resale pool address). The on-chain config is the
+  // source of truth; records older than this field are FixedBps200.
+  migrationFeeOption?: MigrationFeeOption
 }
 
 const storePath = () => path.join(repoRoot(), 'data', `campaigns.${getNetwork().name}.json`)

@@ -62,6 +62,7 @@ export async function POST(req: Request) {
       goalUsdc: built.onChain.goalUsdc,
       totalUnits: built.onChain.totalUnits,
       fields: built.fields,
+      migrationFeeOption: built.onChain.migrationFeeOption,
     });
     return Response.json({ ...serialize(tx), pool: built.pool.toBase58() });
   } catch (e) {

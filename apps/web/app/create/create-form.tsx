@@ -8,7 +8,8 @@ import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { Minus, Plus, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { priceTiers, type TierPlan } from "@preorder/core/src/pricing";
-import { SHIP_DAYS, firstReleaseSec, formatAfterGoal, makerPayoutPct, unitsOwedAfterUnlock, vestingEndSec, vestingSchedule } from "@preorder/core/src/vesting";
+import { RESALE_ROYALTY_BPS } from "@preorder/core/src/royalty";
+import { LP_SPLIT, SHIP_DAYS, firstReleaseSec, formatAfterGoal, makerPayoutPct, unitsOwedAfterUnlock, vestingEndSec, vestingSchedule } from "@preorder/core/src/vesting";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -50,6 +51,7 @@ export function CreateForm() {
   const [makerShare, setMakerShare] = useState(10);
   const [dropWindow, setDropWindow] = useState(600);
   const [shipDays, setShipDays] = useState(String(SHIP_DAYS.default));
+  const [royaltyPct, setRoyaltyPct] = useState(String(RESALE_ROYALTY_BPS.default / 100));
   const [unitCost, setUnitCost] = useState("");
   const [verifiedSocial, setVerifiedSocial] = useState(false);
   const [launching, setLaunching] = useState(false);
@@ -73,8 +75,9 @@ export function CreateForm() {
       dropBot: { startFeeBps: 5000, windowSec: dropWindow },
       normalFeeBps: 100,
       shipDays: num(shipDays),
+      resaleRoyaltyBps: Math.round(num(royaltyPct) * 100),
     }),
-    [name, symbol, description, image, tiers, finalPrice, effectiveShare, dropWindow, shipDays],
+    [name, symbol, description, image, tiers, finalPrice, effectiveShare, dropWindow, shipDays, royaltyPct],
   );
 
   // Instant numbers, computed in the browser.
@@ -222,6 +225,24 @@ export function CreateForm() {
             </div>
             <p className="text-xs text-muted-foreground sm:col-span-2">
               The rest of your money unlocks from the resale pool after your ship date, faster for higher trust tiers. Only you see the unit cost.
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="royalty">Resale royalty (%)</Label>
+            <Input
+              id="royalty"
+              type="number"
+              inputMode="decimal"
+              min={RESALE_ROYALTY_BPS.min / 100}
+              max={RESALE_ROYALTY_BPS.max / 100}
+              step={0.25}
+              value={royaltyPct}
+              className="w-32 font-mono"
+              onChange={(e) => setRoyaltyPct(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              The fee on every resale trade after the goal, paid in USDC ({RESALE_ROYALTY_BPS.min / 100}–{RESALE_ROYALTY_BPS.max / 100}%). After Meteora&rsquo;s protocol share, your
+              positions earn {100 - LP_SPLIT.partnerPermanentPct}% of it, and {Math.round((LP_SPLIT.creatorPermanentPct * 100) / (LP_SPLIT.creatorPermanentPct + LP_SPLIT.partnerPermanentPct))}% once your funds are unlocked.
             </p>
           </div>
           <div className="grid gap-2" role="radiogroup" aria-labelledby="drop-label">

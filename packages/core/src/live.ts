@@ -3,7 +3,7 @@ import BN from 'bn.js'
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js'
 import { createAssociatedTokenAccountIdempotentInstruction, createMintToInstruction, getAssociatedTokenAddressSync, getMint } from '@solana/spl-token'
 import { getPriceFromSqrtPrice } from '@meteora-ag/dynamic-bonding-curve-sdk'
-import { dbcClient, getUsdcMint, resalePoolAddress, toUsdcRaw } from './chain'
+import { dbcClient, getUsdcMint, resolveResalePool, toUsdcRaw } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
 import { getNetwork, isTestNetwork } from './network'
@@ -53,7 +53,7 @@ export async function readCampaignLive(connection: Connection, record: CampaignR
     unitsSold: migrated ? record.campaign.plan.tiers.reduce((a, t) => a + t.units, 0) : toNum(new BN(mint.supply.toString()).sub(s.baseReserve), VOUCHER_DECIMALS),
     tierIndex,
     makerBudgetWithdrawn: (Number((s as { migrationFeeWithdrawStatus?: number }).migrationFeeWithdrawStatus ?? 0) & 0b10) !== 0,
-    resalePool: migrated ? resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint)).toBase58() : null,
+    resalePool: migrated ? (await resolveResalePool(connection, record)).toBase58() : null,
   }
 }
 

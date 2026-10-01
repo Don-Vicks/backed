@@ -30,7 +30,7 @@ import {
   buildSellBackTx,
   dbcClient,
   getUsdcMint,
-  resalePoolAddress,
+  resolveResalePool,
   saveMockUsdcMint,
   toUsdcRaw,
 } from '../chain'
@@ -207,7 +207,7 @@ async function main() {
     console.log(`    voucher supply after graduation: ${fmt(supply)} units (fixed supply: nothing minted or burned)`)
     return sig
   })
-  const resalePool = resalePoolAddress(baseMint, usdcMint)
+  const resalePool = await resolveResalePool(connection, { config: s.config!, baseMint: baseMint.toBase58(), usdcMint: usdcMint.toBase58() })
   console.log(`    resale pool ${explorerAccount(resalePool)}`)
 
   await step('withdraw', '9. Maker withdraws the production budget', async () => {

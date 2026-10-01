@@ -52,6 +52,7 @@ async function main() {
     goalUsdc: Number(threshold.toString()) / 1e6,
     totalUnits: built.onChain.totalUnits,
     fields: built.fields,
+    migrationFeeOption: built.onChain.migrationFeeOption,
   })
   console.log(`Pool ${explorerAccount(built.pool)}\nOn-chain goal ${(Number(threshold.toString()) / 1e6).toFixed(4)} USDC. Saved to data/campaigns.${getNetwork().name}.json`)
 }

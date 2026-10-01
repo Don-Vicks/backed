@@ -14,7 +14,7 @@ import {
   getMint,
 } from '@solana/spl-token'
 import { CpAmm } from '@meteora-ag/cp-amm-sdk'
-import { buildBuyTx, buildCreateCampaignTx, buildMigrateTx, resalePoolAddress } from '../../chain'
+import { buildBuyTx, buildCreateCampaignTx, buildMigrateTx, resalePoolAddress, resolveResalePool } from '../../chain'
 import type { Campaign } from '../../engine'
 import { getNetwork } from '../../network'
 import { buildMakerClaimTx, buildResaleSwapTx, readMakerEarnings } from '../../resale'
@@ -104,6 +104,7 @@ test('vesting campaign: create, fund and graduate', { skip, timeout: 120_000 }, 
     goalUsdc: built.onChain.goalUsdc,
     totalUnits: built.onChain.totalUnits,
     fields: built.fields,
+    migrationFeeOption: built.onChain.migrationFeeOption,
   }
 
   // The config on chain carries the schedule (inspect <config> shows creatorLiquidityVestingInfo).
@@ -119,7 +120,7 @@ test('vesting campaign: create, fund and graduate', { skip, timeout: 120_000 }, 
   await send(conn, await buildBuyTx(conn, backer.publicKey, built.pool, built.onChain.goalUsdc * 1.3), [backer], 'buy to the goal')
   const mig = await buildMigrateTx(conn, platform.publicKey, built.pool)
   await send(conn, mig.tx, [platform, ...mig.extraSigners], 'migrateToDammV2')
-  damm = resalePoolAddress(built.baseMint, usdcMint)
+  damm = await resolveResalePool(conn, record)
 })
 
 test('positions after graduation: maker 80/95 vesting + 15/95 permanent, platform 5% permanent', { skip }, async () => {
@@ -248,7 +249,7 @@ test('graduation and cliff dust are not offered as unlocks; the countdown target
   const mig = await buildMigrateTx(conn, platform.publicKey, built.pool)
   await send(conn, mig.tx, [platform, ...mig.extraSigners], 'migrateToDammV2')
   const dust = { ...record, pool: built.pool.toBase58(), config: built.config.toBase58(), baseMint: built.baseMint.toBase58(), campaign }
-  const [p] = await new CpAmm(conn).getUserPositionByPool(resalePoolAddress(built.baseMint, usdcMint), maker.publicKey)
+  const [p] = await new CpAmm(conn).getUserPositionByPool(resalePoolAddress(built.baseMint, usdcMint, built.onChain.migrationFeeOption), maker.publicKey)
   assert.ok(p.positionState.unlockedLiquidity.gtn(0), 'expected dust in the unlocked bucket')
   assert.ok((await chainUnixTime(conn)) < p.positionState.innerVesting.cliffPoint.toNumber(), 'test too slow: cliff already passed')
   assert.equal(await buildMakerUnlockTx(conn, dust, maker.publicKey), null)

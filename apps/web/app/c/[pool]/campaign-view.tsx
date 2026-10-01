@@ -8,7 +8,7 @@ import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { Check, Copy, ExternalLink, Hourglass, Lock, ShieldCheck, Timer } from "lucide-react";
+import { Check, Coins, Copy, ExternalLink, Hourglass, Lock, ShieldCheck, Timer } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -159,7 +159,12 @@ function ResaleTerms({ c }: { c: CampaignWithLive }) {
     return <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="How resale liquidity is split and locked is fixed in this campaign’s on-chain config. Verify it below." />;
   }
   if (!t.vesting) {
-    return <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="100% of resale liquidity is locked forever. The maker’s locked position earns a share of every resale fee." />;
+    return (
+      <>
+        <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="100% of resale liquidity is locked forever. The maker’s locked position earns a share of every resale fee." />
+        <RoyaltyTerm c={c} />
+      </>
+    );
   }
   const floor = t.partnerPermanentPct + t.creatorPermanentPct;
   const ship = c.campaign.shipDays ? `The maker promised to ship within ${c.campaign.shipDays} days of the goal. ` : "";
@@ -175,7 +180,26 @@ function ResaleTerms({ c }: { c: CampaignWithLive }) {
         title="Resale floor"
         body={`${floor}% of resale liquidity is locked forever, so vouchers always have a market. Every position earns its share of resale fees.`}
       />
+      <RoyaltyTerm c={c} />
     </>
+  );
+}
+
+// The resale pool fee (the maker's royalty), from the DBC config. Its split follows the liquidity terms.
+function RoyaltyTerm({ c }: { c: CampaignWithLive }) {
+  const fee = c.resaleFee;
+  const t = c.terms;
+  if (!fee || !t) return null;
+  const maker = t.creatorPermanentPct + t.creatorVestingPct + t.creatorUnlockedPct;
+  const split = t.creatorVestingPct
+    ? `the maker’s positions earn ${maker}% of what is left at graduation and ${Math.round((t.creatorPermanentPct * 100) / (t.creatorPermanentPct + t.partnerPermanentPct))}% once fully unlocked`
+    : `the maker’s positions earn ${maker}% of what is left`;
+  return (
+    <Term
+      icon={<Coins aria-hidden="true" />}
+      title="Resale royalty"
+      body={`Every resale pays a ${fee.poolFeeBps / 100}% fee in USDC${fee.dynamicFee ? ", more when the price moves fast" : ""}. After Meteora’s protocol share, ${split}.`}
+    />
   );
 }
 

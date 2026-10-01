@@ -16,6 +16,8 @@ import {
   BaseFeeMode,
   CollectFeeMode,
   DEFAULT_LIQUIDITY_VESTING_INFO_PARAMS,
+  DammV2DynamicFeeMode,
+  MigratedCollectFeeMode,
   MigrationFeeOption,
   MigrationOption,
   Rounding,
@@ -42,6 +44,7 @@ import {
 import { priceTiers, type PricingSummary, type TierPlan } from './pricing'
 import { MAX_MAKER_SHARE, type TrustTierName } from './trust'
 import { parseNetwork } from './network'
+import { resaleRoyaltyBps } from './royalty'
 import {
   LP_SPLIT,
   SHIP_DAYS,
@@ -57,7 +60,10 @@ import {
 
 export const VOUCHER_DECIMALS = TokenDecimal.SIX
 export const USDC_DECIMALS = 6
-export const MIGRATION_FEE_OPTION = MigrationFeeOption.FixedBps200 // 2% fee on the resale pool
+// Every campaign's resale pool takes the maker-set royalty (DAMM v2 config A8gM…, a dynamic config).
+export const MIGRATION_FEE_OPTION = MigrationFeeOption.Customizable
+// Campaigns created before the maker-set royalty migrate into the fixed 2% DAMM v2 config (2c4c…).
+export const LEGACY_MIGRATION_FEE_OPTION = MigrationFeeOption.FixedBps200
 
 export type Campaign = {
   name: string
@@ -72,6 +78,7 @@ export type Campaign = {
   }
   normalFeeBps: number // fee after the drop window (DBC minimum is 25)
   shipDays?: number // promised ship date in days after the goal (14–180); sets the LP vesting cliff
+  resaleRoyaltyBps?: number // resale pool fee, 100–1000 bps (default 300); older campaigns have a fixed 2%
 }
 
 export type ConfigField = { input: string; value: string; dbcField: string; dbcValue: string }
@@ -79,7 +86,7 @@ export type ConfigField = { input: string; value: string; dbcField: string; dbcV
 export type CampaignConfig = {
   params: ConfigParameters
   pricing: PricingSummary
-  onChain: { goalUsdc: number; preorderUnits: number; resaleUnits: number; totalUnits: number }
+  onChain: { goalUsdc: number; preorderUnits: number; resaleUnits: number; totalUnits: number; migrationFeeOption: MigrationFeeOption; resaleFeeBps: number }
   vesting: VestingSchedule // the maker's LP vesting, seconds after graduation
   fields: ConfigField[] // what the maker typed → what it became on-chain (UI panel + README)
 }
@@ -157,7 +164,15 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
       totalDuration: campaign.dropBot.windowSec,
     },
   }
-  const migrated = getMigratedPoolFeeParams(MigrationOption.MET_DAMM_V2, MIGRATION_FEE_OPTION, undefined, baseFeeParams)
+  // Resale pool: the maker's royalty as a flat base fee plus DAMM v2's volatility fee, collected in
+  // USDC only, so royalties never pay out in the maker's own vouchers.
+  const resaleFeeBps = resaleRoyaltyBps(campaign)
+  const migrated = getMigratedPoolFeeParams(
+    MigrationOption.MET_DAMM_V2,
+    MIGRATION_FEE_OPTION,
+    { collectFeeMode: MigratedCollectFeeMode.QuoteToken, dynamicFee: DammV2DynamicFeeMode.Enabled, poolFeeBps: resaleFeeBps },
+    baseFeeParams,
+  )
   const noLiquidityVesting = getLiquidityVestingInfoParams(
     DEFAULT_LIQUIDITY_VESTING_INFO_PARAMS.vestingPercentage,
     DEFAULT_LIQUIDITY_VESTING_INFO_PARAMS.bpsPerPeriod,
@@ -216,6 +231,8 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     preorderUnits: fromRaw(swapBase, VOUCHER_DECIMALS),
     resaleUnits: fromRaw(migrationBase, VOUCHER_DECIMALS),
     totalUnits: fromRaw(postMigrationTokenSupply, VOUCHER_DECIMALS),
+    migrationFeeOption: migrated.migrationFeeOption,
+    resaleFeeBps,
   }
 
   const usd = (n: number) => `$${n.toFixed(2)}`
@@ -230,10 +247,11 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     { input: 'Maker share', value: `${plan.makerSharePct}% (tier ${tier} cap ${MAX_MAKER_SHARE[tier]}%)`, dbcField: 'migrationFee', dbcValue: `feePercentage ${plan.makerSharePct}, creatorFeePercentage 100` },
     { input: 'Drop-bot window', value: `${campaign.dropBot.startFeeBps / 100}% → ${campaign.normalFeeBps / 100}% over ${campaign.dropBot.windowSec}s`, dbcField: 'baseFee', dbcValue: 'FeeSchedulerExponential' },
     { input: 'Limited edition', value: `${onChain.totalUnits.toFixed(2)} units max`, dbcField: 'tokenSupply + tokenUpdateAuthority', dbcValue: 'fixed post-migration supply, Immutable (no mint)' },
-    { input: 'Resale market', value: `${onChain.resaleUnits.toFixed(2)} units + ${usd(pricing.resaleUsdc)} at ${usd(plan.finalPrice)}`, dbcField: 'migrationOption', dbcValue: 'DAMM v2, 2% fee' },
+    { input: 'Resale market', value: `${onChain.resaleUnits.toFixed(2)} units + ${usd(pricing.resaleUsdc)} at ${usd(plan.finalPrice)}`, dbcField: 'migrationOption', dbcValue: 'DAMM v2' },
+    { input: 'Resale royalty', value: `${resaleFeeBps / 100}% of every resale, in USDC, plus a volatility fee`, dbcField: 'migrationFeeOption + migratedPoolFee', dbcValue: `Customizable: poolFeeBps ${resaleFeeBps}, collectFeeMode QuoteToken, dynamicFee Enabled` },
     { input: 'Ship window', value: `ships by day ${shipDays}; the maker's ${LP_SPLIT.creatorVestingPct}% of resale liquidity unlocks from ${formatAfterGoal(firstReleaseSec(vesting))} to ${formatAfterGoal(vestingEndSec(vesting))}`, dbcField: 'creatorLiquidityVestingInfo', dbcValue: `vestingPercentage ${LP_SPLIT.creatorVestingPct}: ${cliffReleaseBps(vesting) / 100}% at the cliff, then ${vesting.periods} × ${vesting.bpsPerPeriod / 100}% every ${formatDuration(vesting.periodSec)}, all by ${formatDuration(vestingEndSec(vesting))}` },
     { input: 'Resale floor', value: `${LP_SPLIT.partnerPermanentPct + LP_SPLIT.creatorPermanentPct}% of resale liquidity locked forever`, dbcField: 'creator + partnerPermanentLockedLiquidityPercentage', dbcValue: `${LP_SPLIT.creatorPermanentPct} (maker) + ${LP_SPLIT.partnerPermanentPct} (platform)` },
-    { input: 'Resale royalties', value: `maker earns ${100 - LP_SPLIT.partnerPermanentPct}% of resale LP fees, ${LP_SPLIT.creatorPermanentPct * 100 / (LP_SPLIT.creatorPermanentPct + LP_SPLIT.partnerPermanentPct)}% once fully unlocked`, dbcField: 'DAMM v2 position fees', dbcValue: "split by liquidity, after Meteora's protocol share" },
+    { input: 'Royalty split', value: `maker earns ${100 - LP_SPLIT.partnerPermanentPct}% of the LP fee, ${LP_SPLIT.creatorPermanentPct * 100 / (LP_SPLIT.creatorPermanentPct + LP_SPLIT.partnerPermanentPct)}% once fully unlocked`, dbcField: 'DAMM v2 position fees', dbcValue: "LP fee = pool fee minus Meteora's protocol share, split by liquidity" },
   ]
 
   return { params, pricing, onChain, vesting, fields }

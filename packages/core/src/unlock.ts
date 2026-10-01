@@ -5,7 +5,7 @@ import BN from 'bn.js'
 import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY, Transaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, createBurnInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import { CpAmm, getAvailableVestingLiquidity, type PoolState, type PositionState, type VestingState } from '@meteora-ag/cp-amm-sdk'
-import { dbcClient, resalePoolAddress } from './chain'
+import { dbcClient, resolveResalePool } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
 import { BPS, type VestingSchedule } from './vesting'
@@ -173,7 +173,7 @@ export async function buildMakerUnlockTx(
   const slippageBps = opts.slippageBps ?? 100
   if (!(Number.isInteger(slippageBps) && slippageBps >= 0 && slippageBps < 10_000)) throw new Error('slippageBps must be 0..9999')
   const cpAmm = new CpAmm(connection)
-  const pool = resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint))
+  const pool = await resolveResalePool(connection, record)
   const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
   if (!poolState) return null
   const [positions, now] = await Promise.all([cpAmm.getUserPositionByPool(pool, maker), chainUnixTime(connection)])
@@ -248,7 +248,7 @@ export function backerFloor(cpAmm: CpAmm, poolState: PoolState, baseMint: Public
 
 export async function readBackerFloor(connection: Connection, record: CampaignRecord, vouchers = 1): Promise<BackerFloor | null> {
   const cpAmm = new CpAmm(connection)
-  const pool = resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint))
+  const pool = await resolveResalePool(connection, record)
   const [poolState, clock] = await Promise.all([cpAmm.fetchPoolState(pool).catch(() => null), chainClock(connection)])
   return poolState ? backerFloor(cpAmm, poolState, new PublicKey(record.baseMint), clock, vouchers) : null
 }

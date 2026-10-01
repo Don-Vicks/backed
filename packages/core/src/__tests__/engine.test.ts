@@ -1,7 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Keypair } from '@solana/web3.js'
-import { MAX_LOCK_DURATION_IN_SECONDS, calculateLockedLiquidityBpsAtTime, validateConfigParameters } from '@meteora-ag/dynamic-bonding-curve-sdk'
+import {
+  DammV2DynamicFeeMode,
+  MAX_LOCK_DURATION_IN_SECONDS,
+  MigratedCollectFeeMode,
+  MigrationFeeOption,
+  calculateLockedLiquidityBpsAtTime,
+  validateConfigParameters,
+} from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { campaignToConfig, vestingScheduleOverride, type Campaign } from '../engine'
 import { DAY, WEEK, vestingEndSec } from '../vesting'
 import { MAX_MAKER_SHARE, type TrustTierName } from '../trust'
@@ -128,4 +135,28 @@ test('the short localnet schedule still passes SDK validation', () => {
   } finally {
     for (const [k, v] of Object.entries(prev)) v === undefined ? delete process.env[k] : (process.env[k] = v)
   }
+})
+
+const withRoyalty = (resaleRoyaltyBps?: number): Campaign => ({ ...withShip(10, 60), resaleRoyaltyBps })
+
+test('resale pool: Customizable, the maker-set fee in USDC only, dynamic fee on; 300 bps by default', () => {
+  const { params, onChain } = campaignToConfig(withRoyalty(), 'C')
+  assert.equal(params.migrationFeeOption, MigrationFeeOption.Customizable)
+  assert.deepEqual(params.migratedPoolFee, { collectFeeMode: MigratedCollectFeeMode.QuoteToken, dynamicFee: DammV2DynamicFeeMode.Enabled, poolFeeBps: 300 })
+  assert.equal(params.compoundingFeeBps, 0)
+  assert.deepEqual({ option: onChain.migrationFeeOption, fee: onChain.resaleFeeBps }, { option: MigrationFeeOption.Customizable, fee: 300 })
+  assert.equal(campaignToConfig(withRoyalty(750), 'C').params.migratedPoolFee!.poolFeeBps, 750)
+})
+
+for (const tier of ['A', 'B', 'C'] as TrustTierName[]) {
+  test(`tier ${tier}: every resale royalty from 1% to 10% passes SDK validation`, () => {
+    for (const bps of [100, 101, 250, 300, 500, 999, 1000]) {
+      const { params } = campaignToConfig({ ...withRoyalty(bps), plan: { ...hoodie(0).plan, makerSharePct: MAX_MAKER_SHARE[tier] } }, tier)
+      assert.doesNotThrow(() => validateConfigParameters({ ...params, leftoverReceiver: Keypair.generate().publicKey } as any), `tier ${tier}, ${bps} bps`)
+    }
+  })
+}
+
+test('resale royalty outside 100–1000 whole bps is rejected', () => {
+  for (const bps of [0, 10, 99, 1001, 2000, 250.5, NaN]) assert.throws(() => campaignToConfig(withRoyalty(bps), 'C'), /resale royalty/, String(bps))
 })
