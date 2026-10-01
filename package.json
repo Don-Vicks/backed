@@ -1,11 +1,18 @@
 {
   "name": "preorder-curves",
   "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
+    "build": "pnpm --filter @preorder/web build",
+    "start": "pnpm --filter @preorder/web start",
     "core:wallets": "pnpm --filter @preorder/core wallets",
     "core:balance": "pnpm --filter @preorder/core balance",
     "core:lifecycle": "pnpm --filter @preorder/core lifecycle",
     "core:launch": "pnpm --filter @preorder/core launch",
-    "core:test": "pnpm --filter @preorder/core test"
+    "core:test": "pnpm --filter @preorder/core test",
+    "core:test:localnet": "pnpm --filter @preorder/core test:localnet"
   }
 }

@@ -2,6 +2,7 @@
 // raise the maker can take upfront at graduation. Devnet wallets have no history, so the signals
 // are always read from mainnet (read-only).
 import { Connection, PublicKey } from '@solana/web3.js'
+import { parseNetwork } from './network'
 
 export type TrustTierName = 'A' | 'B' | 'C'
 
@@ -118,4 +119,19 @@ export async function readTrustSignals(
 
 export async function trustTier(mainnet: Connection, wallet: PublicKey, opts: { verifiedSocial?: boolean } = {}) {
   return scoreSignals(await readTrustSignals(mainnet, wallet, opts))
+}
+
+// Localnet only: TRUST_FIXTURES='{"<wallet>": {"walletAgeDays": 800, "txCount": 900}}' stands in for
+// mainnet history so tests can reach tiers A and B. Ignored on every other network.
+export function trustFixture(wallet: string, env: NodeJS.ProcessEnv = process.env): TrustSignals | null {
+  if (!env.TRUST_FIXTURES?.trim() || parseNetwork(env.NETWORK) !== 'localnet') return null
+  let fixtures: Record<string, Partial<TrustSignals>>
+  try {
+    fixtures = JSON.parse(env.TRUST_FIXTURES)
+  } catch {
+    throw new Error('TRUST_FIXTURES is not valid JSON')
+  }
+  const f = fixtures[wallet]
+  if (!f) return null
+  return { walletAgeDays: 0, txCount: 0, fundedByFreshWallet: false, verifiedSocial: false, ...f }
 }

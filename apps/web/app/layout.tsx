@@ -3,6 +3,7 @@ import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { SiteHeader } from "@/components/site-header";
+import { BRAND } from "@preorder/core/src/brand";
 
 // Brand typography (brand.md): Instrument Serif for headlines, Inter for UI, JetBrains Mono for numbers.
 const inter = Inter({
@@ -23,7 +24,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Backed",
+  title: BRAND,
   description: "Back it early, pay less. Pre-orders for real products on a bonding curve.",
 };
 

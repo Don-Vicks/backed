@@ -6,6 +6,7 @@ import bs58 from "bs58";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { ArrowLeft, Download, Lock } from "lucide-react";
+import { ordersMessage } from "@preorder/core/src/messages";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
 import { explorerTx, short } from "@/lib/format";
@@ -18,8 +19,6 @@ type Redemption = {
   shipping: { name: string; email: string; address: string; country: string };
 };
 
-// Must match ordersMessage() in @preorder/core/src/redemptions.ts
-const ordersMessage = (pool: string, issuedAt: string) => `Backed: view orders for campaign ${pool}\nIssued at: ${issuedAt}`;
 
 function toCsv(rows: Redemption[]) {
   const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;

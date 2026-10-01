@@ -2,9 +2,14 @@
 // Spec: https://solana.com/docs/advanced/actions
 import { buildBuyTx, getCampaign, getNetwork, readCampaignLive } from "@preorder/core";
 import { PublicKey } from "@solana/web3.js";
-import { connection, finalizeForWallet } from "@/lib/server";
+import { connection, finalizeForWallet, publicOrigin } from "@/lib/server";
 
-const CHAIN_ID = { devnet: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", mainnet: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" };
+// CAIP-2 ids; a local validator has no fixed genesis hash, so it uses the Wallet Standard name.
+const CHAIN_ID = {
+  localnet: "solana:localnet",
+  devnet: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  mainnet: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+};
 
 function headers() {
   return {
@@ -25,8 +30,14 @@ export const OPTIONS = () => new Response(null, { headers: headers() });
 export async function GET(req: Request, ctx: RouteContext<"/api/actions/back/[pool]">) {
   const { pool } = await ctx.params;
   const record = getCampaign(pool);
-  const origin = new URL(req.url).origin;
   if (!record) return json({ message: "Campaign not found" }, 404);
+  let origin: string;
+  try {
+    origin = publicOrigin(req);
+  } catch (e) {
+    console.error(e);
+    return json({ message: "Something went wrong" }, 500);
+  }
   const ref = new URL(req.url).searchParams.get("ref");
   const refQs = ref ? `&ref=${encodeURIComponent(ref)}` : "";
   const base = `/api/actions/back/${pool}?amount=`;

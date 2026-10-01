@@ -54,7 +54,7 @@ export function getCampaign(pool: string): CampaignRecord | undefined {
   return listCampaigns().find((c) => c.pool === pool)
 }
 
-// Token metadata JSON served by the web app at /api/metadata/<id> (Metaplex uri).
+// Token metadata JSON served by the web app at /m/<id> (Metaplex uri; older campaigns use /api/metadata/<id>).
 export type TokenMetadata = { name: string; symbol: string; description: string; image: string }
 const metadataPath = () => path.join(repoRoot(), 'data', `metadata.${getNetwork().name}.json`)
 
@@ -66,5 +66,8 @@ export function saveMetadata(id: string, meta: TokenMetadata) {
 }
 
 export function getMetadata(id: string): TokenMetadata | undefined {
-  return fs.existsSync(metadataPath()) ? JSON.parse(fs.readFileSync(metadataPath(), 'utf8'))[id] : undefined
+  if (!fs.existsSync(metadataPath())) return undefined
+  const all = JSON.parse(fs.readFileSync(metadataPath(), 'utf8'))
+  // ids come from the URL; ignore inherited keys like __proto__
+  return Object.hasOwn(all, id) ? all[id] : undefined
 }

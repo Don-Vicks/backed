@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
+import { BRAND } from "@preorder/core/src/brand";
 import { CreateForm } from "./create-form";
 
-export const metadata: Metadata = { title: "Start a campaign · Backed" };
+export const metadata: Metadata = { title: `Start a campaign · ${BRAND}` };
 
 export default function CreatePage() {
   return (

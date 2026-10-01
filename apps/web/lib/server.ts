@@ -1,11 +1,28 @@
 import "server-only";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
-import { getConnection, scoreSignals, readTrustSignals, type TrustResult } from "@preorder/core";
+import {
+  getConnection,
+  getMetadata,
+  getNetwork,
+  readTrustSignals,
+  resolvePublicOrigin,
+  scoreSignals,
+  trustFixture,
+  trustRpcUrl,
+  type TrustResult,
+} from "@preorder/core";
 
 export const connection = (): Connection => getConnection();
 
-const mainnet = () =>
-  new Connection(process.env.MAINNET_RPC_URL || "https://api.mainnet-beta.solana.com", "confirmed");
+// Origin for URLs that leave the app (token metadata, Blink icons). Throws a ConfigError when
+// PUBLIC_BASE_URL is missing or not public https off localnet, so nothing immutable gets a bad URL.
+export const publicOrigin = (req?: Request) => resolvePublicOrigin(process.env, getNetwork().name, req?.url);
+
+export function metadataResponse(id: string) {
+  const meta = getMetadata(id);
+  if (!meta) return Response.json({ error: "Not found" }, { status: 404 });
+  return Response.json(meta, { headers: { "Cache-Control": "public, max-age=300" } });
+}
 
 // Trust lookups walk mainnet history; cache them for 10 minutes per wallet.
 const trustCache = new Map<string, { at: number; result: TrustResult }>();
@@ -13,7 +30,11 @@ export async function trustFor(wallet: string, verifiedSocial = false): Promise<
   const key = `${wallet}:${verifiedSocial}`;
   const hit = trustCache.get(key);
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.result;
-  const result = scoreSignals(await readTrustSignals(mainnet(), new PublicKey(wallet), { verifiedSocial }));
+  const fixture = trustFixture(wallet);
+  const signals = fixture
+    ? { ...fixture, verifiedSocial: fixture.verifiedSocial || verifiedSocial }
+    : await readTrustSignals(new Connection(trustRpcUrl(), "confirmed"), new PublicKey(wallet), { verifiedSocial });
+  const result = scoreSignals(signals);
   trustCache.set(key, { at: Date.now(), result });
   return result;
 }
