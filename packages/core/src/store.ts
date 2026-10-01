@@ -53,7 +53,7 @@ export type PendingRecord = { record: CampaignRecord; createdAtMs: number }
 
 export function savePending(record: CampaignRecord, now = Date.now()) {
   transaction((d) => {
-    d.prepare('DELETE FROM pending WHERE created_at < ?').run(now - PENDING_TTL_MS)
+    prunePending(now - PENDING_TTL_MS)
     d.prepare('INSERT INTO pending (pool, created_at, data) VALUES (?, ?, ?) ON CONFLICT(pool) DO UPDATE SET created_at = excluded.created_at, data = excluded.data').run(
       record.pool,
       now,
@@ -77,6 +77,29 @@ export function listPending(): PendingRecord[] {
 
 export function deletePending(pool: string) {
   db().prepare('DELETE FROM pending WHERE pool = ?').run(pool)
+}
+
+// The /m/<id> (or older /api/metadata/<id>) metadata row a campaign's uri points at.
+export const metadataIdOf = (record: CampaignRecord) => /\/(?:m|api\/metadata)\/([^/?#]+)$/.exec(record.campaign?.uri ?? '')?.[1]
+
+// Drops a build that never landed together with the metadata saved for it (unless a listed campaign
+// uses it). Only for builds whose create transaction can no longer land.
+export function expirePending(pool: string) {
+  transaction((d) => {
+    const record = getPending(pool)
+    deletePending(pool)
+    const id = record && metadataIdOf(record)
+    if (id && !getCampaign(pool)) d.prepare('DELETE FROM metadata WHERE id = ?').run(id)
+  })
+}
+
+// Expires every pending row created before a time (and its metadata). Returns how many.
+export function prunePending(beforeMs: number): number {
+  return transaction((d) => {
+    const pools = (d.prepare('SELECT pool FROM pending WHERE created_at < ?').all(beforeMs) as { pool: string }[]).map((r) => r.pool)
+    for (const pool of pools) expirePending(pool)
+    return pools.length
+  })
 }
 
 export function takePending(pool: string): CampaignRecord | undefined {
@@ -129,6 +152,11 @@ export function takeRateToken(key: string, capacity: number, refillPerSec: numbe
   })
 }
 
+// A bucket untouched this long has refilled for any sane limit, so dropping it changes nothing.
+export function pruneRate(olderThanMs: number, now = Date.now()): number {
+  return Number(db().prepare('DELETE FROM rate WHERE updated_at < ?').run(now - olderThanMs).changes)
+}
+
 export function recordFaucetClaim(wallet: string, ip: string | null, now = Date.now()) {
   db().prepare('INSERT INTO faucet_claims (wallet, ip, claimed_at) VALUES (?, ?, ?)').run(wallet, ip, now)
 }
@@ -146,4 +174,20 @@ export function countFaucetClaims(sinceMs: number, by: { wallet?: string; ip?: s
     args.push(by.ip)
   }
   return (db().prepare(`SELECT COUNT(*) AS n FROM faucet_claims WHERE ${where.join(' AND ')}`).get(...args) as { n: number }).n
+}
+
+export function pruneFaucetClaims(olderThanMs: number, now = Date.now()): number {
+  return Number(db().prepare('DELETE FROM faucet_claims WHERE claimed_at < ?').run(now - olderThanMs).changes)
+}
+
+// Housekeeping for the reconcile job: pending rows past their TTL (with their metadata), idle rate
+// buckets after a day, faucet claims after 30 days (longer than any faucet window).
+export const RATE_RETENTION_MS = 24 * 60 * 60_000
+export const FAUCET_RETENTION_MS = 30 * 24 * 60 * 60_000
+export function pruneStore(now = Date.now()) {
+  return {
+    pending: prunePending(now - PENDING_TTL_MS),
+    rate: pruneRate(RATE_RETENTION_MS, now),
+    faucetClaims: pruneFaucetClaims(FAUCET_RETENTION_MS, now),
+  }
 }

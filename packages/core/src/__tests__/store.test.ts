@@ -3,16 +3,23 @@ import assert from 'node:assert/strict'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { closeDb, db, dbPath, MIGRATIONS } from '../db'
+import crypto from 'crypto'
+import { closeDb, dataDir as dataDir_, db, dbPath, getMeta, legacyPlaintextFiles, MIGRATIONS, storeDurability, transaction } from '../db'
+import { repoRoot } from '../paths'
 import {
+  FAUCET_RETENTION_MS,
   PENDING_TTL_MS,
+  RATE_RETENTION_MS,
   countFaucetClaims,
+  expirePending,
   getCampaign,
   getMetadata,
   getPending,
   listCampaigns,
   listPending,
   promotePending,
+  prunePending,
+  pruneStore,
   recordFaucetClaim,
   saveCampaign,
   saveMetadata,
@@ -134,12 +141,43 @@ test('redemptions: one per burn signature, shipping sealed at rest and opened fo
   assert.ok(!file.includes('Analytical'), 'no plaintext address in the database file')
 })
 
-test('redemptions: a ciphertext moved to another row does not open', () => {
+test('redemptions: a ciphertext moved to another row does not open, and the other rows still list', () => {
   saveRedemption(redemption('S1'))
   saveRedemption(redemption('S2'))
   const s1 = db().prepare('SELECT shipping_ct FROM redemptions WHERE signature = ?').get('S1') as { shipping_ct: string }
   db().prepare('UPDATE redemptions SET shipping_ct = ? WHERE signature = ?').run(s1.shipping_ct, 'S2')
-  assert.throws(() => listRedemptions('P1'), /Cannot decrypt/)
+  const rows = listRedemptions('P1')
+  assert.equal(rows.length, 2)
+  const bad = rows.find((r) => r.signature === 'S2')!
+  assert.equal(bad.shipping, null)
+  assert.match(bad.error!, /Cannot decrypt/)
+  assert.deepEqual(rows.find((r) => r.signature === 'S1')!.shipping, redemption('S1').shipping)
+})
+
+test('redemptions: setting SHIPPING_KEY later, and rotating it, keeps every order readable', () => {
+  const env = { ...process.env }
+  try {
+    delete process.env.SHIPPING_KEY
+    delete process.env.SHIPPING_KEY_PREVIOUS
+    saveRedemption(redemption('S1')) // dev key
+    const first = crypto.randomBytes(32).toString('hex')
+    process.env.SHIPPING_KEY = first
+    saveRedemption(redemption('S2'))
+    assert.deepEqual(listRedemptions('P1').map((r) => r.shipping?.name), ['Ada Lovelace', 'Ada Lovelace'])
+    process.env.SHIPPING_KEY = crypto.randomBytes(32).toString('base64')
+    process.env.SHIPPING_KEY_PREVIOUS = first
+    saveRedemption(redemption('S3'))
+    assert.ok(listRedemptions('P1').every((r) => r.shipping?.name === 'Ada Lovelace'))
+    // Without the previous key only the row it sealed is unreadable.
+    delete process.env.SHIPPING_KEY_PREVIOUS
+    const rows = listRedemptions('P1')
+    assert.deepEqual(rows.filter((r) => !r.shipping).map((r) => r.signature), ['S2'])
+  } finally {
+    process.env.SHIPPING_KEY = env.SHIPPING_KEY
+    process.env.SHIPPING_KEY_PREVIOUS = env.SHIPPING_KEY_PREVIOUS
+    if (env.SHIPPING_KEY === undefined) delete process.env.SHIPPING_KEY
+    if (env.SHIPPING_KEY_PREVIOUS === undefined) delete process.env.SHIPPING_KEY_PREVIOUS
+  }
 })
 
 test('legacy JSON files are imported once on first open and renamed', () => {
@@ -161,11 +199,124 @@ test('legacy JSON files are imported once on first open and renamed', () => {
   assert.ok(fs.existsSync(path.join(dataDir, 'campaigns.localnet.json.imported')))
   assert.ok(!fs.existsSync(path.join(dataDir, 'campaigns.localnet.json')))
   assert.ok(fs.existsSync(path.join(dataDir, 'campaigns.devnet.json')))
+  // Plaintext shipping data does not outlive the import.
+  assert.deepEqual(fs.readdirSync(dataDir).filter((f) => f.startsWith('redemptions')), [])
+  assert.deepEqual(legacyPlaintextFiles(), [])
+  const report = JSON.parse(getMeta('legacy_json_import')!) as { files: { file: string; rows: number }[] }
+  assert.deepEqual(report.files.map((f) => [f.file, f.rows]), [['campaigns.localnet.json', 2], ['pending.localnet.json', 1], ['metadata.localnet.json', 1], ['redemptions.localnet.json', 1]])
 
   // A file that shows up later is not imported again (the import ran once).
   fs.writeFileSync(path.join(dataDir, 'campaigns.localnet.json'), JSON.stringify([record('LATE')]))
   closeDb()
   assert.equal(getCampaign('LATE'), undefined)
+})
+
+test('a torn or invalid legacy file never takes the store down', () => {
+  const dataDir = process.env.DATA_DIR!
+  fs.mkdirSync(dataDir, { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'campaigns.localnet.json'), '[{"pool":"x"') // torn write
+  fs.writeFileSync(path.join(dataDir, 'pending.localnet.json'), JSON.stringify([{ nope: 1 }, record('PEND')]))
+  const { units: _, ...noUnits } = redemption('RS1')
+  fs.writeFileSync(path.join(dataDir, 'redemptions.localnet.json'), JSON.stringify([noUnits, redemption('RS2', 'LEGACY')]))
+  const errors: unknown[] = []
+  const error = console.error
+  console.error = (...args: unknown[]) => void errors.push(args.join(' '))
+  try {
+    assert.deepEqual(listCampaigns(), [])
+    saveCampaign(record('NEW'))
+  } finally {
+    console.error = error
+  }
+  assert.ok(fs.existsSync(path.join(dataDir, 'campaigns.localnet.json.failed')))
+  assert.equal(getPending('PEND')?.pool, 'PEND', 'valid rows of a file with a bad row are imported')
+  assert.deepEqual(listRedemptions('LEGACY').map((r) => r.signature), ['RS2'])
+  // A redemptions file with a skipped row is kept (renamed) for repair, and /api/status flags it.
+  assert.deepEqual(legacyPlaintextFiles(), ['redemptions.localnet.json.failed'])
+  assert.ok(errors.some((e) => String(e).includes('campaigns.localnet.json')), 'the log names the file')
+  assert.ok(errors.some((e) => /redemptions\.localnet\.json, row 0: units/.test(String(e))), 'and the row')
+})
+
+test('legacy redemptions wait for a usable SHIPPING_KEY on mainnet; the store opens meanwhile', () => {
+  const env = { ...process.env }
+  const error = console.error
+  try {
+    process.env.NETWORK = 'mainnet'
+    delete process.env.SHIPPING_KEY
+    const dataDir = process.env.DATA_DIR!
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(path.join(dataDir, 'campaigns.mainnet.json'), JSON.stringify([record('M1')]))
+    fs.writeFileSync(path.join(dataDir, 'redemptions.mainnet.json'), JSON.stringify([redemption('RS1', 'M1')]))
+    console.error = () => {}
+    assert.equal(getCampaign('M1')?.pool, 'M1')
+    assert.ok(fs.existsSync(path.join(dataDir, 'redemptions.mainnet.json')), 'left in place')
+    closeDb()
+    process.env.SHIPPING_KEY = crypto.randomBytes(32).toString('hex')
+    assert.equal(listRedemptions('M1')[0].shipping?.name, 'Ada Lovelace', 'imported on the next open')
+    assert.ok(!fs.existsSync(path.join(dataDir, 'redemptions.mainnet.json')))
+  } finally {
+    console.error = error
+    closeDb()
+    process.env.NETWORK = env.NETWORK
+    if (env.SHIPPING_KEY === undefined) delete process.env.SHIPPING_KEY
+    else process.env.SHIPPING_KEY = env.SHIPPING_KEY
+  }
+})
+
+test('DATA_DIR: a trailing slash is the same directory, a relative one is taken from the repo root', () => {
+  const dataDir = process.env.DATA_DIR!
+  fs.mkdirSync(dataDir, { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'campaigns.localnet.json'), JSON.stringify([record('L1')]))
+  process.env.DATA_DIR = `${dataDir}/`
+  assert.equal(getCampaign('L1')?.pool, 'L1')
+  assert.equal(dataDir_({ DATA_DIR: 'store' }), path.join(repoRoot(), 'store'))
+  assert.equal(dataDir_({ DATA_DIR: '/abs/store' }), '/abs/store')
+})
+
+test('durability: on Railway the store must sit under the attached volume', () => {
+  const base = { NETWORK: 'devnet', DATA_DIR: '/app/data' }
+  assert.equal(storeDurability({ ...base, RAILWAY_VOLUME_MOUNT_PATH: '/app/data' }).durable, true)
+  assert.equal(storeDurability({ ...base, RAILWAY_VOLUME_MOUNT_PATH: '/data' }).durable, false)
+  assert.equal(storeDurability({ ...base, RAILWAY_ENVIRONMENT: 'production' }).durable, false, 'DATA_DIR set but no volume')
+  assert.equal(storeDurability({ NETWORK: 'devnet', DATA_DIR: '/app/data-2', RAILWAY_VOLUME_MOUNT_PATH: '/app/data' }).durable, false)
+  assert.equal(storeDurability({ NETWORK: 'devnet', DATA_DIR: '/app/data/db', RAILWAY_VOLUME_MOUNT_PATH: '/app/data' }).durable, true)
+  assert.equal(storeDurability(base).durable, true)
+  assert.equal(storeDurability({ NETWORK: 'devnet' }).durable, false)
+  assert.equal(storeDurability({ NETWORK: 'localnet' }).durable, true)
+})
+
+test('transaction: an error SQLite already rolled back for still surfaces', () => {
+  assert.throws(
+    () =>
+      transaction((d) => {
+        d.exec('ROLLBACK')
+        throw new Error('original')
+      }),
+    /original/,
+  )
+  saveCampaign(record('P1')) // the handle is still usable
+})
+
+test('expiring a pending build drops its metadata; pruning keeps fresh rows', () => {
+  const t0 = Date.now()
+  saveMetadata('dead', { name: 'Mug', symbol: 'MUG', description: '', image: '' })
+  saveMetadata('live', { name: 'Mug', symbol: 'MUG', description: '', image: '' })
+  const uri = (id: string) => ({ ...record('x').campaign, uri: `https://backed.test/m/${id}` })
+  savePending(record('DEAD', { campaign: uri('dead') }), t0 - PENDING_TTL_MS - 1)
+  savePending(record('LIVE', { campaign: uri('live') }), t0)
+  assert.equal(getPending('DEAD'), undefined, 'pruned on the next save')
+  assert.equal(getMetadata('dead'), undefined)
+  assert.ok(getMetadata('live'))
+  expirePending('LIVE')
+  assert.equal(getMetadata('live'), undefined)
+  assert.equal(prunePending(t0), 0)
+
+  takeRateToken('old', 1, 1, t0 - RATE_RETENTION_MS - 1)
+  takeRateToken('new', 1, 1, t0)
+  recordFaucetClaim('W1', null, t0 - FAUCET_RETENTION_MS - 1)
+  recordFaucetClaim('W2', null, t0)
+  assert.deepEqual(pruneStore(t0), { pending: 0, rate: 1, faucetClaims: 1 })
+  assert.equal(countFaucetClaims(0), 1)
+  assert.equal(takeRateToken('new', 1, 0, t0), false, 'a live bucket keeps its state')
 })
 
 test('the database survives reopening (another process, a restart)', () => {

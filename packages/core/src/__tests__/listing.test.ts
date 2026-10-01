@@ -7,7 +7,7 @@ import bs58 from 'bs58'
 import { Connection, Keypair, PublicKey } from '@solana/web3.js'
 import { DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { closeDb } from '../db'
-import { getCampaign, getPending, listCampaigns, savePending, type CampaignRecord } from '../store'
+import { getCampaign, getMetadata, getPending, listCampaigns, saveMetadata, savePending, type CampaignRecord } from '../store'
 import { ListingError, confirmListing, findCreateSignature, reconcilePending, verifyCreateTx } from '../listing'
 
 beforeEach(() => {
@@ -25,9 +25,17 @@ function fakeChain() {
   const pools = new Set<string>()
   const txs = new Map<string, FakeTx>()
   const history = new Map<string, { signature: string; err: unknown }[]>() // newest first, like the RPC
+  const calls = { getAccountInfo: 0, getSignaturesForAddress: 0, getParsedTransaction: 0 }
   const conn = {
-    getAccountInfo: async (key: PublicKey) => (pools.has(key.toBase58()) ? { owner: DYNAMIC_BONDING_CURVE_PROGRAM_ID } : null),
+    getAccountInfo: async (key: PublicKey) => {
+      calls.getAccountInfo++
+      return pools.has(key.toBase58()) ? { owner: DYNAMIC_BONDING_CURVE_PROGRAM_ID } : null
+    },
+    getSignatureStatuses: async (sigs: string[]) => ({
+      value: sigs.map((s) => (txs.has(s) ? { err: txs.get(s)!.err ?? null, confirmationStatus: 'confirmed' } : null)),
+    }),
     getParsedTransaction: async (s: string) => {
+      calls.getParsedTransaction++
       const tx = txs.get(s)
       if (!tx) return null
       return {
@@ -35,7 +43,10 @@ function fakeChain() {
         transaction: { message: { accountKeys: tx.keys.map((k) => ({ pubkey: new PublicKey(k.address), signer: k.signer })) } },
       }
     },
-    getSignaturesForAddress: async (key: PublicKey) => history.get(key.toBase58()) ?? [],
+    getSignaturesForAddress: async (key: PublicKey) => {
+      calls.getSignaturesForAddress++
+      return history.get(key.toBase58()) ?? []
+    },
   }
   // A create transaction: lands the pool, signed by the maker.
   const land = (r: CampaignRecord, over: Partial<FakeTx> = {}) => {
@@ -45,7 +56,7 @@ function fakeChain() {
     history.set(r.pool, [{ signature: sig(), err: null }, { signature: s, err: null }])
     return s
   }
-  return { conn: conn as unknown as Connection, land, pools, txs, history }
+  return { conn: conn as unknown as Connection, land, pools, txs, history, calls }
 }
 
 const record = (): CampaignRecord => {
@@ -108,11 +119,40 @@ test('confirm rejects unknown pools and bad or foreign signatures', async () => 
   savePending(r)
   chain.land(r)
   await rejects(confirmListing(chain.conn, r.pool, 'not-a-signature', { waitMs: 0 }), 400, /not a transaction signature/)
-  await rejects(confirmListing(chain.conn, r.pool, sig(), { waitMs: 0 }), 409, /not found yet/) // unknown signature: null, never ok
   const other = record()
   const foreign = chain.land(other)
   await rejects(confirmListing(chain.conn, r.pool, foreign, { waitMs: 0 }), 400, /did not create this campaign/)
   assert.equal(getCampaign(r.pool), undefined)
+})
+
+test('a junk signature is rejected before any wait; an unknown one falls back to the create tx on-chain', async () => {
+  const chain = fakeChain()
+  const r = record()
+  savePending(r)
+  await rejects(confirmListing(chain.conn, r.pool, 'junk', { waitMs: 5000 }), 400, /not a transaction signature/)
+  assert.equal(chain.calls.getAccountInfo, 0)
+  const s = chain.land(r)
+  const listed = await confirmListing(chain.conn, r.pool, sig(), { waitMs: 5000 })
+  assert.equal(listed.record.createSignature, s, 'listed with the real create signature')
+  assert.equal(chain.calls.getParsedTransaction, 1, 'the made-up signature is never polled')
+})
+
+test('concurrent confirms of one pool share a single wait', async () => {
+  const chain = fakeChain()
+  const r = record()
+  savePending(r)
+  let s = ''
+  setTimeout(() => (s = chain.land(r)), 1500)
+  const results = await Promise.all([
+    confirmListing(chain.conn, r.pool, undefined, { waitMs: 5000 }),
+    confirmListing(chain.conn, r.pool, undefined, { waitMs: 5000 }),
+    confirmListing(chain.conn, r.pool, sig(), { waitMs: 5000 }),
+    confirmListing(chain.conn, r.pool, sig(), { waitMs: 5000 }),
+  ])
+  assert.ok(results.every((x) => x.record.createSignature === s))
+  assert.ok(chain.calls.getAccountInfo <= 4, `one poll for all waiters (got ${chain.calls.getAccountInfo} calls)`)
+  assert.equal(results.filter((x) => !x.alreadyListed).length >= 1, true)
+  assert.equal(listCampaigns().length, 1)
 })
 
 test('verifyCreateTx requires success and the maker as signer', async () => {
@@ -155,4 +195,16 @@ test('reconcile lists landed pools, expires dead ones after the grace period, ke
   assert.ok(getCampaign(landed.pool)?.createSignature)
   assert.equal(getPending(dead.pool), undefined)
   assert.ok(getPending(fresh.pool))
+})
+
+test('reconcile drops the token metadata of a build that never landed', async () => {
+  const chain = fakeChain()
+  const now = Date.now()
+  const dead = record()
+  dead.campaign = { ...dead.campaign, uri: 'https://backed.test/m/deadmeta' }
+  saveMetadata('deadmeta', { name: 'Mug', symbol: 'MUG', description: '', image: '' })
+  savePending(dead, now - 60 * 60_000)
+  const result = await reconcilePending(chain.conn, { now })
+  assert.deepEqual(result.expired, [dead.pool])
+  assert.equal(getMetadata('deadmeta'), undefined)
 })

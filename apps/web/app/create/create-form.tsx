@@ -132,14 +132,22 @@ export function CreateForm() {
     setLaunching(true);
     try {
       const { pool, ...built } = await api<BuiltTx & { pool: string }>("/api/campaigns", { campaign, maker: publicKey.toBase58(), verifiedSocial });
-      // Remembered before the wallet prompt: if the send lands but this page loses track, the banner finishes it.
-      let pending: PendingLaunch = { pool, name: campaign.name, at: Date.now() };
       autoFinished.current = pool;
-      setPendingLaunch(pending);
+      // Remembered as soon as the RPC accepts the transaction: if it lands but this page loses track, the
+      // banner finishes it. A rejected prompt or a failed preflight never gets here, so nothing is left behind.
+      const sent = { current: false };
+      let pending: PendingLaunch;
       try {
-        pending = { ...pending, signature: await signAndSend(built, "Launch campaign") };
+        const signature = await signAndSend(built, "Launch campaign", {
+          onSent: (signature) => {
+            sent.current = true;
+            setPendingLaunch({ pool, signature, name: campaign.name, at: Date.now() });
+          },
+        });
+        pending = { pool, signature, name: campaign.name, at: Date.now() };
       } catch (e) {
-        if (e instanceof Error && /cancelled|rejected/i.test(e.message)) setPendingLaunch(null); // never sent
+        // Landed but failed: the pool was never created. A confirm timeout keeps it (it may still land).
+        if (sent.current && e instanceof Error && /failed on-chain/i.test(e.message)) setPendingLaunch(null);
         throw e;
       }
       setPendingLaunch(pending);

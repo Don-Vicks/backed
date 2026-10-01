@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'crypto'
-import { openJson, parseShippingKey, sealJson, shippingKey } from '../seal'
+import { openJson, openJsonAny, parseShippingKey, sealJson, shippingKey, shippingKeys, shippingKeyStatus } from '../seal'
 
 const key = crypto.randomBytes(32)
 const shipping = { name: 'Ada', email: 'ada@example.com', address: '12 Analytical St', country: 'UK' }
@@ -39,4 +39,38 @@ test('mainnet requires SHIPPING_KEY; devnet and localnet fall back to distinct d
   assert.equal(dev.length, 32)
   assert.ok(!dev.equals(local))
   assert.ok(dev.equals(shippingKey({ NETWORK: 'devnet' })), 'stable across restarts')
+})
+
+test('shippingKeyStatus: a malformed key or a missing mainnet key is unusable (health fails)', () => {
+  assert.deepEqual(shippingKeyStatus({ NETWORK: 'devnet', SHIPPING_KEY: key.toString('hex') }), { ok: true, configured: true, usable: true })
+  const bad = shippingKeyStatus({ NETWORK: 'devnet', SHIPPING_KEY: `${key.toString('hex')}x` })
+  assert.equal(bad.usable, false)
+  assert.equal(bad.ok, false)
+  assert.match(bad.error!, /32 bytes/)
+  assert.equal(shippingKeyStatus({ NETWORK: 'mainnet' }).usable, false)
+  assert.equal(shippingKeyStatus({ NETWORK: 'localnet', SHIPPING_KEY: 'short' }).usable, false)
+})
+
+test('shippingKeyStatus: the public dev key is not ok on a deployed devnet, fine locally', () => {
+  assert.deepEqual(shippingKeyStatus({ NETWORK: 'devnet' }), { ok: true, configured: false, usable: true })
+  assert.deepEqual(shippingKeyStatus({ NETWORK: 'localnet', PUBLIC_BASE_URL: 'https://x.test' }), { ok: true, configured: false, usable: true })
+  const deployed = shippingKeyStatus({ NETWORK: 'devnet', RAILWAY_PUBLIC_DOMAIN: 'x.up.railway.app' })
+  assert.equal(deployed.ok, false)
+  assert.equal(deployed.usable, true, 'still serves')
+  const prev = shippingKeyStatus({ NETWORK: 'devnet', SHIPPING_KEY: key.toString('hex'), SHIPPING_KEY_PREVIOUS: 'c2hvcnQ=' })
+  assert.equal(prev.ok, false)
+  assert.equal(prev.usable, true)
+  assert.match(prev.error!, /SHIPPING_KEY_PREVIOUS/)
+})
+
+test('shippingKeys: current, previous, then the dev key off mainnet; openJsonAny takes the first that fits', () => {
+  const old = crypto.randomBytes(32)
+  const keys = shippingKeys({ NETWORK: 'devnet', SHIPPING_KEY: key.toString('hex'), SHIPPING_KEY_PREVIOUS: ` ${old.toString('base64')} ,bad` })
+  assert.equal(keys.length, 3)
+  assert.ok(keys[0].equals(key) && keys[1].equals(old) && keys[2].equals(shippingKey({ NETWORK: 'devnet' })))
+  assert.equal(shippingKeys({ NETWORK: 'mainnet', SHIPPING_KEY: key.toString('hex') }).length, 1)
+  assert.equal(shippingKeys({ NETWORK: 'devnet' }).length, 1, 'no duplicate dev key')
+  assert.deepEqual(openJsonAny(sealJson(shipping, 'a', old), 'a', keys), shipping)
+  assert.throws(() => openJsonAny(sealJson(shipping, 'a', crypto.randomBytes(32)), 'a', keys), /Cannot decrypt/)
+  assert.throws(() => openJsonAny(sealJson(shipping, 'a', key), 'a', []), /No SHIPPING_KEY/)
 })

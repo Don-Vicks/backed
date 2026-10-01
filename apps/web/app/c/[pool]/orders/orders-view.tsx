@@ -16,13 +16,18 @@ type Redemption = {
   wallet: string;
   units: number;
   createdAt: string;
-  shipping: { name: string; email: string; address: string; country: string };
+  // null: no configured key opens it (SHIPPING_KEY changed without SHIPPING_KEY_PREVIOUS).
+  shipping: { name: string; email: string; address: string; country: string } | null;
+  error?: string;
 };
 
 function toCsv(rows: Redemption[]) {
   const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
   const header = ["date", "units", "name", "email", "address", "country", "wallet", "burn_signature"];
-  const lines = rows.map((r) => [r.createdAt, r.units, r.shipping.name, r.shipping.email, r.shipping.address, r.shipping.country, r.wallet, r.signature].map(esc).join(","));
+  const lines = rows.map((r) => {
+    const s = r.shipping ?? { name: "(unreadable)", email: "", address: "", country: "" };
+    return [r.createdAt, r.units, s.name, s.email, s.address, s.country, r.wallet, r.signature].map(esc).join(",");
+  });
   return [header.join(","), ...lines].join("\n");
 }
 
@@ -97,9 +102,15 @@ export function OrdersView({ pool }: { pool: string }) {
                     <td className="px-4 py-3 whitespace-nowrap">{new Date(r.createdAt).toLocaleDateString()}</td>
                     <td className="px-4 py-3 font-mono">{r.units}</td>
                     <td className="px-4 py-3">
-                      <span className="block font-medium">{r.shipping.name}</span>
-                      <span className="block whitespace-pre-line text-muted-foreground">{r.shipping.address}, {r.shipping.country}</span>
-                      {r.shipping.email && <span className="block text-muted-foreground">{r.shipping.email}</span>}
+                      {r.shipping ? (
+                        <>
+                          <span className="block font-medium">{r.shipping.name}</span>
+                          <span className="block whitespace-pre-line text-muted-foreground">{r.shipping.address}, {r.shipping.country}</span>
+                          {r.shipping.email && <span className="block text-muted-foreground">{r.shipping.email}</span>}
+                        </>
+                      ) : (
+                        <span className="block text-destructive">Shipping details can’t be decrypted with the server’s current key. Ask the operator to set SHIPPING_KEY_PREVIOUS.</span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <a href={explorerTx(r.signature)} target="_blank" rel="noopener noreferrer" className="font-mono text-primary underline-offset-4 hover:underline">{short(r.signature, 6)}</a>

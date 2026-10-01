@@ -6,13 +6,32 @@ import path from 'path'
 import type { DatabaseSync } from 'node:sqlite'
 import { getNetwork } from './network'
 import { repoRoot } from './paths'
-import { sealJson } from './seal'
+import { sealJson, shippingKey } from './seal'
 
 export type Db = DatabaseSync
 
-// DATA_DIR holds only the database (no keys). Defaults to <repo>/data for local runs.
-export function dataDir(): string {
-  return process.env.DATA_DIR?.trim() || path.join(repoRoot(), 'data')
+// DATA_DIR holds only the database (no keys). Defaults to <repo>/data for local runs. A relative
+// DATA_DIR is taken from the repo root, so the server (cwd apps/web) and the scripts (cwd
+// packages/core) open the same file.
+export function dataDir(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.DATA_DIR?.trim()
+  return dir ? path.resolve(repoRoot(), dir) : path.join(repoRoot(), 'data')
+}
+
+// Whether the store survives a redeploy. On Railway the directory must sit on the attached volume
+// (Railway sets RAILWAY_VOLUME_MOUNT_PATH only when one is attached); elsewhere an explicit DATA_DIR
+// is taken on trust.
+export function storeDurability(env: NodeJS.ProcessEnv = process.env): { durable: boolean; reason: string } {
+  if (getNetwork(env).name === 'localnet') return { durable: true, reason: 'localnet' }
+  const dir = dataDir(env)
+  const mount = env.RAILWAY_VOLUME_MOUNT_PATH?.trim()
+  if (mount) {
+    const rel = path.relative(path.resolve(mount), dir)
+    const inside = !rel.startsWith('..') && !path.isAbsolute(rel)
+    return { durable: inside, reason: inside ? `on the volume at ${mount}` : `${dir} is outside the volume at ${mount}` }
+  }
+  if (env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID) return { durable: false, reason: 'no Railway volume attached' }
+  return env.DATA_DIR?.trim() ? { durable: true, reason: 'DATA_DIR set (volume not verified)' } : { durable: false, reason: 'DATA_DIR not set' }
 }
 
 export function dbPath(): string {
@@ -99,11 +118,17 @@ export function db(): Db {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const { DatabaseSync } = loadSqlite()
   const handle = new DatabaseSync(file)
-  handle.exec('PRAGMA busy_timeout = 5000')
-  handle.exec('PRAGMA journal_mode = WAL')
-  handle.exec('PRAGMA synchronous = FULL')
-  migrate(handle)
-  importLegacyJson(handle)
+  try {
+    handle.exec('PRAGMA busy_timeout = 5000')
+    handle.exec('PRAGMA journal_mode = WAL')
+    handle.exec('PRAGMA synchronous = FULL')
+    migrate(handle)
+    importLegacyJson(handle)
+  } catch (e) {
+    // Not cached, so the next call retries; close this handle rather than leak it.
+    handle.close()
+    throw e
+  }
   handles.set(file, handle)
   return handle
 }
@@ -127,7 +152,10 @@ export function transaction<T>(fn: (d: Db) => T, d: Db = db()): T {
     d.exec('COMMIT')
     return result
   } catch (e) {
-    d.exec('ROLLBACK')
+    // SQLite may have rolled back already (SQLITE_FULL, IOERR); keep the original error either way.
+    try {
+      if (d.isTransaction) d.exec('ROLLBACK')
+    } catch {}
     throw e
   } finally {
     depth.set(d, 0)
@@ -159,46 +187,136 @@ export function setMeta(key: string, value: string, d: Db = db()) {
 // The shipping data of a redemption is sealed to its signature.
 export const redemptionAad = (signature: string) => `redemption:${signature}`
 
-// One-time import of the JSON files the store used before (data/<kind>.<network>.json, in DATA_DIR
-// or the repo's data/). Imported files are renamed to *.imported; they still hold plaintext shipping
-// data, so delete them once the import is checked.
-function importLegacyJson(d: Db) {
-  const net = getNetwork().name
-  if (getMeta('legacy_json_import', d)) return
-  const dirs = [...new Set([dataDir(), path.join(repoRoot(), 'data')])]
-  const files = (kind: string) => dirs.map((dir) => path.join(dir, `${kind}.${net}.json`)).filter((f) => fs.existsSync(f))
-  const read = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8'))
-  const imported: string[] = []
+// One-time import of the JSON files the store used before (data/<kind>.<network>.json in DATA_DIR).
+// Each file is imported in its own transaction and each row on its own: a row that does not validate
+// is skipped and logged, a file that does not parse is renamed *.failed, and the store opens either way.
+// Imported files are renamed *.imported, except redemptions, which hold plaintext shipping details and
+// are deleted once their rows are sealed in the database (kept as *.failed if any row was skipped).
+// Without a usable SHIPPING_KEY the redemptions file is left in place and imported on a later open.
+type LegacyFileReport = { file: string; rows: number; skipped: number[]; error?: string }
+const LEGACY_KINDS = ['campaigns', 'pending', 'metadata', 'redemptions'] as const
+type LegacyKind = (typeof LEGACY_KINDS)[number]
+
+const str = (v: unknown, field: string) => {
+  if (typeof v !== 'string' || !v) throw new Error(`missing ${field}`)
+  return v
+}
+
+// Inserts one legacy row (INSERT OR IGNORE: an import retried after a crash is a no-op), or throws.
+function legacyRowImporter(t: Db, kind: LegacyKind, key: Buffer | null): (row: any, id?: string) => void {
+  if (kind === 'campaigns') {
+    const insert = t.prepare('INSERT OR IGNORE INTO campaigns (pool, config, maker, created_at, data) VALUES (?, ?, ?, ?, ?)')
+    return (r) => void insert.run(str(r?.pool, 'pool'), str(r.config, 'config'), str(r.maker, 'maker'), str(r.createdAt, 'createdAt'), JSON.stringify(r))
+  }
+  if (kind === 'pending') {
+    const insert = t.prepare('INSERT OR IGNORE INTO pending (pool, created_at, data) VALUES (?, ?, ?)')
+    return (r) => void insert.run(str(r?.pool, 'pool'), Date.parse(r.createdAt) || Date.now(), JSON.stringify(r))
+  }
+  if (kind === 'metadata') {
+    const insert = t.prepare('INSERT OR IGNORE INTO metadata (id, created_at, data) VALUES (?, ?, ?)')
+    return (meta, id) => {
+      if (!meta || typeof meta !== 'object') throw new Error('not an object')
+      insert.run(str(id, 'id'), Date.now(), JSON.stringify(meta))
+    }
+  }
+  const insert = t.prepare('INSERT OR IGNORE INTO redemptions (signature, pool, wallet, units, created_at, shipping_ct) VALUES (?, ?, ?, ?, ?, ?)')
+  return (r) => {
+    const signature = str(r?.signature, 'signature')
+    if (!Number.isSafeInteger(r.units) || r.units < 1) throw new Error('units must be a positive integer')
+    if (!r.shipping || typeof r.shipping !== 'object') throw new Error('missing shipping')
+    insert.run(signature, str(r.pool, 'pool'), str(r.wallet, 'wallet'), r.units, str(r.createdAt, 'createdAt'), sealJson(r.shipping, redemptionAad(signature), key!))
+  }
+}
+
+// Overwrites, then unlinks: the plaintext should not outlive the import on the volume.
+function shred(file: string) {
+  fs.writeFileSync(file, Buffer.alloc(fs.statSync(file).size))
+  fs.unlinkSync(file)
+}
+
+function importLegacyFile(d: Db, kind: LegacyKind, file: string, key: Buffer | null): LegacyFileReport {
+  const report: LegacyFileReport = { file: path.basename(file), rows: 0, skipped: [] }
+  let rows: [string | undefined, unknown][]
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (kind === 'metadata') {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected an object')
+      rows = Object.entries(parsed)
+    } else {
+      if (!Array.isArray(parsed)) throw new Error('expected an array')
+      rows = parsed.map((r) => [undefined, r])
+    }
+  } catch (e) {
+    if (missing(e)) return report // another process imported it first
+    report.error = e instanceof Error ? e.message : String(e)
+    console.error(`Legacy store file ${file} is unreadable (${report.error}); renamed to *.failed, not imported`)
+    ignoreMissing(() => fs.renameSync(file, `${file}.failed`))
+    return report
+  }
   transaction((t) => {
-    if (getMeta('legacy_json_import', t)) return
-    for (const file of files('campaigns')) {
-      const insert = t.prepare('INSERT OR IGNORE INTO campaigns (pool, config, maker, created_at, data) VALUES (?, ?, ?, ?, ?)')
-      for (const r of read(file)) insert.run(r.pool, r.config, r.maker, r.createdAt, JSON.stringify(r))
-      imported.push(file)
-    }
-    for (const file of files('pending')) {
-      const insert = t.prepare('INSERT OR IGNORE INTO pending (pool, created_at, data) VALUES (?, ?, ?)')
-      for (const r of read(file)) insert.run(r.pool, Date.parse(r.createdAt) || Date.now(), JSON.stringify(r))
-      imported.push(file)
-    }
-    for (const file of files('metadata')) {
-      const insert = t.prepare('INSERT OR IGNORE INTO metadata (id, created_at, data) VALUES (?, ?, ?)')
-      for (const [id, meta] of Object.entries(read(file) as Record<string, unknown>)) insert.run(id, Date.now(), JSON.stringify(meta))
-      imported.push(file)
-    }
-    for (const file of files('redemptions')) {
-      const insert = t.prepare(
-        'INSERT OR IGNORE INTO redemptions (signature, pool, wallet, units, created_at, shipping_ct) VALUES (?, ?, ?, ?, ?, ?)',
-      )
-      for (const r of read(file)) {
-        insert.run(r.signature, r.pool, r.wallet, r.units, r.createdAt, sealJson(r.shipping, redemptionAad(r.signature)))
+    const insert = legacyRowImporter(t, kind, key)
+    rows.forEach(([id, row], i) => {
+      try {
+        insert(row, id)
+        report.rows++
+      } catch (e) {
+        report.skipped.push(i)
+        console.error(`Legacy store file ${file}, row ${i}${id ? ` (${id})` : ''}: ${e instanceof Error ? e.message : String(e)}; skipped`)
       }
-      imported.push(file)
-    }
-    setMeta('legacy_json_import', JSON.stringify({ at: new Date().toISOString(), files: imported.map((f) => path.basename(f)) }), t)
+    })
   }, d)
-  for (const file of imported) fs.renameSync(file, `${file}.imported`)
-  if (imported.length) console.warn(`Imported ${imported.length} legacy JSON store file(s) into ${dbPath()}; the *.imported copies can be deleted`)
+  ignoreMissing(() => {
+    if (kind !== 'redemptions') fs.renameSync(file, `${file}.imported`)
+    else if (report.skipped.length) fs.renameSync(file, `${file}.failed`)
+    else shred(file)
+  })
+  return report
+}
+
+const missing = (e: unknown) => (e as NodeJS.ErrnoException)?.code === 'ENOENT'
+function ignoreMissing(fn: () => void) {
+  try {
+    fn()
+  } catch (e) {
+    if (!missing(e)) throw e
+  }
+}
+
+function importLegacyJson(d: Db) {
+  if (getMeta('legacy_json_import', d)) return
+  const net = getNetwork().name
+  const reports: LegacyFileReport[] = []
+  let deferred = false
+  for (const kind of LEGACY_KINDS) {
+    const file = path.join(dataDir(), `${kind}.${net}.json`)
+    if (!fs.existsSync(file)) continue
+    let key: Buffer | null = null
+    if (kind === 'redemptions') {
+      try {
+        key = shippingKey()
+      } catch (e) {
+        deferred = true
+        console.error(`Legacy ${file} not imported yet: ${e instanceof Error ? e.message : String(e)}`)
+        continue
+      }
+    }
+    reports.push(importLegacyFile(d, kind, file, key))
+  }
+  if (deferred) return
+  transaction((t) => {
+    if (!getMeta('legacy_json_import', t)) setMeta('legacy_json_import', JSON.stringify({ at: new Date().toISOString(), files: reports }), t)
+  }, d)
+  if (reports.length) console.warn(`Imported ${reports.length} legacy JSON store file(s) into ${dbPath()}: ${JSON.stringify(reports)}`)
+}
+
+// Plaintext shipping details left on the volume: a redemptions JSON file of any network, or its
+// *.imported / *.failed copy. /api/status reports them.
+export function legacyPlaintextFiles(): string[] {
+  try {
+    return fs.readdirSync(dataDir()).filter((f) => /^redemptions\.[a-z]+\.json(\.[a-z]+)?$/.test(f))
+  } catch {
+    return []
+  }
 }
 
 // For /api/status: proves the file is writable (a real write transaction), and counts rows.

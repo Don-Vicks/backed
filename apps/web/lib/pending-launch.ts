@@ -2,7 +2,7 @@
 
 import { useMemo, useSyncExternalStore } from "react";
 
-// A launch the wallet may have sent but the server has not listed yet. Kept in localStorage so a
+// A launch whose transaction was sent but the server has not listed yet. Kept in localStorage so a
 // reload, a closed tab or a failed confirm can still finish the listing instead of launching twice.
 export type PendingLaunch = { pool: string; signature?: string; name: string; at: number };
 

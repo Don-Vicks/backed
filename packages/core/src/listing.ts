@@ -4,7 +4,7 @@
 import bs58 from 'bs58'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-curve-sdk'
-import { deletePending, getCampaign, getPending, listPending, promotePending, type CampaignRecord } from './store'
+import { expirePending, getCampaign, getPending, listPending, promotePending, type CampaignRecord } from './store'
 
 // status: the HTTP status the web app returns; retry: the client should try again shortly.
 export class ListingError extends Error {
@@ -21,8 +21,9 @@ export async function poolExists(connection: Connection, pool: string): Promise<
   return !!info && info.owner.toBase58() === DBC
 }
 
-// The pool's oldest successful transaction is the one that created it.
-export async function findCreateSignature(connection: Connection, pool: string, maxPages = 10): Promise<string | null> {
+// The pool's oldest successful transaction is the one that created it. One page (1000 signatures)
+// covers a pool that is at most a day old; the reconcile job may look further.
+export async function findCreateSignature(connection: Connection, pool: string, maxPages = 1): Promise<string | null> {
   let before: string | undefined
   let oldest: string | null = null
   for (let page = 0; page < maxPages; page++) {
@@ -34,15 +35,17 @@ export async function findCreateSignature(connection: Connection, pool: string, 
   return oldest
 }
 
+function isSignature(signature: string) {
+  try {
+    return bs58.decode(signature).length === 64
+  } catch {
+    return false
+  }
+}
+
 // The transaction must have succeeded, touched the pool through the DBC program and be signed by the maker.
 export async function verifyCreateTx(connection: Connection, record: CampaignRecord, signature: string, waitMs = 0): Promise<void> {
-  let bytes: Uint8Array
-  try {
-    bytes = bs58.decode(signature)
-  } catch {
-    bytes = new Uint8Array()
-  }
-  if (bytes.length !== 64) throw new ListingError('signature is not a transaction signature', 400)
+  if (!isSignature(signature)) throw new ListingError('signature is not a transaction signature', 400)
   const deadline = Date.now() + waitMs
   let tx = await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' })
   while (!tx && Date.now() < deadline) {
@@ -57,30 +60,64 @@ export async function verifyCreateTx(connection: Connection, record: CampaignRec
   if (!has(record.maker, true)) throw new ListingError('The create transaction is not signed by the maker', 400)
 }
 
+// Concurrent callers with the same key share one run (the confirm route takes no credentials, so
+// parallel requests must not multiply RPC calls).
+const inflight: Map<string, Promise<unknown>> = ((globalThis as { __preorderListing?: Map<string, Promise<unknown>> }).__preorderListing ??= new Map())
+function singleFlight<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const running = inflight.get(key)
+  if (running) return running as Promise<T>
+  const started = run().finally(() => inflight.delete(key))
+  inflight.set(key, started)
+  return started
+}
+
+// Polls once a second until the pool exists or the deadline passes; one poll per pool however many wait.
+function waitForPool(connection: Connection, pool: string, waitMs: number): Promise<boolean> {
+  return singleFlight(`pool:${pool}`, async () => {
+    const deadline = Date.now() + waitMs
+    while (!(await poolExists(connection, pool))) {
+      if (Date.now() >= deadline) return false
+      await sleep(1000)
+    }
+    return true
+  })
+}
+
 // Idempotent: a listed campaign returns as is. Otherwise waits up to waitMs for the pool to appear
-// (the server's RPC can lag the wallet's), verifies the create transaction (found on-chain when the
-// client has no signature), then lists it and drops the pending row.
-export async function confirmListing(
+// (the server's RPC can lag the wallet's), verifies the create transaction, then lists it and drops
+// the pending row. The client's signature is only a hint: one the RPC does not know (or that failed)
+// is replaced by the pool's create transaction found on-chain (maxPages of signatures), so a made-up
+// signature costs a few calls and never a poll.
+export function confirmListing(
   connection: Connection,
   pool: string,
   signature?: string,
-  { waitMs = 15_000 }: { waitMs?: number } = {},
+  { waitMs = 15_000, maxPages = 1 }: { waitMs?: number; maxPages?: number } = {},
 ): Promise<{ record: CampaignRecord; alreadyListed: boolean }> {
-  const listed = getCampaign(pool)
-  if (listed) return { record: listed, alreadyListed: true }
-  const pending = getPending(pool)
-  if (!pending) throw new ListingError('Unknown campaign', 404)
-  const deadline = Date.now() + waitMs
-  while (!(await poolExists(connection, pool))) {
-    if (Date.now() >= deadline) throw new ListingError('Pool not found on-chain yet; try again in a few seconds', 409, true)
-    await sleep(1000)
-  }
-  const sig = signature || (await findCreateSignature(connection, pool))
-  if (!sig) throw new ListingError('Create transaction not found yet; try again in a few seconds', 409, true)
-  await verifyCreateTx(connection, pending, sig, Math.max(0, deadline - Date.now()))
-  const record = promotePending(pool, sig)
-  if (!record) throw new ListingError('Unknown campaign', 404)
-  return { record, alreadyListed: false }
+  return singleFlight(`confirm:${pool}:${signature ?? ''}`, async () => {
+    const listed = getCampaign(pool)
+    if (listed) return { record: listed, alreadyListed: true }
+    const pending = getPending(pool)
+    if (!pending) throw new ListingError('Unknown campaign', 404)
+    if (signature && !isSignature(signature)) throw new ListingError('signature is not a transaction signature', 400)
+    const deadline = Date.now() + waitMs
+    if (!(await waitForPool(connection, pool, waitMs))) {
+      throw new ListingError('Pool not found on-chain yet; try again in a few seconds', 409, true)
+    }
+    let sig = signature
+    if (sig) {
+      const status = (await connection.getSignatureStatuses([sig])).value[0]
+      if (!status || status.err) sig = undefined
+    }
+    sig ||= (await findCreateSignature(connection, pool, maxPages)) ?? undefined
+    if (!sig) throw new ListingError('Create transaction not found yet; try again in a few seconds', 409, true)
+    await verifyCreateTx(connection, pending, sig, Math.max(0, deadline - Date.now()))
+    // Another run (a different signature, the reconcile job) may have listed it meanwhile.
+    const alreadyListed = !!getCampaign(pool)
+    const record = promotePending(pool, sig)
+    if (!record) throw new ListingError('Unknown campaign', 404)
+    return { record, alreadyListed }
+  })
 }
 
 // A pending pool that is not on-chain this long after its build never will be: the create
@@ -96,10 +133,10 @@ export async function reconcilePending(connection: Connection, { graceMs = PENDI
   for (const { record, createdAtMs } of listPending()) {
     try {
       if (await poolExists(connection, record.pool)) {
-        await confirmListing(connection, record.pool, undefined, { waitMs: 0 })
+        await confirmListing(connection, record.pool, undefined, { waitMs: 0, maxPages: 10 })
         result.listed.push(record.pool)
       } else if (now - createdAtMs > graceMs) {
-        deletePending(record.pool)
+        expirePending(record.pool)
         result.expired.push(record.pool)
       } else {
         result.waiting.push(record.pool)

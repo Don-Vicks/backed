@@ -6,7 +6,7 @@ import nacl from 'tweetnacl'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { VOUCHER_DECIMALS } from './engine'
 import { db, redemptionAad } from './db'
-import { openJson, sealJson } from './seal'
+import { openJsonAny, sealJson, shippingKeys } from './seal'
 import type { CampaignRecord } from './store'
 
 export type Shipping = { name: string; email: string; address: string; country: string }
@@ -14,16 +14,21 @@ export type Redemption = { pool: string; signature: string; wallet: string; unit
 
 type RedemptionRow = { signature: string; pool: string; wallet: string; units: number; created_at: string; shipping_ct: string }
 
-export function listRedemptions(pool: string): Redemption[] {
+// A listed redemption whose shipping details no key opens (SHIPPING_KEY changed without
+// SHIPPING_KEY_PREVIOUS) comes back with shipping: null and an error; the other rows still show.
+export type ListedRedemption = Omit<Redemption, 'shipping'> & { shipping: Shipping | null; error?: string }
+
+export function listRedemptions(pool: string): ListedRedemption[] {
   const rows = db().prepare('SELECT * FROM redemptions WHERE pool = ? ORDER BY created_at DESC, rowid DESC').all(pool) as RedemptionRow[]
-  return rows.map((r) => ({
-    pool: r.pool,
-    signature: r.signature,
-    wallet: r.wallet,
-    units: r.units,
-    shipping: openJson<Shipping>(r.shipping_ct, redemptionAad(r.signature)),
-    createdAt: r.created_at,
-  }))
+  const keys = shippingKeys()
+  return rows.map((r) => {
+    const base = { pool: r.pool, signature: r.signature, wallet: r.wallet, units: r.units, createdAt: r.created_at }
+    try {
+      return { ...base, shipping: openJsonAny<Shipping>(r.shipping_ct, redemptionAad(r.signature), keys) }
+    } catch (e) {
+      return { ...base, shipping: null, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
 }
 
 // Returns the number of whole vouchers the wallet burned in this transaction, or throws.

@@ -1,25 +1,32 @@
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { getNetwork, hasShippingKey, isTestNetwork, loadKeypair, storeHealth } from "@preorder/core";
+import { getNetwork, legacyPlaintextFiles, loadKeypair, shippingKeyStatus, storeDurability, storeHealth } from "@preorder/core";
 import { connection } from "@/lib/server";
 
 // Deep check for operators and uptime monitors: store writable, RPC reachable and fast, platform key
 // funded, config complete. Not the deploy healthcheck (/api/health), so a slow RPC never blocks a deploy.
+// Unauthenticated, so the result is cached for CACHE_MS: hammering it costs no writes or RPC calls.
 export const dynamic = "force-dynamic";
 
-const MIN_PLATFORM_SOL = Number(process.env.STATUS_MIN_PLATFORM_SOL || 0.5);
+const CACHE_MS = 15_000;
+const minSol = Number(process.env.STATUS_MIN_PLATFORM_SOL || 0.1);
+const MIN_PLATFORM_SOL = Number.isFinite(minSol) && minSol >= 0 ? minSol : 0.1;
 
 const withTimeout = <T,>(p: Promise<T>, ms: number) =>
   Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms))]);
 
-export async function GET() {
+let cached: { at: number; body: Record<string, unknown> & { ok: boolean } } | null = null;
+
+async function check() {
   const network = getNetwork().name;
-  const testNet = isTestNetwork(network);
+  const plaintextFiles = legacyPlaintextFiles();
   const store = {
     ...storeHealth(),
-    // Without DATA_DIR the store sits on the container disk, which a redeploy wipes.
-    durable: !!process.env.DATA_DIR?.trim() || network === "localnet",
+    // Off a volume the store sits on the container disk, which a redeploy wipes.
+    ...storeDurability(),
+    // Legacy redemptions JSON (plaintext shipping details) still on disk: delete it once checked.
+    ...(plaintextFiles.length ? { plaintextFiles } : {}),
   };
-  const shippingKey = { ok: hasShippingKey() || testNet, configured: hasShippingKey() };
+  const shippingKey = shippingKeyStatus();
 
   const conn = connection();
   const rpc: { ok: boolean; slot?: number; latencyMs?: number; error?: string } = { ok: false };
@@ -49,9 +56,11 @@ export async function GET() {
     }
   }
 
-  const ok = store.ok && store.durable && shippingKey.ok && rpc.ok && platform.ok;
-  return Response.json(
-    { ok, network, checkedAt: new Date().toISOString(), store, shippingKey, rpc, platform },
-    { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } },
-  );
+  const ok = store.ok && store.durable && !plaintextFiles.length && shippingKey.ok && rpc.ok && platform.ok;
+  return { ok, network, checkedAt: new Date().toISOString(), store, shippingKey, rpc, platform };
+}
+
+export async function GET() {
+  if (!cached || Date.now() - cached.at > CACHE_MS) cached = { at: Date.now(), body: await check() };
+  return Response.json(cached.body, { status: cached.body.ok ? 200 : 503, headers: { "Cache-Control": "no-store" } });
 }

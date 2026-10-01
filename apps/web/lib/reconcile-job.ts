@@ -1,7 +1,8 @@
-import { getConnection, reconcilePending } from "@preorder/core";
+import { getConnection, pruneStore, reconcilePending } from "@preorder/core";
 
 // Every RECONCILE_INTERVAL_SEC (default 600, 0 = off): list pending campaigns whose pool landed even
 // though the browser never confirmed, and expire builds that never landed. Well inside the 24h pending TTL.
+// Also prunes idle rate-limit buckets and old faucet claims.
 export function startReconcileJob() {
   const intervalSec = Number(process.env.RECONCILE_INTERVAL_SEC || 600);
   if (!(intervalSec > 0) || process.env.NEXT_PHASE === "phase-production-build") return;
@@ -11,8 +12,9 @@ export function startReconcileJob() {
     running = true;
     try {
       const result = await reconcilePending(getConnection());
-      if (result.listed.length || result.expired.length || result.failed.length) {
-        console.log(JSON.stringify({ event: "reconcile", listed: result.listed, expired: result.expired, failed: result.failed }));
+      const pruned = pruneStore();
+      if (result.listed.length || result.expired.length || result.failed.length || pruned.pending || pruned.rate || pruned.faucetClaims) {
+        console.log(JSON.stringify({ event: "reconcile", listed: result.listed, expired: result.expired, failed: result.failed, pruned }));
       }
     } catch (e) {
       console.error(JSON.stringify({ event: "reconcile", error: e instanceof Error ? e.message : String(e) }));

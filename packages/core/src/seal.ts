@@ -19,11 +19,57 @@ export function shippingKey(env: NodeJS.ProcessEnv = process.env): Buffer {
     warned = true
     console.warn(`SHIPPING_KEY is not set: shipping details on ${net} are encrypted with a public dev key`)
   }
-  return crypto.createHash('sha256').update(`preorder-dev-shipping-key:${net}`).digest()
+  return devShippingKey(net)
 }
+
+const devShippingKey = (net: string) => crypto.createHash('sha256').update(`preorder-dev-shipping-key:${net}`).digest()
 
 export function hasShippingKey(env: NodeJS.ProcessEnv = process.env): boolean {
   return !!env.SHIPPING_KEY?.trim()
+}
+
+// Keys that may open stored values, in order: SHIPPING_KEY, then SHIPPING_KEY_PREVIOUS (comma-separated,
+// for rotation), then the dev key on devnet and localnet (rows saved before SHIPPING_KEY was set).
+export function shippingKeys(env: NodeJS.ProcessEnv = process.env): Buffer[] {
+  const keys: Buffer[] = []
+  try {
+    keys.push(shippingKey(env))
+  } catch {
+    // Unset on mainnet, or malformed: the other keys may still open older rows.
+  }
+  for (const raw of (env.SHIPPING_KEY_PREVIOUS ?? '').split(',').map((v) => v.trim()).filter(Boolean)) {
+    try {
+      keys.push(parseShippingKey(raw))
+    } catch {
+      // Reported by shippingKeyStatus().
+    }
+  }
+  const net = getNetwork(env).name
+  if (isTestNetwork(net)) keys.push(devShippingKey(net))
+  return keys.filter((k, i) => keys.findIndex((o) => o.equals(k)) === i)
+}
+
+// For /api/health (usable: shipping details can be stored, else the deploy fails its healthcheck) and
+// /api/status (ok). A deployed devnet (public origin set) without its own key is not ok: the dev key
+// is derived from public source, so it is effectively plaintext.
+export function shippingKeyStatus(env: NodeJS.ProcessEnv = process.env): { ok: boolean; configured: boolean; usable: boolean; error?: string } {
+  const configured = hasShippingKey(env)
+  try {
+    shippingKey(env)
+  } catch (e) {
+    return { ok: false, configured, usable: false, error: e instanceof Error ? e.message : String(e) }
+  }
+  for (const raw of (env.SHIPPING_KEY_PREVIOUS ?? '').split(',').map((v) => v.trim()).filter(Boolean)) {
+    try {
+      parseShippingKey(raw)
+    } catch (e) {
+      return { ok: false, configured, usable: true, error: `SHIPPING_KEY_PREVIOUS: ${e instanceof Error ? e.message : String(e)}` }
+    }
+  }
+  const net = getNetwork(env).name
+  const deployed = net !== 'localnet' && !!(env.PUBLIC_BASE_URL?.trim() || env.RAILWAY_PUBLIC_DOMAIN?.trim())
+  if (!configured && deployed) return { ok: false, configured, usable: true, error: `SHIPPING_KEY is not set on a deployed ${net}: the dev key is public` }
+  return { ok: true, configured, usable: true }
 }
 
 export function parseShippingKey(raw: string): Buffer {
@@ -39,6 +85,19 @@ export function sealJson(value: unknown, aad: string, key: Buffer = shippingKey(
   cipher.setAAD(Buffer.from(aad, 'utf8'))
   const ct = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()])
   return [VERSION, iv.toString('base64url'), cipher.getAuthTag().toString('base64url'), ct.toString('base64url')].join('.')
+}
+
+// Opens with the first key that fits (see shippingKeys).
+export function openJsonAny<T>(sealed: string, aad: string, keys: Buffer[] = shippingKeys()): T {
+  let error: unknown = new Error('No SHIPPING_KEY to open sealed values with')
+  for (const key of keys) {
+    try {
+      return openJson<T>(sealed, aad, key)
+    } catch (e) {
+      error = e
+    }
+  }
+  throw error
 }
 
 export function openJson<T>(sealed: string, aad: string, key: Buffer = shippingKey()): T {
