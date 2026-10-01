@@ -12,6 +12,18 @@ No custom program. Every rule comes from DBC config, DAMM v2 and SPL token burns
 
 Built for the Colosseum **Crypto World's Fair** and Meteora's **Best use of DBC** track.
 
+**See it work:** [the walkthrough](docs/walkthrough.md) follows one campaign from create to shipped order, with screenshots of the real app on a validator running the mainnet Meteora programs. The [demo script](docs/demo-script.md) is the 3-minute video version.
+
+### For judges
+
+| Criterion | Where to look |
+|---|---|
+| **Depth of Meteora integration** | The product *is* a DBC config:<br>• tiers = `curve[]` segments<br>• goal = `migrationQuoteThreshold`<br>• upfront budget = migration fee<br>• anti-bot = fee scheduler<br>• production money = `creatorLiquidityVestingInfo`<br>• resale royalty = Customizable DAMM v2 pool<br>• backer floor = permanent locked liquidity<br>• whole units = `SwapMode.ExactOut`<br>• last buy = `PartialFill`<br>• referrals, creator and partner fee claims, pool and partner metadata<br>See [How Backed uses DBC](#how-backed-uses-dbc). |
+| **Technical execution** | CI runs typecheck, lint, 188 unit tests and the build, and the full lifecycle on a validator loaded with the **mainnet** DBC and DAMM v2 binaries ([`ci.yml`](.github/workflows/ci.yml), [`__tests__/localnet`](packages/core/src/__tests__/localnet)).<br>Creation is maker-paid and the platform never signs. Every swap has a slippage minimum. Inputs pass zod schemas and an allowlist, and endpoints are rate-limited. Storage is SQLite with encrypted shipping data, and redemptions are memo-bound. |
+| **Originality** | Pre-order crowdfunding where resale pays the maker. The bonding curve is the early-bird pricing, graduation is "funded", and the DAMM v2 pool is a royalty-paying resale market with a permanent floor. |
+| **Impact** | Tokenized pre-orders as a new asset class: makers get funded without giving up resale, and early fans pay less. The economics are worked through in [Maker trust tier](#maker-trust-tier) and the payout panel. |
+| **Traction** | Devnet and localnet so far. Mainnet needs only `NETWORK=mainnet`, a funded fee-claimer wallet and a real campaign ([Deploy](#deploy-railway)). |
+
 ---
 
 ## How Backed uses DBC
@@ -78,11 +90,11 @@ A new or throwaway wallet can still run a campaign, but it takes less upfront an
 
 ## Proof on devnet
 
-A campaign run through the whole lifecycle using the web API (`API Smoke Mug`):
+An earlier run of the whole lifecycle through the web API (`API Smoke Mug`), made before maker-paid creation, liquidity vesting and the Customizable resale pool. The current version is exercised end to end in CI and in the [walkthrough](docs/walkthrough.md) against the mainnet program binaries:
 
 | Step | Transaction / account |
 |---|---|
-| Campaign created (maker wallet signs, platform co-signs) | [tx](https://solscan.io/tx/5DSXxnDJuDu6WQEenQGmj6gEWLd9DEbejMoU6fnqMxXV1R1PEuatAv5jqfRmo3JpQJMtCuRPSVVAQP4QbE6DJzhf?cluster=devnet) · [pool](https://solscan.io/account/22EnU5dJp5FHABW99GkeZLAPVZEQgBq5yhscV6yvQrEY?cluster=devnet) · [config](https://solscan.io/account/7RqrUL2YwvkfkXGHrKX1fv1pZPkckCtXn4cvzfWgJRfR?cluster=devnet) |
+| Campaign created (that version: maker signs, platform co-signs) | [tx](https://solscan.io/tx/5DSXxnDJuDu6WQEenQGmj6gEWLd9DEbejMoU6fnqMxXV1R1PEuatAv5jqfRmo3JpQJMtCuRPSVVAQP4QbE6DJzhf?cluster=devnet) · [pool](https://solscan.io/account/22EnU5dJp5FHABW99GkeZLAPVZEQgBq5yhscV6yvQrEY?cluster=devnet) · [config](https://solscan.io/account/7RqrUL2YwvkfkXGHrKX1fv1pZPkckCtXn4cvzfWgJRfR?cluster=devnet) |
 | Graduated to DAMM v2 | [tx](https://solscan.io/tx/2QyHs2isMNUeJMBy6VfXtDtqHHtn6Mhw1hXgtaouRjfdDTudpxfwkrUxsZsx8ZEAxeJTZo4NGgf4B79VP7JMpq7z?cluster=devnet) · [resale pool](https://solscan.io/account/Pnq7QAbJ69pRkLurDwLaWgN7xSC58tqvKVD1CqEibHz?cluster=devnet) |
 | Resale buy | [tx](https://solscan.io/tx/4hdTNWT7kHojtv8DuujDrcGRqBassnKPEStqAKHULJSdmwYnXrNzH2Y1Y5gKfFXLZswi3f2cUweqQhdkqscA46uV?cluster=devnet) |
 | Maker claims curve fees + resale royalties in one tx | [tx](https://solscan.io/tx/3NjgNoxu1MDzYwTZHeK45yP9oHs69ns3nvFCTzVNxzWXABieMocTYnjJY5yCnfekGR1veoSstTQHZ89CN6rNvf4B?cluster=devnet) |
