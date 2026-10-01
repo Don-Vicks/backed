@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@dialectlabs/blinks": "0.22.5",
+    "@dialectlabs/blinks-core": "0.20.7",
     "@preorder/core": "workspace:*",
     "@solana/spl-token": "^0.4.15",
     "@solana/wallet-adapter-base": "^0.9.28",

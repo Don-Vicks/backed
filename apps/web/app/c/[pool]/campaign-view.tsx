@@ -8,7 +8,7 @@ import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { Check, Coins, Copy, ExternalLink, Hourglass, Lock, Minus, Plus, ShieldCheck, Timer } from "lucide-react";
+import { Check, Coins, Copy, ExternalLink, Hourglass, Lock, Minus, Plus, ShieldCheck, Timer, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -661,6 +661,13 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
         {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
         {copied ? "Link copied" : publicKey ? "Copy your referral link" : "Copy link"}
       </Button>
+      {live.status === "funding" && (
+        <Button asChild variant="ghost" className="-mt-3">
+          <Link href={`/c/${c.pool}/blink`}>
+            <Zap aria-hidden="true" /> See it as a Blink
+          </Link>
+        </Button>
+      )}
       {publicKey && balances.data?.hasUsdcAccount === false && (
         <p className="-mt-2 text-center text-xs text-muted-foreground">Referral fees are paid in USDC: you start earning them once your wallet holds USDC.</p>
       )}
