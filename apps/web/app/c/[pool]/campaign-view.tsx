@@ -72,8 +72,10 @@ function Loaded({ c }: { c: CampaignWithLive }) {
   const statusLabel = { funding: "Funding", funded: "Goal reached", reselling: "Funded · reselling" }[live.status];
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
-      <div className="flex flex-col gap-6">
+    // Phones get title, then price and the back panel, then the details; wide screens keep the
+    // panel in a sticky right column beside both.
+    <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr] lg:grid-rows-[auto_1fr]">
+      <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-1">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={live.status === "funding" ? "secondary" : "default"}>{statusLabel}</Badge>
@@ -103,7 +105,30 @@ function Loaded({ c }: { c: CampaignWithLive }) {
           <img src={c.campaign.image} alt={c.campaign.name} className="aspect-[16/9] w-full rounded-xl border border-border object-cover" />
         )}
         {c.campaign.description && <p className="text-lg text-muted-foreground">{c.campaign.description}</p>}
+      </div>
 
+      <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">
+        <div className="rounded-xl border border-border bg-card p-5">
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm text-muted-foreground">{live.status === "reselling" ? "Final pre-order price" : "Price now"}</span>
+            <span className="font-mono text-3xl tabular-nums">{usd(live.priceUsdc)}</span>
+          </div>
+          <Progress className="mt-4" value={Math.min(100, live.progress * 100)} aria-label={`${Math.round(live.progress * 100)}% funded`} />
+          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <dt className="text-muted-foreground">Raised</dt>
+              <dd className="font-mono tabular-nums">{usd(live.raisedUsdc)} <span className="text-muted-foreground">/ {usd(live.goalUsdc)}</span></dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Pre-orders sold</dt>
+              <dd className="font-mono tabular-nums">{units(live.unitsSold)} / {unitsTotal}</dd>
+            </div>
+          </dl>
+        </div>
+        <ActionPanel c={c} />
+      </aside>
+
+      <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-2">
         <section aria-labelledby="tiers-title" className="rounded-xl border border-border bg-card p-5">
           <h2 id="tiers-title" className="font-heading text-2xl">Early-bird tiers</h2>
           <ol className="mt-3 divide-y divide-border">
@@ -143,27 +168,6 @@ function Loaded({ c }: { c: CampaignWithLive }) {
           </a>
         </section>
       </div>
-
-      <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:self-start">
-        <div className="rounded-xl border border-border bg-card p-5">
-          <div className="flex items-baseline justify-between">
-            <span className="text-sm text-muted-foreground">{live.status === "reselling" ? "Final pre-order price" : "Price now"}</span>
-            <span className="font-mono text-3xl tabular-nums">{usd(live.priceUsdc)}</span>
-          </div>
-          <Progress className="mt-4" value={Math.min(100, live.progress * 100)} aria-label={`${Math.round(live.progress * 100)}% funded`} />
-          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <dt className="text-muted-foreground">Raised</dt>
-              <dd className="font-mono tabular-nums">{usd(live.raisedUsdc)} <span className="text-muted-foreground">/ {usd(live.goalUsdc)}</span></dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Pre-orders sold</dt>
-              <dd className="font-mono tabular-nums">{units(live.unitsSold)} / {unitsTotal}</dd>
-            </div>
-          </dl>
-        </div>
-        <ActionPanel c={c} />
-      </aside>
     </div>
   );
 }
