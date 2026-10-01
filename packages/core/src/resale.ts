@@ -3,11 +3,11 @@
 import BN from 'bn.js'
 import { Connection, PublicKey, Transaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, getAccount } from '@solana/spl-token'
-import { CpAmm, getPriceFromSqrtPrice, getUnClaimLpFee } from '@meteora-ag/cp-amm-sdk'
+import { CpAmm, getPriceFromSqrtPrice, getUnClaimLpFee, type PoolState } from '@meteora-ag/cp-amm-sdk'
 import { dbcClient, resalePoolAddress } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
-import { chainUnixTime, makerLp, type MakerLp } from './unlock'
+import { backerFloor, chainClock, chainUnixTime, makerLp, type BackerFloor, type MakerLp } from './unlock'
 
 export type ResaleSide = 'buy' | 'sell' // buy = USDC → vouchers, sell = vouchers → USDC
 
@@ -26,6 +26,7 @@ export type ResaleView = {
   vouchersInPool: number
   usdcInPool: number
   maker: MakerEarnings
+  floor: BackerFloor | null // exit value of one voucher, now and at the permanent floor
 }
 
 const toNum = (bn: BN | bigint, decimals: number) => Number(bn.toString()) / 10 ** decimals
@@ -34,7 +35,12 @@ function resalePool(record: CampaignRecord) {
   return resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint))
 }
 
-export async function readMakerEarnings(connection: Connection, record: CampaignRecord): Promise<MakerEarnings> {
+// `chain`: the resale pool state and chain time when the caller has already read them (readResale).
+export async function readMakerEarnings(
+  connection: Connection,
+  record: CampaignRecord,
+  chain?: { poolState: PoolState | null; now: number },
+): Promise<MakerEarnings> {
   const fees = await dbcClient(connection).state.getPoolFeeBreakdown(record.pool)
   const out: MakerEarnings = {
     curveFeesUnclaimedUsdc: toNum(fees.creator.unclaimedQuoteFee, USDC_DECIMALS),
@@ -46,9 +52,9 @@ export async function readMakerEarnings(connection: Connection, record: Campaign
   }
   const cpAmm = new CpAmm(connection)
   const pool = resalePool(record)
-  const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
+  const poolState = chain ? chain.poolState : await cpAmm.fetchPoolState(pool).catch(() => null)
   if (!poolState) return out
-  const [positions, now] = await Promise.all([cpAmm.getUserPositionByPool(pool, new PublicKey(record.maker)), chainUnixTime(connection)])
+  const [positions, now] = await Promise.all([cpAmm.getUserPositionByPool(pool, new PublicKey(record.maker)), chain?.now ?? chainUnixTime(connection)])
   out.positions = positions.length
   out.lp = makerLp(cpAmm, poolState, positions.map((p) => p.positionState), now)
   for (const p of positions) {
@@ -59,22 +65,32 @@ export async function readMakerEarnings(connection: Connection, record: Campaign
   return out
 }
 
+// One pool-state read and one Clock read serve the pool view, the maker's earnings and the backer floor.
 export async function readResale(connection: Connection, record: CampaignRecord): Promise<ResaleView | null> {
   const cpAmm = new CpAmm(connection)
   const pool = resalePool(record)
   const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
   if (!poolState) return null
-  const [vaultA, vaultB, maker] = await Promise.all([
+  const clock = chainClock(connection)
+  const [vaultA, vaultB, now, maker] = await Promise.all([
     getAccount(connection, poolState.tokenAVault),
     getAccount(connection, poolState.tokenBVault),
-    readMakerEarnings(connection, record),
+    clock,
+    clock.then((c) => readMakerEarnings(connection, record, { poolState, now: c.unixTime })),
   ])
+  let floor: BackerFloor | null = null
+  try {
+    floor = backerFloor(cpAmm, poolState, new PublicKey(record.baseMint), now)
+  } catch {
+    // a quote the SDK refuses (e.g. swaps disabled): the view still loads, without the floor
+  }
   return {
     pool: pool.toBase58(),
     priceUsdc: getPriceFromSqrtPrice(poolState.sqrtPrice, VOUCHER_DECIMALS, USDC_DECIMALS).toNumber(),
     vouchersInPool: toNum(vaultA.amount, VOUCHER_DECIMALS),
     usdcInPool: toNum(vaultB.amount, USDC_DECIMALS),
     maker,
+    floor,
   }
 }
 

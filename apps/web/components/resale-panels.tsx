@@ -22,7 +22,7 @@ type MakerEarnings = {
   positions: number;
   lp?: MakerLp | null; // absent from servers older than ship-window vesting
 };
-type ResaleView = { pool: string; priceUsdc: number; vouchersInPool: number; usdcInPool: number; maker: MakerEarnings };
+type ResaleView = { pool: string; priceUsdc: number; vouchersInPool: number; usdcInPool: number; maker: MakerEarnings; floor?: BackerFloor | null };
 type ResaleQuote = { out: number; minOut: number; feeUsdcEquivalent: number; priceImpactPct: number };
 
 export type RunTx = (kind: "resaleBuy" | "resaleSell" | "claim" | "withdraw" | "unlock", label: string, extra?: Record<string, unknown>) => Promise<void>;
@@ -30,7 +30,7 @@ export type RunTx = (kind: "resaleBuy" | "resaleSell" | "claim" | "withdraw" | "
 export function useResale(c: CampaignWithLive, enabled: boolean) {
   return useQuery({
     queryKey: ["resale", c.pool],
-    queryFn: () => api<{ resale: ResaleView | null; maker: MakerEarnings; floor: BackerFloor | null }>(`/api/campaigns/${c.pool}/resale`),
+    queryFn: () => api<{ resale: ResaleView | null; maker: MakerEarnings }>(`/api/campaigns/${c.pool}/resale`),
     enabled,
     refetchInterval: 8_000,
   });
@@ -48,7 +48,7 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
     enabled: debounced > 0,
   });
   const view = resale.data?.resale;
-  const floor = resale.data?.floor;
+  const floor = view?.floor;
   const lastPreorderPrice = c.campaign.plan.finalPrice;
 
   if (resale.isPending) return <Skeleton className="h-64 rounded-xl" />;
@@ -116,9 +116,12 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
       </p>
       <p className="mt-3 text-xs text-muted-foreground">
         Pool: <span className="font-mono">{units(view.vouchersInPool)}</span> vouchers · <span className="font-mono">{usd(view.usdcInPool)}</span>.{" "}
-        {c.terms?.creatorVestingPct
-          ? `${c.terms.partnerPermanentPct + c.terms.creatorPermanentPct}% of the liquidity is locked forever; the maker's ${c.terms.creatorVestingPct}% unlocks on the ship-window schedule to fund production.`
-          : "Liquidity is locked forever."}
+        {/* terms unknown (the config read failed): say nothing rather than claim it is all locked */}
+        {!c.terms
+          ? "The liquidity split is set in the on-chain config."
+          : c.terms.creatorVestingPct
+            ? `${c.terms.partnerPermanentPct + c.terms.creatorPermanentPct}% of the liquidity is locked forever; the maker's ${c.terms.creatorVestingPct}% unlocks on the ship-window schedule to fund production.`
+            : "Liquidity is locked forever."}
       </p>
       {floor && c.terms?.creatorVestingPct ? (
         <p className="mt-1 text-xs text-muted-foreground">

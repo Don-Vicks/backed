@@ -177,7 +177,7 @@ test('after the cliff the maker unlocks the cliff tranche and the vouchers are b
   assert.ok(built, 'nothing to unlock after the cliff')
   // Cliff only (the first period is 10s later): 50% of the vesting bucket.
   assert.ok(built.liquidityDelta.eq(start.innerVesting.cliffUnlockLiquidity), `${built.liquidityDelta} vs ${start.innerVesting.cliffUnlockLiquidity}`)
-  assert.ok(built.minUsdc.eq(built.outUsdc) && built.burnVouchers.eq(built.outVouchers))
+  assert.ok(built.minUsdc.eq(built.outUsdc))
 
   const [usdc0, vouchers0, supply0] = [await balance(record.usdcMint, maker.publicKey), await balance(record.baseMint, maker.publicKey), await supply()]
   await send(conn, built.tx, [maker], 'unlock production funds (cliff)')
@@ -186,7 +186,7 @@ test('after the cliff the maker unlocks the cliff tranche and the vouchers are b
   assert.ok(usdc1.sub(usdc0).eq(built.outUsdc), `paid ${usdc1.sub(usdc0)} quoted ${built.outUsdc}`)
   assert.ok(built.outUsdc.gtn(0))
   assert.ok(supply0.sub(supply1).eq(built.outVouchers), 'voucher supply drops by the vouchers withdrawn')
-  assert.ok(vouchers1.eq(vouchers0), 'the maker keeps no withdrawn vouchers')
+  assert.ok(vouchers1.eq(vouchers0), 'the maker keeps none of the withdrawn vouchers')
 
   const after = (await makerPosition()).positionState
   assert.ok(after.permanentLockedLiquidity.eq(start.permanentLockedLiquidity))
@@ -197,15 +197,15 @@ test('after full vesting the rest unlocks with default slippage; only the perman
   await waitForChainTime(start.innerVesting.cliffPoint.toNumber() + SCHEDULE.periods * SCHEDULE.periodSec)
   const built = (await buildMakerUnlockTx(conn, record, maker.publicKey))!
   assert.ok(built.liquidityDelta.eq(start.vestedLiquidity), 'the whole remaining vesting bucket')
-  assert.ok(built.minUsdc.lt(built.outUsdc) && built.minUsdc.gtn(0), 'thresholds are the quote minus 1%, never 0')
+  assert.ok(built.minUsdc.lt(built.outUsdc) && built.minUsdc.gtn(0), 'the USDC threshold is the quote minus 1%, never 0')
 
   const [usdc0, vouchers0, supply0] = [await balance(record.usdcMint, maker.publicKey), await balance(record.baseMint, maker.publicKey), await supply()]
   await send(conn, built.tx, [maker], 'unlock production funds (rest)')
   const [usdc1, vouchers1, supply1] = [await balance(record.usdcMint, maker.publicKey), await balance(record.baseMint, maker.publicKey), await supply()]
   console.log(`    rest: +${usdc1.sub(usdc0)} raw USDC (min ${built.minUsdc}), burned ${supply0.sub(supply1)} raw vouchers`)
   assert.ok(usdc1.sub(usdc0).gte(built.minUsdc))
-  assert.ok(supply0.sub(supply1).eq(built.burnVouchers))
-  assert.ok(vouchers1.sub(vouchers0).eq(built.outVouchers.sub(built.burnVouchers)), 'only the slippage margin stays with the maker')
+  assert.ok(supply0.sub(supply1).eq(built.outVouchers), 'every withdrawn voucher is burned, slippage or not')
+  assert.ok(vouchers1.eq(vouchers0), 'the maker keeps none of the withdrawn vouchers')
 
   const after = (await makerPosition()).positionState
   assert.ok(after.vestedLiquidity.isZero() && after.unlockedLiquidity.isZero())
@@ -225,8 +225,10 @@ test('the maker claims resale fees on the combined vesting + permanent position'
   assert.ok((await balance(record.usdcMint, maker.publicKey)).gt(usdc0))
 })
 
-test('graduation dust in the unlocked bucket is not offered as an unlock before the cliff', { skip, timeout: 60_000 }, async () => {
+test('graduation and cliff dust are not offered as unlocks; the countdown targets the first real release', { skip, timeout: 90_000 }, async () => {
   // This plan leaves 2 raw units of unlocked liquidity in the maker position, which the program refuses to remove.
+  // Its schedule releases nothing at the cliff (like tier C's 20 × 5%), so DBC leaves only rounding there.
+  const noCliff = { cliffSec: 20, periods: 2, periodSec: 10, bpsPerPeriod: 5000 }
   const campaign: Campaign = {
     name: 'Dust Mug',
     symbol: 'DMUG',
@@ -237,7 +239,10 @@ test('graduation dust in the unlocked bucket is not offered as an unlock before 
     shipDays: 45,
   }
   const usdcMint = new PublicKey(record.usdcMint) // funded in the first test
-  const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: 'C', platform: platform.publicKey, maker: maker.publicKey, usdcMint })
+  process.env.VESTING_SCHEDULE_OVERRIDE = JSON.stringify(noCliff)
+  const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: 'C', platform: platform.publicKey, maker: maker.publicKey, usdcMint }).finally(() => {
+    process.env.VESTING_SCHEDULE_OVERRIDE = JSON.stringify(SCHEDULE)
+  })
   await send(conn, built.tx, [...neededSigners(built.tx, [maker, platform]), ...built.extraSigners], 'create dust campaign')
   await send(conn, await buildBuyTx(conn, backer.publicKey, built.pool, built.onChain.goalUsdc * 1.3), [backer], 'buy to the goal')
   const mig = await buildMigrateTx(conn, platform.publicKey, built.pool)
@@ -247,5 +252,17 @@ test('graduation dust in the unlocked bucket is not offered as an unlock before 
   assert.ok(p.positionState.unlockedLiquidity.gtn(0), 'expected dust in the unlocked bucket')
   assert.ok((await chainUnixTime(conn)) < p.positionState.innerVesting.cliffPoint.toNumber(), 'test too slow: cliff already passed')
   assert.equal(await buildMakerUnlockTx(conn, dust, maker.publicKey), null)
-  assert.equal((await readMakerEarnings(conn, dust)).lp!.unlockableUsdc, 0)
+  const v = p.positionState.innerVesting
+  const firstRelease = v.cliffPoint.toNumber() + noCliff.periodSec
+  console.log(`    cliff tranche ${v.cliffUnlockLiquidity} vs ${v.liquidityPerPeriod} per period`)
+  let lp = (await readMakerEarnings(conn, dust)).lp!
+  assert.equal(lp.unlockableUsdc, 0)
+  assert.equal(lp.nextUnlockAt, firstRelease, 'not the cliff: nothing real releases there')
+
+  await waitForChainTime(v.cliffPoint.toNumber())
+  assert.ok((await chainUnixTime(conn)) < firstRelease, 'test too slow: first period already passed')
+  assert.equal(await buildMakerUnlockTx(conn, dust, maker.publicKey), null, 'nothing to unlock at the cliff')
+  lp = (await readMakerEarnings(conn, dust)).lp!
+  assert.equal(lp.unlockableUsdc, 0)
+  assert.equal(lp.nextUnlockAt, firstRelease)
 })

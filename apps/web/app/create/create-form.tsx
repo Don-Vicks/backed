@@ -303,8 +303,9 @@ function PayoutCard({ pricing, share, vesting, unitCost }: { pricing: PricingSum
     <div className="rounded-xl border border-border bg-card p-5">
       <h2 className="font-heading text-2xl">Your payout</h2>
       <p className="mt-2 text-sm">
-        You receive <span className="font-mono">{pct.atGoal}%</span> at goal · up to <span className="font-mono">{Math.round(pct.max)}%</span> from{" "}
-        {formatAfterGoal(firstReleaseSec(vesting))} · <span className="font-mono">{pct.permanentFloorPct}%</span> permanent resale floor
+        You receive <span className="font-mono">{pct.atGoal}%</span> at goal · <span className="font-mono">{Math.round(pct.atFirstRelease)}%</span> from{" "}
+        {formatAfterGoal(firstReleaseSec(vesting))} · up to <span className="font-mono">{Math.round(pct.max)}%</span> by {formatAfterGoal(vestingEndSec(vesting))} ·{" "}
+        <span className="font-mono">{pct.permanentFloorPct}%</span> permanent resale floor
       </p>
       <dl className="mt-4 grid grid-cols-2 gap-4">
         <Stat label="At goal" value={usd(pricing.makerBudgetUsdc)} />

@@ -154,7 +154,11 @@ function Loaded({ c }: { c: CampaignWithLive }) {
 // From the on-chain config. Campaigns created before ship-window vesting lock all resale liquidity.
 function ResaleTerms({ c }: { c: CampaignWithLive }) {
   const t = c.terms;
-  if (!t?.vesting) {
+  if (!t) {
+    // The config read failed (e.g. a rate-limited RPC): unknown is not the same as "all locked".
+    return <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="How resale liquidity is split and locked is fixed in this campaign’s on-chain config. Verify it below." />;
+  }
+  if (!t.vesting) {
     return <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="100% of resale liquidity is locked forever. The maker’s locked position earns a share of every resale fee." />;
   }
   const floor = t.partnerPermanentPct + t.creatorPermanentPct;

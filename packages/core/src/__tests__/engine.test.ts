@@ -6,6 +6,11 @@ import { campaignToConfig, vestingScheduleOverride, type Campaign } from '../eng
 import { DAY, WEEK, vestingEndSec } from '../vesting'
 import { MAX_MAKER_SHARE, type TrustTierName } from '../trust'
 
+// campaignToConfig reads VESTING_SCHEDULE_OVERRIDE (localnet only), and network.ts has loaded the repo
+// .env by now. Keep a localnet demo setup out of the tier-schedule assertions; the override test below
+// sets its own values and restores this state.
+delete process.env.VESTING_SCHEDULE_OVERRIDE
+
 const hoodie = (makerSharePct: number): Campaign => ({
   name: 'Hackathon Hoodie',
   symbol: 'HOOD',

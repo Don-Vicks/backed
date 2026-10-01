@@ -4,20 +4,26 @@
 import BN from 'bn.js'
 import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY, Transaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, createBurnInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token'
-import { CpAmm, getAvailableVestingLiquidity, type PoolState, type PositionState } from '@meteora-ag/cp-amm-sdk'
+import { CpAmm, getAvailableVestingLiquidity, type PoolState, type PositionState, type VestingState } from '@meteora-ag/cp-amm-sdk'
 import { dbcClient, resalePoolAddress } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
-import type { VestingSchedule } from './vesting'
+import { BPS, type VestingSchedule } from './vesting'
 
 const toNum = (bn: BN, decimals: number) => Number(bn.toString()) / 10 ** decimals
 
-// Chain time (unix seconds) from the Clock sysvar: the clock the DAMM v2 program checks vesting against.
-export async function chainUnixTime(connection: Connection): Promise<number> {
+export type ChainClock = { slot: number; unixTime: number }
+
+// Slot and chain time (unix seconds) from the Clock sysvar, in one read: the clock the DAMM v2
+// program checks vesting and fee schedules against.
+export async function chainClock(connection: Connection): Promise<ChainClock> {
   const info = await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY)
   if (!info) throw new Error('Clock sysvar not readable')
-  return Number(info.data.readBigInt64LE(32)) // slot u64, epoch_start_timestamp i64, epoch u64, leader_schedule_epoch u64, unix_timestamp i64
+  // slot u64, epoch_start_timestamp i64, epoch u64, leader_schedule_epoch u64, unix_timestamp i64
+  return { slot: Number(info.data.readBigUInt64LE(0)), unixTime: Number(info.data.readBigInt64LE(32)) }
 }
+
+export const chainUnixTime = async (connection: Connection) => (await chainClock(connection)).unixTime
 
 // The maker as recorded on chain (DBC pool creator), not as claimed by our own store.
 export async function onChainCreator(connection: Connection, pool: PublicKey | string): Promise<PublicKey> {
@@ -60,7 +66,8 @@ export async function readLpTerms(connection: Connection, config: PublicKey | st
 
 // Liquidity the position can remove right now: unlocked plus vesting released by the clock.
 function removableLiquidity(position: PositionState, now: number): BN {
-  const available = getAvailableVestingLiquidity({ innerVesting: position.innerVesting } as never, new BN(now))
+  // The SDK takes an external Vesting account but only reads its innerVesting, which positions carry too.
+  const available = getAvailableVestingLiquidity({ innerVesting: position.innerVesting } as unknown as VestingState, new BN(now))
   return position.unlockedLiquidity.add(BN.min(available, position.vestedLiquidity))
 }
 
@@ -78,13 +85,23 @@ function withdrawAmounts(cpAmm: CpAmm, poolState: PoolState, liquidityDelta: BN)
   })
 }
 
+// DBC sets the cliff tranche to total − periods × perPeriod, so a schedule that releases nothing at the
+// cliff (tier C: 20 × 5%) still leaves a few raw units of rounding there. A configured cliff tranche is
+// at least 1 bps of the bucket, which is more than 1/10000 of any period's release; anything smaller is
+// that remainder, and unlocking it alone would quote zero and be refused.
+function cliffReleases(v: PositionState['innerVesting']): boolean {
+  if (v.cliffUnlockLiquidity.isZero()) return false
+  return v.liquidityPerPeriod.isZero() || v.cliffUnlockLiquidity.muln(BPS).gte(v.liquidityPerPeriod)
+}
+
 // Next release of the inner vesting after `now` (unix seconds), or null once nothing is left to release.
+// Matches firstReleaseSec() in vesting.ts: the cliff only when something real releases at it.
 export function nextReleaseAt(position: PositionState, now: number): number | null {
   const v = position.innerVesting
   if (position.vestedLiquidity.isZero()) return null
   const cliff = v.cliffPoint.toNumber()
   const freq = v.periodFrequency.toNumber()
-  if (now < cliff && !v.cliffUnlockLiquidity.isZero()) return cliff
+  if (now < cliff && cliffReleases(v)) return cliff
   if (freq === 0 || v.liquidityPerPeriod.isZero()) return now < cliff ? cliff : null
   const passed = now < cliff ? 0 : Math.floor((now - cliff) / freq)
   return passed >= v.numberOfPeriod ? null : cliff + (passed + 1) * freq
@@ -134,23 +151,24 @@ export function makerLp(cpAmm: CpAmm, poolState: PoolState, positions: PositionS
 export type UnlockBuild = {
   tx: Transaction
   liquidityDelta: BN
-  outVouchers: BN // quoted
+  outVouchers: BN // quoted; required in full and burned in the same transaction
   outUsdc: BN // quoted
-  minVouchers: BN // thresholds sent to the program
-  minUsdc: BN
-  burnVouchers: BN // burned in the same transaction (0 when burn is off)
+  minUsdc: BN // the quote minus slippage, sent to the program
 }
 
-// Removes every released tranche of the maker's resale-pool liquidity in one transaction.
-// Minimums come from the withdraw quote minus slippage, so a sandwich cannot skew the removal.
-// By default the vouchers that come out are burned in the same transaction: they were the maker's
-// own inventory, and burning them keeps "voucher supply = units the maker still owes" true.
+// Removes every released tranche of the maker's resale-pool liquidity in one transaction, and burns the
+// vouchers that come out with it: they were the maker's own inventory, and burning them keeps
+// "voucher supply = units the maker still owes" true.
+// Slippage applies to the USDC side only. The voucher side is required at the full quote so that the
+// burn can take exactly what was withdrawn: if a trade moves the pool against it before the
+// transaction lands, the removal fails and the maker retries. (A move the other way leaves the maker
+// a few extra vouchers, with correspondingly less USDC.)
 // Returns null when nothing is released yet (removing zero fails on chain with 6023, dust with 6006).
 export async function buildMakerUnlockTx(
   connection: Connection,
   record: CampaignRecord,
   maker: PublicKey,
-  opts: { slippageBps?: number; burn?: boolean; refreshVesting?: boolean } = {},
+  opts: { slippageBps?: number } = {},
 ): Promise<UnlockBuild | null> {
   const slippageBps = opts.slippageBps ?? 100
   if (!(Number.isInteger(slippageBps) && slippageBps >= 0 && slippageBps < 10_000)) throw new Error('slippageBps must be 0..9999')
@@ -163,10 +181,9 @@ export async function buildMakerUnlockTx(
 
   const tx = new Transaction()
   let liquidityDelta = new BN(0)
-  let outA = new BN(0)
-  let outB = new BN(0)
-  let minA = new BN(0)
-  let minB = new BN(0)
+  let outVouchers = new BN(0)
+  let outUsdc = new BN(0)
+  let minUsdc = new BN(0)
   const atLeastOne = (out: BN) => BN.max(out.muln(10_000 - slippageBps).divn(10_000), BN.min(out, new BN(1)))
   for (const p of positions) {
     const delta = removableLiquidity(p.positionState, now)
@@ -175,19 +192,16 @@ export async function buildMakerUnlockTx(
     // Graduation can leave a few raw units of unlocked liquidity: worth nothing, and removing it
     // fails with AmountIsZero (6006). Wait for a real tranche instead.
     if (q.outAmountA.isZero() || q.outAmountB.isZero()) continue
-    const [thresholdA, thresholdB] = [atLeastOne(q.outAmountA), atLeastOne(q.outAmountB)]
-    if (opts.refreshVesting) {
-      const refresh = await cpAmm.refreshVesting({ owner: maker, position: p.position, positionNftAccount: p.positionNftAccount, pool, vestingAccounts: [] })
-      tx.add(...refresh.instructions)
-    }
+    const [vouchers, usdc] = voucherIsA ? [q.outAmountA, q.outAmountB] : [q.outAmountB, q.outAmountA]
+    const usdcThreshold = atLeastOne(usdc)
     const remove = await cpAmm.removeLiquidity({
       owner: maker,
       pool,
       position: p.position,
       positionNftAccount: p.positionNftAccount,
       liquidityDelta: delta,
-      tokenAAmountThreshold: thresholdA,
-      tokenBAmountThreshold: thresholdB,
+      tokenAAmountThreshold: voucherIsA ? vouchers : usdcThreshold,
+      tokenBAmountThreshold: voucherIsA ? usdcThreshold : vouchers,
       tokenAMint: poolState.tokenAMint,
       tokenBMint: poolState.tokenBMint,
       tokenAVault: poolState.tokenAVault,
@@ -199,21 +213,15 @@ export async function buildMakerUnlockTx(
     })
     tx.add(...remove.instructions)
     liquidityDelta = liquidityDelta.add(delta)
-    outA = outA.add(q.outAmountA)
-    outB = outB.add(q.outAmountB)
-    minA = minA.add(thresholdA)
-    minB = minB.add(thresholdB)
+    outVouchers = outVouchers.add(vouchers)
+    outUsdc = outUsdc.add(usdc)
+    minUsdc = minUsdc.add(usdcThreshold)
   }
   if (liquidityDelta.isZero()) return null
 
-  const [outVouchers, outUsdc, minVouchers, minUsdc] = voucherIsA ? [outA, outB, minA, minB] : [outB, outA, minB, minA]
-  // Burn the guaranteed minimum, so the burn can never fail for want of the vouchers it just received.
-  const burnVouchers = opts.burn === false ? new BN(0) : minVouchers
-  if (burnVouchers.gtn(0)) {
-    const baseMint = new PublicKey(record.baseMint)
-    tx.add(createBurnInstruction(getAssociatedTokenAddressSync(baseMint, maker), baseMint, maker, BigInt(burnVouchers.toString())))
-  }
-  return { tx, liquidityDelta, outVouchers, outUsdc, minVouchers, minUsdc, burnVouchers }
+  const baseMint = new PublicKey(record.baseMint)
+  tx.add(createBurnInstruction(getAssociatedTokenAddressSync(baseMint, maker), baseMint, maker, BigInt(outVouchers.toString())))
+  return { tx, liquidityDelta, outVouchers, outUsdc, minUsdc }
 }
 
 // What a backer could get for `vouchers` by selling into the resale pool: now, and at the floor,
@@ -221,16 +229,12 @@ export async function buildMakerUnlockTx(
 // Both at today's pool price; it is an exit value, not a refund.
 export type BackerFloor = { vouchers: number; nowUsdc: number; floorUsdc: number; permanentShareBps: number }
 
-export async function readBackerFloor(connection: Connection, record: CampaignRecord, vouchers = 1): Promise<BackerFloor | null> {
-  const cpAmm = new CpAmm(connection)
-  const pool = resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint))
-  const poolState = await cpAmm.fetchPoolState(pool).catch(() => null)
-  if (!poolState || poolState.liquidity.isZero()) return null
-  const [slot, now] = await Promise.all([connection.getSlot(), chainUnixTime(connection)])
-  const inputMint = new PublicKey(record.baseMint)
+// Pure: from a pool state and chain clock the caller already has (readResale).
+export function backerFloor(cpAmm: CpAmm, poolState: PoolState, baseMint: PublicKey, clock: ChainClock, vouchers = 1): BackerFloor | null {
+  if (poolState.liquidity.isZero()) return null
   const inAmount = new BN(Math.round(vouchers * 10 ** VOUCHER_DECIMALS))
   const sell = (state: PoolState) =>
-    cpAmm.getQuote({ inAmount, inputTokenMint: inputMint, slippage: 0, poolState: state, currentTime: now, currentSlot: slot, tokenADecimal: VOUCHER_DECIMALS, tokenBDecimal: USDC_DECIMALS })
+    cpAmm.getQuote({ inAmount, inputTokenMint: baseMint, slippage: 0, poolState: state, currentTime: clock.unixTime, currentSlot: clock.slot, tokenADecimal: VOUCHER_DECIMALS, tokenBDecimal: USDC_DECIMALS })
   const floorLiquidity = poolState.permanentLockLiquidity
   const nowOut = sell(poolState).swapOutAmount
   const floorOut = floorLiquidity.isZero() ? new BN(0) : sell({ ...poolState, liquidity: floorLiquidity } as PoolState).swapOutAmount
@@ -240,4 +244,11 @@ export async function readBackerFloor(connection: Connection, record: CampaignRe
     floorUsdc: toNum(floorOut, USDC_DECIMALS),
     permanentShareBps: floorLiquidity.muln(10_000).div(poolState.liquidity).toNumber(),
   }
+}
+
+export async function readBackerFloor(connection: Connection, record: CampaignRecord, vouchers = 1): Promise<BackerFloor | null> {
+  const cpAmm = new CpAmm(connection)
+  const pool = resalePoolAddress(new PublicKey(record.baseMint), new PublicKey(record.usdcMint))
+  const [poolState, clock] = await Promise.all([cpAmm.fetchPoolState(pool).catch(() => null), chainClock(connection)])
+  return poolState ? backerFloor(cpAmm, poolState, new PublicKey(record.baseMint), clock, vouchers) : null
 }

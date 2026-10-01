@@ -48,7 +48,7 @@ test('maker payout: upfront share plus 80% of the rest, 20% floor', () => {
   assert.equal(unitsOwedAfterUnlock(50, 30), 56)
 })
 
-const position = (v: { cliff: number; freq: number; n: number; cliffUnlock: number; perPeriod: number; vested?: number }) =>
+const position = (v: { cliff: number; freq: number; n: number; cliffUnlock: number | string; perPeriod: number | string; vested?: number }) =>
   ({
     vestedLiquidity: new BN(v.vested ?? 100),
     innerVesting: {
@@ -70,4 +70,19 @@ test('next unlock: the cliff, then cliff + k × period, then none', () => {
   // nothing released at the cliff: the first release is one period later
   assert.equal(nextReleaseAt(position({ cliff: 1000, freq: 10, n: 2, cliffUnlock: 0, perPeriod: 50 }), 500), 1010)
   assert.equal(nextReleaseAt(position({ cliff: 1000, freq: 10, n: 2, cliffUnlock: 50, perPeriod: 25, vested: 0 }), 500), null)
+})
+
+test('next unlock skips a cliff that only holds rounding dust (tier C, as on chain)', () => {
+  // A real tier C position: 20 × 5% leaves totalVested − 20·floor(totalVested/20) = 11 at the cliff.
+  const c = vestingSchedule('C', 30)
+  const cliff = 1_000_000
+  const p = position({ cliff, freq: c.periodSec, n: c.periods, cliffUnlock: 11, perPeriod: '9500000000000000000000000' })
+  assert.equal(nextReleaseAt(p, cliff - 1), cliff + c.periodSec)
+  assert.equal(nextReleaseAt(p, cliff - 1)! - (cliff - c.cliffSec), firstReleaseSec(c), 'same day the create form and terms show')
+  assert.equal(nextReleaseAt(p, cliff), cliff + c.periodSec)
+  assert.equal(nextReleaseAt(position({ cliff: 1000, freq: 10, n: 2, cliffUnlock: 3, perPeriod: '100000000000000000000' }), 500), 1010)
+  // a real cliff tranche, however small (1 bps of the bucket), still counts
+  assert.equal(nextReleaseAt(position({ cliff: 1000, freq: 10, n: 1, cliffUnlock: 1, perPeriod: 9999 }), 500), 1000)
+  // cliff-only schedule
+  assert.equal(nextReleaseAt(position({ cliff: 1000, freq: 0, n: 0, cliffUnlock: 7, perPeriod: 0 }), 500), 1000)
 })
