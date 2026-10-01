@@ -37,3 +37,16 @@ test('ttlCache serves fresh values, coalesces concurrent loads and does not cach
   cache.set('r', 9)
   assert.equal(cache.fresh('r'), 9)
 })
+
+test('ttlCache can keep some values shorter than others, and forget one', async () => {
+  let now = 0
+  const cache = ttlCache<{ partial: boolean }>((v) => (v.partial ? 100 : 1000), 100, () => now)
+  cache.set('partial', { partial: true })
+  cache.set('whole', { partial: false })
+  now = 100
+  assert.equal(cache.fresh('partial'), undefined)
+  assert.deepEqual(cache.fresh('whole'), { partial: false })
+  cache.delete('whole')
+  assert.equal(cache.fresh('whole'), undefined)
+  assert.deepEqual(await cache.get('whole', async () => ({ partial: true })), { partial: true }, 'a forgotten key loads again')
+})

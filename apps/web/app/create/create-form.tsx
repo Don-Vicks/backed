@@ -251,7 +251,8 @@ export function CreateForm() {
           preview={preview}
           loading={previewLoading && !preview}
           connected={!!publicKey}
-          failed={previewQuery.isError || !!preview?.trustUnavailable}
+          unavailable={!!preview?.trustUnavailable}
+          error={previewQuery.isError ? previewQuery.error.message : null}
           retry={() => previewQuery.refetch()}
         />
         <div className="rounded-xl border border-border bg-card p-5">
@@ -308,16 +309,21 @@ function TrustCard({
   preview,
   loading,
   connected,
-  failed,
+  unavailable,
+  error,
   retry,
 }: {
   preview: PreviewResponse | null;
   loading: boolean;
   connected: boolean;
-  failed: boolean;
+  unavailable: boolean; // the server's trust lookup failed
+  error: string | null; // the preview request itself failed (e.g. too many requests)
   retry: () => void;
 }) {
   const trust = preview?.trust;
+  const checkAgain = (
+    <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={retry}>Check again</Button>
+  );
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="flex items-center justify-between">
@@ -330,17 +336,25 @@ function TrustCard({
         <p className="mt-2 text-sm text-muted-foreground">Connect your wallet to see your tier. It’s scored from your wallet’s public mainnet history.</p>
       ) : loading ? (
         <div className="mt-3 grid gap-2"><Skeleton className="h-4" /><Skeleton className="h-4 w-2/3" /></div>
-      ) : failed && !trust ? (
+      ) : error && !trust ? (
+        <div className="mt-2 text-sm" role="alert">
+          <p className="text-muted-foreground">{error}</p>
+          {checkAgain}
+        </div>
+      ) : unavailable && !trust ? (
         <div className="mt-2 text-sm" role="alert">
           <p className="text-muted-foreground">Your trust check is unavailable right now, so your tier and cap are unknown. Launching needs it.</p>
-          <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={retry}>Check again</Button>
+          {checkAgain}
         </div>
       ) : trust ? (
-        <ul className="mt-3 grid gap-1 text-sm text-muted-foreground">
-          {trust.reasons.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
+        <>
+          <ul className="mt-3 grid gap-1 text-sm text-muted-foreground">
+            {trust.reasons.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+          {trust.signals.partial && checkAgain}
+        </>
       ) : null}
     </div>
   );

@@ -272,24 +272,28 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
 
   // The clicking wallet pays for graduation. Meteora's keeper or another wallet may graduate the pool
   // first: the server then answers `already`, and a send that fails because of it still ends in the
-  // resale market (its error toast is replaced, not stacked).
+  // resale market (its error toast is replaced, not stacked). Reads after it skip the server's
+  // few-second cache (?fresh=1), which may not have seen the graduation yet.
   async function graduate() {
     if (!publicKey) return setVisible(true);
     setBusy("migrate");
     const alreadyDone = (id?: string | number) => toast.success("Already graduated. The resale market is open.", { id });
+    const readFresh = () => api<{ campaign: CampaignWithLive }>(`/api/campaigns/${c.pool}?fresh=1`).catch(() => null);
     try {
       const build = () => api<Partial<BuiltTx> & { already?: boolean }>(`/api/campaigns/${c.pool}/migrate`, { wallet: publicKey.toBase58() });
       const built = await build();
       if (built.already || !built.tx) alreadyDone();
-      else
+      else {
         await signAndSend(built as BuiltTx, "Graduate to the resale market", async () => {
           const again = await build();
           if (again.already || !again.tx) throw new Error("Already graduated"); // handled below as already done
           return again as BuiltTx;
         });
+        await readFresh(); // the server's cache now shows the resale market to everyone
+      }
       refresh();
     } catch (e) {
-      const now = await api<{ campaign: CampaignWithLive }>(`/api/campaigns/${c.pool}`).catch(() => null);
+      const now = await readFresh();
       if (now?.campaign.live?.status === "reselling") {
         alreadyDone(e instanceof ReportedError ? e.toastId : undefined);
         refresh();

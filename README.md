@@ -46,7 +46,7 @@ The upfront share is capped by a trust tier scored from the maker wallet's **pub
 | Signal | Effect |
 |---|---|
 | Wallet age | up to +40 |
-| Transaction count | up to +25 |
+| Transaction count, spread over active days | up to +25 (500+ over 30 days, or 50+ over 7) |
 | First funded by a brand-new wallet | −20 |
 
 | Tier | Score | Max upfront share |
@@ -55,7 +55,7 @@ The upfront share is capped by a trust tier scored from the maker wallet's **pub
 | B | ≥ 40 | 25% |
 | C | < 40 | 10% |
 
-Only on-chain signals count, so tier A takes both a year of history and 500+ transactions. The lookup walks back up to 10 pages (10,000 signatures) within an 8-second budget. A longer history is marked truncated: its age is scored as a lower bound ("≥ N days") and the first funder is not checked. A failed lookup is never read as a new wallet: the create form says the check is unavailable and launching returns 503 until it works.
+Only on-chain signals count, so tier A takes both a year of history and 500+ transactions on 30+ distinct days: a burst of self-transfers in one sitting counts as one active day. The lookup walks back up to 10 pages (10,000 signatures) within an 8-second budget, and each RPC call is cut off at the budget. A longer history is marked truncated: its age is scored as a lower bound ("≥ N days") and the first funder is not checked. A walk that ran out of time is also marked partial: the form says so and offers to check again, and the result is cached for 30 s instead of 10 min. A failed lookup is never read as a new wallet: the create form says the check is unavailable and launching returns 503 until it works. Lookups that miss the cache spend a token from a tight per-IP bucket (5, then one per 30 s), since any address can be looked up.
 
 A new or throwaway wallet can still run a campaign, but it takes less upfront and more of the raise stays in the locked resale pool.
 
@@ -142,9 +142,9 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 
 - Every JSON body is capped at 32 KB and checked against a zod schema (`packages/core/src/requests.ts`); bad input is a 400 that says what is wrong.
 - 4xx answers carry a message for the user. Anything else is a 500 with a generic message and a request id, and the server logs one JSON line with `reqId`, `route`, `wallet`, `sig` and the error. Faucet sends, confirmed creates, redemptions and platform-paid graduations log a JSON line with their signature too.
-- Per-IP token buckets on create, preview, quotes, faucet, graduation and the Blink POST (429 when empty). The client IP is the `X-Forwarded-For` entry `TRUSTED_PROXY_HOPS` from the right.
-- Faucet (devnet/localnet): one claim per wallet per 24 h, 5 per IP and 300 in total per day. `RATE_LIMITS=off` lifts the limits on localnet only.
-- Live campaign state is cached per pool for 3 s with concurrent reads coalesced, and the listing reads pools and mints in batched `getMultipleAccountsInfo` calls; configs are read once. The pages keep the last data under a "delayed" banner when a poll fails.
+- Per-IP token buckets on create, preview, quotes, transaction builds (`/api/tx`, confirm, resume, redemptions), trust lookups, uncached campaign reads, faucet, graduation and the Blink POST (429 when empty). The client IP is the `X-Forwarded-For` entry `TRUSTED_PROXY_HOPS` from the right; an invalid value fails `/api/health` and every limited request rather than putting all clients in one bucket. With no proxy in front, `next start` fills `X-Forwarded-For` from the socket only when the client sent none, so the header is client-controlled: set `TRUSTED_PROXY_HOPS=0` there (one shared bucket). The bucket file is written atomically and an unreadable one fails open.
+- Faucet (devnet/localnet): one claim per wallet per 24 h, 5 per IP and 300 in total per day. A claim is recorded before the transfer is sent, so concurrent requests can't all pass the caps, and given back only when the transfer provably did not run. `RATE_LIMITS=off` lifts the limits on localnet only.
+- Live campaign state is cached per pool for 3 s and the resale panels' reads for 5 s, with concurrent reads coalesced; the listing reads pools and mints in batched `getMultipleAccountsInfo` calls; configs are read once. `GET /api/campaigns/<pool>?fresh=1` (rate-limited) skips the cache, the page uses it right after a graduation, and the status gates re-read a pool before refusing an action whose status the cache may not show yet. The pages keep the last data under a "delayed" banner when a poll fails.
 - Status gates: buy and sell only while funding, withdraw and resale swaps only after graduation (409), quotes only for listed campaigns (404); the Blink is disabled with the right copy outside funding or when its live state can't be read, and its POST answers 422.
 
 ### Deploy (Railway)
@@ -158,7 +158,7 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 - **Trust-minimized, not trustless.** A maker can take the upfront share and never ship. The trust tier limits how much they can take upfront, and the rest stays locked in the resale pool.
 - **Exit ≠ refund.** Selling back before the goal pays the current curve price, which can be more or less than the price paid.
 - **Demo storage.** Campaign records, token metadata and shipping details are kept in JSON files on the server. Production needs a database, and encryption for shipping data.
-- **Trust signals are simple.** Wallet age, activity and first funder can be gamed with aged wallets. They are one input, shown openly, and not a verdict.
+- **Trust signals are simple.** Wallet age, activity and first funder can be gamed with aged wallets, and activity with a month of daily self-transfers. They are one input, shown openly, and not a verdict; an attestation (X OAuth or SAS) is an open decision.
 
 ## Business model
 

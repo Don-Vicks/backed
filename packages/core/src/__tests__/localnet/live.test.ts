@@ -1,6 +1,6 @@
 // Live campaign reads and the server's send() against the mainnet DBC program on a local validator
-// (pnpm core:test:localnet): batched listing reads, the per-pool cache, progress from one read, and
-// identical transactions sent back to back. Fresh keypairs and mint, so it can share a validator.
+// (pnpm core:test:localnet): batched listing reads, the per-pool caches (live state and resale panels),
+// progress from one read, and identical transactions sent back to back. Fresh keypairs and mint, so it can share a validator.
 import { before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js'
@@ -9,7 +9,8 @@ import { getNetwork } from '../../network'
 import { send } from '../../tx'
 import { campaignToConfig, type Campaign } from '../../engine'
 import { buildBuyTx, buildCreateCampaignTx, dbcClient, toUsdcRaw } from '../../chain'
-import { readCampaignLive, readCampaignsLive } from '../../live'
+import { forgetCampaignLive, readCampaignLive, readCampaignsLive } from '../../live'
+import { readMakerEarnings, readResale, readResaleCached } from '../../resale'
 import type { CampaignRecord } from '../../store'
 
 const skip = process.env.LOCALNET !== '1' && 'set LOCALNET=1 with a validator running'
@@ -110,6 +111,35 @@ test('concurrent reads of one pool share a request, and the result is cached', {
   assert.equal(calls.get('getMultipleAccountsInfo'), 1, 'one batch for ten readers; the config is cached for good')
   await readCampaignLive(counted, fresh)
   assert.equal(calls.get('getMultipleAccountsInfo'), 1, 'served from the cache')
+})
+
+test('a fresh read skips the cache and refreshes it; a forgotten pool is read again', { skip }, async () => {
+  await readCampaignLive(conn, record) // cached
+  const { conn: counted, calls } = counting(conn)
+  await readCampaignLive(counted, record, { fresh: true })
+  assert.equal(calls.get('getMultipleAccountsInfo'), 1, 'fresh goes to the chain')
+  await readCampaignLive(counted, record)
+  assert.equal(calls.get('getMultipleAccountsInfo'), 1, 'and leaves the cache fresh')
+  forgetCampaignLive(record.pool)
+  await readCampaignLive(counted, record)
+  assert.equal(calls.get('getMultipleAccountsInfo'), 2)
+})
+
+const total = (calls: Map<string, number>) => [...calls.values()].reduce((a, b) => a + b, 0)
+
+test('concurrent resale-panel reads of one pool cost one set of RPC calls', { skip }, async () => {
+  const once = counting(conn)
+  const direct = await readResale(once.conn, record)
+  const maker = direct?.maker ?? (await readMakerEarnings(once.conn, record))
+  assert.ok(total(once.calls) > 0)
+
+  const { conn: counted, calls } = counting(conn)
+  const reads = await Promise.all(Array.from({ length: 10 }, () => readResaleCached(counted, record)))
+  assert.equal(new Set(reads.map((r) => JSON.stringify(r))).size, 1)
+  assert.deepEqual(reads[0], { resale: direct, maker })
+  assert.equal(total(calls), total(once.calls), `ten readers: ${JSON.stringify([...calls])} vs one: ${JSON.stringify([...once.calls])}`)
+  await readResaleCached(counted, record)
+  assert.equal(total(calls), total(once.calls), 'served from the cache')
 })
 
 test('send() lands identical transactions sent at once, each exactly once', { skip }, async () => {

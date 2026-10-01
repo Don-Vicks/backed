@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "crypto";
 import { PublicKey } from "@solana/web3.js";
-import { buildMigrateTx, dbcClient, getCampaign, HttpError, loadKeypair, schemas, send, withPriorityFee } from "@preorder/core";
+import { buildMigrateTx, dbcClient, forgetCampaignLive, getCampaign, HttpError, loadKeypair, schemas, send, withPriorityFee } from "@preorder/core";
 import { connection, errorResponse, finalizeForWallet, logLine, rateLimit, readJson, requestLog, serialize } from "@/lib/server";
 
 // Shorter tokens disable the admin path: the route has no rate limit, so the token must not be guessable.
@@ -41,7 +41,10 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[pool
     const client = dbcClient(conn);
     const state = await client.state.getPool(pool);
     if (!state) throw new HttpError("Pool not found", 404);
-    if (Number(state.poolState.isMigrated) === 1) return Response.json({ ok: true, already: true });
+    if (Number(state.poolState.isMigrated) === 1) {
+      forgetCampaignLive(pool); // the cached state may still say funded: the next read sees the graduation
+      return Response.json({ ok: true, already: true });
+    }
 
     if (auth !== "admin" && !wallet) throw new HttpError("wallet is missing", 400);
     const payer = auth === "admin" ? null : wallet!;
@@ -53,6 +56,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[pool
       tx.feePayer = platform.publicKey;
       await withPriorityFee(tx, conn); // send() sets the blockhash and signs after this
       const signature = await send(conn, tx, [platform, ...extraSigners], `migrate ${pool}`);
+      forgetCampaignLive(pool);
       logLine("info", { reqId: log.reqId, route: log.route, sig: signature, pool, event: "graduated (platform-paid)" });
       return Response.json({ ok: true, signature });
     }

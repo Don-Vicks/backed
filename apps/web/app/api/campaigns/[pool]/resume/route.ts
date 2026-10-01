@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { buildCreatePoolTx, dbcClient, getPending, saveCampaign, savePending, schemas, takePending } from "@preorder/core";
-import { BadRequest, connection, errorResponse, finalizeForWallet, readJson, requestLog, serialize } from "@/lib/server";
+import { BadRequest, connection, errorResponse, finalizeForWallet, rateLimit, readJson, requestLog, serialize } from "@/lib/server";
 
 const nothingToResume = (error: string) => Response.json({ error }, { status: 404 });
 
@@ -11,6 +11,7 @@ const nothingToResume = (error: string) => Response.json({ error }, { status: 40
 export async function POST(req: Request, ctx: RouteContext<"/api/campaigns/[pool]/resume">) {
   const log = requestLog("POST /api/campaigns/[pool]/resume");
   try {
+    rateLimit(req, "tx");
     const { pool } = await ctx.params;
     const { maker } = await readJson(req, schemas.resumeCampaign);
     log.wallet = maker.toBase58();

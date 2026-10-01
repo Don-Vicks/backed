@@ -1,4 +1,4 @@
-import { campaignFromInput, campaignToConfig, MAX_MAKER_SHARE, schemas, type TrustResult } from "@preorder/core";
+import { campaignFromInput, campaignToConfig, HttpError, MAX_MAKER_SHARE, schemas, type TrustResult } from "@preorder/core";
 import { errorResponse, logLine, rateLimit, readJson, requestLog, trustFor } from "@/lib/server";
 import type { PreviewResponse } from "@/lib/types";
 
@@ -15,8 +15,9 @@ export async function POST(req: Request) {
     if (body.maker) {
       log.wallet = body.maker.toBase58();
       try {
-        trust = await trustFor(log.wallet);
+        trust = await trustFor(log.wallet, req);
       } catch (e) {
+        if (e instanceof HttpError && e.status === 429) throw e; // too many lookups: not the lookup failing
         trustUnavailable = true;
         logLine("error", { reqId: log.reqId, route: log.route, wallet: log.wallet, err: `trust lookup: ${e instanceof Error ? e.message : String(e)}` });
       }

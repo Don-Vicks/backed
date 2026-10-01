@@ -167,6 +167,10 @@ async function main() {
   // --- graduate (backer2 pays): reselling state
   const mig = expect('migrate: by backer2', await call('POST', `/api/campaigns/${pool}/migrate`, { wallet: pk(backer2) }), 200)
   if (mig.json.tx) await signSend(mig.json.tx, backer2)
+  // Right after the graduation, before the live-state cache expires: gates and ?fresh=1 already see it.
+  expect('tx withdraw: maker right after graduation', await call('POST', '/api/tx', { kind: 'withdraw', pool, wallet: pk(maker) }), 200)
+  const fresh = expect('campaign: ?fresh=1 after graduation', await call('GET', `/api/campaigns/${pool}?fresh=1`), 200)
+  if (fresh.json.campaign?.live?.status !== 'reselling') rows.push({ label: 'campaign: fresh read shows reselling', status: 0, want: [1], note: fresh.json.campaign?.live?.status })
   await new Promise((r) => setTimeout(r, 3500))
   expect('migrate: again', await call('POST', `/api/campaigns/${pool}/migrate`, { wallet: pk(backer2) }), 200)
   expect('resale quote: reselling', await call('POST', '/api/resale/quote', { pool, side: 'buy', amount: 1 }), 200)
@@ -185,6 +189,10 @@ async function main() {
     const limited = burst.filter((r) => r.status === 429).length
     rows.push({ label: `preview: 30 rapid calls (${limited} × 429)`, status: limited > 0 ? 429 : 200, want: [429], note: '' })
     for (const r of burst) if (r.status >= 500) rows.push({ label: 'preview burst', status: r.status, want: [200, 429], note: JSON.stringify(r.json) })
+    const txIp = ip()
+    const txBurst = await Promise.all(Array.from({ length: 40 }, () => call('POST', '/api/tx', { kind: 'steal' }, { 'x-forwarded-for': txIp })))
+    const txLimited = txBurst.filter((r) => r.status === 429).length
+    rows.push({ label: `tx: 40 rapid calls (${txLimited} × 429)`, status: txLimited > 0 ? 429 : 200, want: [429], note: '' })
   } else {
     console.log('Rate limits are off on this server (RATE_LIMITS=off): skipping the 429 checks.')
   }

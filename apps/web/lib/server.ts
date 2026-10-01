@@ -25,6 +25,7 @@ import {
   type BodySchema,
   type CampaignLive,
   type CampaignRecord,
+  type CampaignStatus,
   type RateLimitName,
   type TrustResult,
 } from "@preorder/core";
@@ -42,10 +43,15 @@ export function metadataResponse(id: string) {
 }
 
 // Trust lookups walk mainnet history: cached for 10 minutes per wallet (at most 5000 wallets), with
-// concurrent lookups of one wallet sharing a walk. A failed lookup throws and is not cached; callers
-// must say the check is unavailable, never fall back to a tier.
-const trustCache = ttlCache<TrustResult>(10 * 60_000, 5000);
-export function trustFor(wallet: string): Promise<TrustResult> {
+// concurrent lookups of one wallet sharing a walk. A partial result (the RPC was too slow to finish the
+// walk) is kept only briefly, so the maker's tier does not depend on one slow minute. A failed lookup
+// throws and is not cached; callers must say the check is unavailable, never fall back to a tier.
+// Each miss costs the caller's IP a token from the tight "trust" bucket: any address can be looked up.
+const TRUST_TTL_MS = 10 * 60_000;
+const PARTIAL_TRUST_TTL_MS = 30_000;
+const trustCache = ttlCache<TrustResult>((t) => (t.signals.partial ? PARTIAL_TRUST_TTL_MS : TRUST_TTL_MS), 5000);
+export function trustFor(wallet: string, req: Request): Promise<TrustResult> {
+  if (!trustCache.fresh(wallet)) rateLimit(req, "trust", "Too many trust checks from your network. Try again in a minute.");
   return trustCache.get(wallet, async () => {
     const signals = trustFixture(wallet) ?? (await readTrustSignals(new Connection(trustRpcUrl(), "confirmed"), new PublicKey(wallet)));
     return scoreSignals(signals);
@@ -98,22 +104,32 @@ export async function readJson<S extends BodySchema>(req: Request, schema: S, op
 // Per-IP token bucket for routes that cost RPC calls or platform SOL. RATE_LIMITS=off turns the limits
 // (and the faucet caps) off, on localnet only, for test runs that share one IP.
 export const rateLimitsOff = () => getNetwork().name === "localnet" && process.env.RATE_LIMITS === "off";
-export function rateLimit(req: Request, name: RateLimitName) {
+export function rateLimit(req: Request, name: RateLimitName, message = "Too many requests. Wait a moment and try again.") {
   if (rateLimitsOff()) return;
   const { capacity, perSec } = RATE_LIMITS[name];
-  if (!takeRateToken(`${name}:${clientIp(req.headers)}`, capacity, perSec)) {
-    throw new HttpError("Too many requests. Wait a moment and try again.", 429);
-  }
+  if (!takeRateToken(`${name}:${clientIp(req.headers)}`, capacity, perSec)) throw new HttpError(message, 429);
 }
 
 // Live campaign state for a status gate. An RPC failure is a 503 the user can retry, not a 500.
-export async function liveOrUnavailable(record: CampaignRecord, log: RequestLog): Promise<CampaignLive> {
+// `fresh` skips the few-second cache (see readCampaignLive).
+export async function liveOrUnavailable(record: CampaignRecord, log: RequestLog, opts: { fresh?: boolean } = {}): Promise<CampaignLive> {
   try {
-    return await readCampaignLive(connection(), record);
+    return await readCampaignLive(connection(), record, opts);
   } catch (e) {
     logLine("error", { reqId: log.reqId, route: log.route, pool: record.pool, err: e instanceof Error ? e.message : String(e) });
     throw new HttpError("Live campaign data is unavailable right now. Try again in a moment.", 503);
   }
+}
+
+// A status gate (409 with `message` otherwise). Status only moves forward (funding, funded, reselling),
+// so a cached state can only be behind: when it is short of the status needed, the pool is read again
+// before refusing, and a graduation that just landed is not turned away for the cache's few seconds.
+const STATUS_ORDER: CampaignStatus[] = ["funding", "funded", "reselling"];
+export async function requireStatus(record: CampaignRecord, log: RequestLog, status: CampaignStatus, message: string): Promise<CampaignLive> {
+  let live = await liveOrUnavailable(record, log);
+  if (STATUS_ORDER.indexOf(live.status) < STATUS_ORDER.indexOf(status)) live = await liveOrUnavailable(record, log, { fresh: true });
+  if (live.status !== status) throw new HttpError(message, 409);
+  return live;
 }
 
 // 4xx: the message is for the user. 5xx: a generic message with a request id, and one JSON log line

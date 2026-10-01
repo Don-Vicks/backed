@@ -13,8 +13,8 @@ process.env.PREORDER_ROOT = root
 process.env.NETWORK = 'localnet'
 
 import { HttpError } from '../errors'
-import { MAX_BODY_BYTES, clientIp, parseWith, readJsonBody, schemas } from '../requests'
-import { countFaucetClaims, recordFaucetClaim, takeRateToken } from '../store'
+import { MAX_BODY_BYTES, clientIp, parseWith, readJsonBody, schemas, trustedProxyHops } from '../requests'
+import { countFaucetClaims, recordFaucetClaim, removeFaucetClaim, takeRateToken } from '../store'
 
 const post = (body: string | null, headers: Record<string, string> = {}) =>
   new Request('http://localhost/api/x', { method: 'POST', body, headers: { 'content-type': 'application/json', ...headers } })
@@ -93,6 +93,15 @@ test('clientIp takes the entry the trusted proxy appended, not what the client s
   assert.equal(clientIp(h(), {}), 'unknown')
 })
 
+test('an invalid TRUSTED_PROXY_HOPS is an error, not one shared bucket', () => {
+  assert.equal(trustedProxyHops({}), 1)
+  assert.equal(trustedProxyHops({ TRUSTED_PROXY_HOPS: ' 2 ' }), 2)
+  for (const bad of ['one', '1.5', '-1', '1e400']) {
+    assert.throws(() => trustedProxyHops({ TRUSTED_PROXY_HOPS: bad }), /TRUSTED_PROXY_HOPS must be a whole number/, bad)
+    assert.throws(() => clientIp(new Headers({ 'x-forwarded-for': '9.9.9.9' }), { TRUSTED_PROXY_HOPS: bad }), /TRUSTED_PROXY_HOPS/)
+  }
+})
+
 test('rate tokens: a bucket empties and refills, per key', () => {
   const t0 = 1_000_000
   assert.equal(takeRateToken('ip:1', 2, 1, t0), true)
@@ -105,6 +114,24 @@ test('rate tokens: a bucket empties and refills, per key', () => {
   assert.equal(takeRateToken('__proto__', 1, 1, t0), false)
 })
 
+const rateFile = () => path.join(root, 'data', 'rate.localnet.json')
+
+test('rate tokens: a bucket is dropped once it would be full again, and writes leave no temp file', () => {
+  const t0 = 2_000_000
+  takeRateToken('keep', 10, 1, t0) // full again at t0 + 1 s
+  takeRateToken('slow', 10, 1 / 60, t0) // full again at t0 + 60 s
+  takeRateToken('other', 10, 1, t0 + 1500)
+  const keys = Object.keys(JSON.parse(fs.readFileSync(rateFile(), 'utf8')))
+  assert.ok(!keys.includes('keep') && keys.includes('slow') && keys.includes('other'), keys.join(','))
+  assert.deepEqual(fs.readdirSync(path.dirname(rateFile())).filter((f) => f.endsWith('.tmp')), [])
+})
+
+test('rate tokens fail open on an unreadable file instead of failing every request', () => {
+  fs.writeFileSync(rateFile(), '{"ip:9": {"tokens": 0.') // cut short mid-write
+  assert.equal(takeRateToken('ip:9', 1, 1, 3_000_000), true)
+  assert.equal(takeRateToken('ip:9', 1, 1, 3_000_000), false, 'and the next write repairs the file')
+})
+
 test('faucet claims are counted per wallet, per IP and in total', () => {
   const t0 = Date.now()
   recordFaucetClaim('W1', '1.1.1.1', t0)
@@ -114,4 +141,8 @@ test('faucet claims are counted per wallet, per IP and in total', () => {
   assert.equal(countFaucetClaims(t0 - 100, { wallet: 'W1' }), 2)
   assert.equal(countFaucetClaims(t0, { ip: '1.1.1.1' }), 2)
   assert.equal(countFaucetClaims(t0 - 100), 3)
+  removeFaucetClaim('W2', t0 + 10)
+  assert.equal(countFaucetClaims(t0, { ip: '1.1.1.1' }), 1, 'a claim whose transfer never ran is taken back')
+  removeFaucetClaim('W2', t0 + 10)
+  assert.equal(countFaucetClaims(t0 - 100), 2)
 })

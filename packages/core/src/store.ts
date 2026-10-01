@@ -77,22 +77,44 @@ export function getMetadata(id: string): TokenMetadata | undefined {
   return Object.hasOwn(all, id) ? all[id] : undefined
 }
 
+// Writes a temp file and renames it into place, so a crash or a full volume mid-write leaves the old
+// file whole instead of a truncated one.
+function writeFileAtomic(file: string, data: string) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, data)
+  fs.renameSync(tmp, file)
+}
+
 // Rate limits: one token bucket per key (an IP on a route), refilled at refillPerSec up to capacity.
-// Returns false when the bucket is empty. Buckets idle for a day are dropped (they would be full).
-type RateBucket = { tokens: number; updatedAt: number }
+// Returns false when the bucket is empty. A bucket is dropped once it would be full again, so the file
+// only holds clients seen in the last few minutes. The buckets are a guard, not a record: an unreadable
+// or unwritable file fails open (every bucket full) rather than turning each limited request into a 500.
+type RateBucket = { tokens: number; updatedAt: number; fullAt: number }
 const ratePath = () => path.join(repoRoot(), 'data', `rate.${getNetwork().name}.json`)
-export const RATE_RETENTION_MS = 24 * 60 * 60_000
+
+function readRateBuckets(): Map<string, RateBucket> {
+  try {
+    // A Map, so a key like "__proto__" is just a key.
+    return new Map(Object.entries(JSON.parse(fs.readFileSync(ratePath(), 'utf8')) as Record<string, RateBucket>))
+  } catch {
+    return new Map() // missing, or cut short by a crash before writes were atomic
+  }
+}
 
 export function takeRateToken(key: string, capacity: number, refillPerSec: number, now = Date.now()): boolean {
-  // A Map, so a key like "__proto__" is just a key.
-  const all = new Map<string, RateBucket>(fs.existsSync(ratePath()) ? Object.entries(JSON.parse(fs.readFileSync(ratePath(), 'utf8'))) : [])
+  const all = readRateBuckets()
   const row = all.get(key)
   const available = row ? Math.min(capacity, row.tokens + (Math.max(0, now - row.updatedAt) / 1000) * refillPerSec) : capacity
   const ok = available >= 1
-  all.set(key, { tokens: ok ? available - 1 : available, updatedAt: now })
-  for (const [k, b] of all) if (now - b.updatedAt > RATE_RETENTION_MS) all.delete(k)
-  fs.mkdirSync(path.dirname(ratePath()), { recursive: true })
-  fs.writeFileSync(ratePath(), JSON.stringify(Object.fromEntries(all)))
+  const tokens = ok ? available - 1 : available
+  all.set(key, { tokens, updatedAt: now, fullAt: now + ((capacity - tokens) / refillPerSec) * 1000 })
+  for (const [k, b] of all) if (!(now < b.fullAt)) all.delete(k)
+  try {
+    writeFileAtomic(ratePath(), JSON.stringify(Object.fromEntries(all)))
+  } catch (e) {
+    console.error(`rate limits not saved: ${e instanceof Error ? e.message : String(e)}`)
+  }
   return ok
 }
 
@@ -104,8 +126,16 @@ const readFaucetClaims = (): FaucetClaim[] => (fs.existsSync(faucetPath()) ? JSO
 
 export function recordFaucetClaim(wallet: string, ip: string | null, now = Date.now()) {
   const kept = readFaucetClaims().filter((c) => now - c.claimedAt <= FAUCET_RETENTION_MS)
-  fs.mkdirSync(path.dirname(faucetPath()), { recursive: true })
-  fs.writeFileSync(faucetPath(), JSON.stringify([{ wallet, ip, claimedAt: now }, ...kept]))
+  writeFileAtomic(faucetPath(), JSON.stringify([{ wallet, ip, claimedAt: now }, ...kept]))
+}
+
+// Takes back a claim recorded before a transfer that then provably did not happen.
+export function removeFaucetClaim(wallet: string, claimedAt: number) {
+  const all = readFaucetClaims()
+  const i = all.findIndex((c) => c.wallet === wallet && c.claimedAt === claimedAt)
+  if (i < 0) return
+  all.splice(i, 1)
+  writeFileAtomic(faucetPath(), JSON.stringify(all))
 }
 
 // Claims since a time, optionally for one wallet or one IP (both unset: all claims).

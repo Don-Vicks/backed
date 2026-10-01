@@ -1,10 +1,11 @@
 import { dbcClient, saveCampaign, schemas, takePending } from "@preorder/core";
-import { BadRequest, connection, errorResponse, logLine, readJson, requestLog } from "@/lib/server";
+import { BadRequest, connection, errorResponse, logLine, rateLimit, readJson, requestLog } from "@/lib/server";
 
 // Called after the maker's wallet sent the create transaction: verifies the pool exists, then lists it.
 export async function POST(req: Request) {
   const log = requestLog("POST /api/campaigns/confirm");
   try {
+    rateLimit(req, "tx");
     const { pool: poolKey, signature } = await readJson(req, schemas.confirmCampaign);
     const pool = poolKey.toBase58();
     log.sig = signature;

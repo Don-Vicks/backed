@@ -127,17 +127,29 @@ export const schemas = {
   blinkAmount: z.coerce.number({ error: 'Enter an amount in USDC' }).pipe(amountSchema),
 }
 
+// TRUSTED_PROXY_HOPS: how many proxies in front of the server append to X-Forwarded-For. 1 behind
+// Railway's edge (the default); 0 when the server is reached directly. Anything else is a config error,
+// thrown here (and by /api/health) rather than quietly putting every client in one bucket.
+export function trustedProxyHops(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.TRUSTED_PROXY_HOPS?.trim()
+  if (!raw) return 1
+  const hops = Number(raw)
+  if (!Number.isSafeInteger(hops) || hops < 0) throw new Error(`TRUSTED_PROXY_HOPS must be a whole number ≥ 0, got "${raw}"`)
+  return hops
+}
+
 // The client's IP as the nearest trusted proxy saw it. Each proxy appends the address it received the
 // request from to X-Forwarded-For, so the entry `hops` from the right is the one no client can forge;
-// the leftmost entries are whatever the client sent. TRUSTED_PROXY_HOPS: 1 behind one proxy (Railway's
-// edge, the default), 0 when the server is reached directly (then all requests share one bucket).
+// the leftmost entries are whatever the client sent. With no proxy (hops 0) there is no such entry:
+// `next start` only fills X-Forwarded-For from the socket when the client sent none, so the header is
+// the client's to choose, and every request shares the "unknown" bucket instead.
 export function clientIp(headers: Headers, env: NodeJS.ProcessEnv = process.env): string {
-  const hops = env.TRUSTED_PROXY_HOPS?.trim() ? Number(env.TRUSTED_PROXY_HOPS) : 1
+  const hops = trustedProxyHops(env)
   const chain = (headers.get('x-forwarded-for') ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
-  if (!Number.isInteger(hops) || hops < 1 || chain.length === 0) return 'unknown'
+  if (hops < 1 || chain.length === 0) return 'unknown'
   return chain[Math.max(0, chain.length - hops)]
 }
 
@@ -150,6 +162,13 @@ export const RATE_LIMITS = {
   faucet: { capacity: 5, perSec: 1 / 60 },
   migrate: { capacity: 5, perSec: 1 / 10 },
   blink: { capacity: 10, perSec: 1 / 2 },
+  // Building a wallet transaction, confirming a launch or recording a redemption: the quote bucket's size,
+  // far above the few transactions a minute a person signs.
+  tx: { capacity: 30, perSec: 2 },
+  // Spent only on a trust-cache miss: each walks up to 20 pages of mainnet history.
+  trust: { capacity: 5, perSec: 1 / 30 },
+  // A campaign read that skips the live-state cache (after a graduation, to see it at once).
+  fresh: { capacity: 10, perSec: 1 / 5 },
 } as const satisfies Record<string, { capacity: number; perSec: number }>
 
 export type RateLimitName = keyof typeof RATE_LIMITS

@@ -1,12 +1,14 @@
-import { getNetwork, priorityFeeMax } from "@preorder/core";
+import { getNetwork, priorityFeeMax, trustedProxyHops } from "@preorder/core";
 
 // Liveness for the platform healthcheck: no RPC call, so a slow RPC never blocks a deploy.
 // Fails when the server's NETWORK differs from the one baked into the browser bundle at build time, or
-// when PRIORITY_FEE_MAX_MICROLAMPORTS is invalid (every wallet transaction would fail at request time).
+// when PRIORITY_FEE_MAX_MICROLAMPORTS or TRUSTED_PROXY_HOPS is invalid (every wallet transaction, or every
+// rate-limited request, would fail at request time).
 export function GET() {
   try {
     const network = getNetwork().name;
     priorityFeeMax();
+    trustedProxyHops();
     const built = process.env.NEXT_PUBLIC_NETWORK;
     if (built !== network) {
       return Response.json({ ok: false, network, error: `built for ${built}, running on ${network}: rebuild` }, { status: 503 });

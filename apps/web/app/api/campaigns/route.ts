@@ -67,8 +67,9 @@ export async function POST(req: Request) {
     // The tier caps the maker's share, so a failed lookup stops the launch instead of guessing a tier.
     let trust: TrustResult;
     try {
-      trust = await trustFor(maker.toBase58());
+      trust = await trustFor(maker.toBase58(), req);
     } catch (e) {
+      if (e instanceof HttpError && e.status === 429) throw e;
       logLine("error", { reqId: log.reqId, route: log.route, wallet: log.wallet, err: `trust lookup: ${e instanceof Error ? e.message : String(e)}` });
       throw new HttpError("Your wallet's trust check is unavailable right now. Try again in a minute.", 503);
     }

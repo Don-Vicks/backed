@@ -38,13 +38,22 @@ export const LIVE_TTL_MS = 3_000
 const liveCache = ttlCache<CampaignLive>(LIVE_TTL_MS)
 const configCache = new LruMap<string, PoolConfigAccount>(5000)
 
-export function readCampaignLive(connection: Connection, record: CampaignRecord): Promise<CampaignLive> {
-  return liveCache.get(record.pool, async () => {
+// `fresh` skips the cache and refreshes it, for a read that must see a change just made (a graduation).
+export function readCampaignLive(connection: Connection, record: CampaignRecord, opts: { fresh?: boolean } = {}): Promise<CampaignLive> {
+  const load = async () => {
     const [live] = await fetchCampaignsLive(connection, [record])
     if (!live) throw new Error(`pool ${record.pool} not found`)
     return live
+  }
+  if (!opts.fresh) return liveCache.get(record.pool, load)
+  return load().then((live) => {
+    liveCache.set(record.pool, live)
+    return live
   })
 }
+
+// Drops a pool's cached state, after a change the server made or saw itself.
+export const forgetCampaignLive = (pool: string) => liveCache.delete(pool)
 
 // The listing: cached pools as they are, the rest in batched reads. null for a pool that can't be read.
 export async function readCampaignsLive(connection: Connection, records: CampaignRecord[]): Promise<(CampaignLive | null)[]> {

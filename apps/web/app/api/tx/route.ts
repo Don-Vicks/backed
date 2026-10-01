@@ -22,7 +22,7 @@ import {
   type CampaignStatus,
   type SellQuote,
 } from "@preorder/core";
-import { BadRequest, connection, errorResponse, finalizeForWallet, liveOrUnavailable, readJson, requestLog, serialize } from "@/lib/server";
+import { BadRequest, connection, errorResponse, finalizeForWallet, rateLimit, readJson, requestLog, requireStatus, serialize } from "@/lib/server";
 
 // The campaign status each kind needs, and what to say otherwise (409). The program would reject these
 // anyway, but only after the wallet prompt and a failed transaction.
@@ -38,13 +38,14 @@ const NEEDS: Partial<Record<string, [CampaignStatus, string]>> = {
 export async function POST(req: Request) {
   const log = requestLog("POST /api/tx");
   try {
+    rateLimit(req, "tx");
     const body = await readJson(req, schemas.tx);
     const wallet = body.wallet;
     log.wallet = wallet.toBase58();
     const record = getCampaign(body.pool.toBase58());
     if (!record) throw new HttpError("Campaign not found", 404);
     const need = NEEDS[body.kind];
-    if (need && (await liveOrUnavailable(record, log)).status !== need[0]) throw new HttpError(need[1], 409);
+    if (need) await requireStatus(record, log, need[0], need[1]);
     const conn = connection();
     const pool = new PublicKey(record.pool);
     const baseMint = new PublicKey(record.baseMint);

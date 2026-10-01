@@ -30,30 +30,32 @@ export class LruMap<K, V> {
 }
 
 export type TtlCache<T> = {
-  // The cached value while it is younger than the TTL, else load() once for every caller waiting on it.
+  // The cached value while it is younger than its TTL, else load() once for every caller waiting on it.
   get(key: string, load: () => Promise<T>): Promise<T>
   set(key: string, value: T): void
   fresh(key: string): T | undefined
+  delete(key: string): void
 }
 
-// Values expire after ttlMs; concurrent misses on one key share a single load. A failed load is not
-// cached, so the next caller tries again.
-export function ttlCache<T>(ttlMs: number, max = 5000, now: () => number = Date.now): TtlCache<T> {
-  const values = new LruMap<string, { value: T; at: number }>(max)
+// Values expire after ttlMs (or ttlMs(value), for values that should not be kept as long); concurrent
+// misses on one key share a single load. A failed load is not cached, so the next caller tries again.
+export function ttlCache<T>(ttlMs: number | ((value: T) => number), max = 5000, now: () => number = Date.now): TtlCache<T> {
+  const values = new LruMap<string, { value: T; expiresAt: number }>(max)
   const inFlight = new Map<string, Promise<T>>()
 
   const fresh = (key: string) => {
     const hit = values.get(key)
-    return hit && now() - hit.at < ttlMs ? hit.value : undefined
+    return hit && now() < hit.expiresAt ? hit.value : undefined
   }
-  const set = (key: string, value: T) => values.set(key, { value, at: now() })
+  const set = (key: string, value: T) => values.set(key, { value, expiresAt: now() + (typeof ttlMs === 'function' ? ttlMs(value) : ttlMs) })
 
   return {
     fresh,
     set,
+    delete: (key) => void values.delete(key),
     get(key, load) {
       const hit = values.get(key)
-      if (hit && now() - hit.at < ttlMs) return Promise.resolve(hit.value)
+      if (hit && now() < hit.expiresAt) return Promise.resolve(hit.value)
       const pending = inFlight.get(key)
       if (pending) return pending
       const p = load()

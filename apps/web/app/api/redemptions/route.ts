@@ -1,10 +1,11 @@
 import { getCampaign, HttpError, saveRedemption, schemas, verifyBurn } from "@preorder/core";
-import { BadRequest, connection, errorResponse, logLine, readJson, requestLog } from "@/lib/server";
+import { BadRequest, connection, errorResponse, logLine, rateLimit, readJson, requestLog } from "@/lib/server";
 
 // A backer submits shipping details for a burn they already made on-chain.
 export async function POST(req: Request) {
   const log = requestLog("POST /api/redemptions");
   try {
+    rateLimit(req, "tx");
     const body = await readJson(req, schemas.redemption);
     const wallet = body.wallet;
     log.wallet = wallet.toBase58();

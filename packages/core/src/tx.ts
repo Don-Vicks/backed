@@ -13,6 +13,10 @@ async function nextBlockhash(connection: Connection, previous: string) {
   throw new Error('no new blockhash after 8s')
 }
 
+// A transaction that provably changed nothing: it failed simulation (never sent) or failed on-chain.
+// Any other error from send() may come after the transaction landed.
+export class TxNotExecutedError extends Error {}
+
 // Sends per fee payer run one at a time (a faucet burst queues instead of racing the admin graduation).
 const payerQueues = new Map<string, Promise<unknown>>()
 
@@ -47,7 +51,7 @@ async function sendNow(connection: Connection, tx: Transaction, signers: Keypair
     }
     if (sim.value.err) {
       const logs = (sim.value.logs ?? []).slice(-15).join('\n  ')
-      throw new Error(`${label}: simulation failed ${JSON.stringify(sim.value.err)}\n  ${logs}`)
+      throw new TxNotExecutedError(`${label}: simulation failed ${JSON.stringify(sim.value.err)}\n  ${logs}`)
     }
 
     const signature = await connection.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 5 })
@@ -55,7 +59,7 @@ async function sendNow(connection: Connection, tx: Transaction, signers: Keypair
       { signature, blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight },
       'confirmed',
     )
-    if (result.value.err) throw new Error(`${label}: failed on-chain ${JSON.stringify(result.value.err)} (${signature})`)
+    if (result.value.err) throw new TxNotExecutedError(`${label}: failed on-chain ${JSON.stringify(result.value.err)} (${signature})`)
     console.log(`  ✓ ${label}\n    ${explorerTx(signature)}`)
     return signature
   }

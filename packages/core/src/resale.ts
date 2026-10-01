@@ -8,6 +8,7 @@ import { dbcClient, resalePoolAddress } from './chain'
 import { USDC_DECIMALS, VOUCHER_DECIMALS } from './engine'
 import type { CampaignRecord } from './store'
 import { DEFAULT_SLIPPAGE_BPS, chainNow, slippageBps, toRawAmount } from './swaps'
+import { ttlCache } from './cache'
 
 export type ResaleSide = 'buy' | 'sell' // buy = USDC → vouchers, sell = vouchers → USDC
 
@@ -73,6 +74,19 @@ export async function readResale(connection: Connection, record: CampaignRecord)
     usdcInPool: toNum(vaultB.amount, USDC_DECIMALS),
     maker,
   }
+}
+
+// What the campaign page polls (every 8 s per viewer): the resale pool and the maker's earnings, read
+// at most once per pool per RESALE_TTL_MS, with concurrent reads of one pool sharing the RPC calls.
+export const RESALE_TTL_MS = 5_000
+export type ResaleAndEarnings = { resale: ResaleView | null; maker: MakerEarnings }
+const resaleCache = ttlCache<ResaleAndEarnings>(RESALE_TTL_MS)
+
+export function readResaleCached(connection: Connection, record: CampaignRecord): Promise<ResaleAndEarnings> {
+  return resaleCache.get(record.pool, async () => {
+    const resale = await readResale(connection, record)
+    return { resale, maker: resale?.maker ?? (await readMakerEarnings(connection, record)) }
+  })
 }
 
 async function quoteRaw(connection: Connection, record: CampaignRecord, side: ResaleSide, amount: number, bps: number) {
