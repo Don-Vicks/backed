@@ -1,5 +1,6 @@
 // Exercises the web API exactly as the browser does, signing with local devnet test wallets.
 import { Transaction } from '@solana/web3.js'
+import { LIVE_TTL_MS } from '../live'
 import { getConnection } from '../network'
 import { loadWallets } from '../wallets'
 
@@ -40,8 +41,9 @@ async function main() {
   await api('/api/campaigns/confirm', { pool: created.pool, signature: sig })
   console.log(`✓ confirmed, pool ${created.pool}`)
 
-  await api('/api/faucet', { wallet: w.backer1.publicKey.toBase58() })
-  console.log('✓ faucet')
+  // Every backer below spends test USDC; fresh localnet wallets start with none.
+  for (const b of [w.backer1, w.backer2, w.backer3]) await api('/api/faucet', { wallet: b.publicKey.toBase58() })
+  console.log('✓ faucet ×3')
 
   console.log('waiting 65s for the drop-bot window…')
   await new Promise((r) => setTimeout(r, 65_000))
@@ -60,6 +62,7 @@ async function main() {
     const b = backers[i++ % 3]
     const t = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'buy', pool: created.pool, wallet: b.publicKey.toBase58(), usdc: 4 })
     await signSend(t, b, `buy 4 USDC`)
+    await new Promise((r) => setTimeout(r, LIVE_TTL_MS)) // the server caches live state this long
     live = (await api<any>(`/api/campaigns/${created.pool}`)).campaign.live
     console.log(`  progress ${(live.progress * 100).toFixed(1)}%`)
     if (i > 20) throw new Error('did not fund')
