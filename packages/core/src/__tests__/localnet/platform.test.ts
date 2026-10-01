@@ -50,7 +50,7 @@ async function balance(mint: PublicKey | string, owner: PublicKey) {
   return new BN(a ? a.amount.toString() : '0')
 }
 
-const supply = async () => new BN((await getMint(conn, new PublicKey(record.baseMint))).supply.toString())
+const supply = async (r = record) => new BN((await getMint(conn, new PublicKey(r.baseMint))).supply.toString())
 const raw = (n: number) => Math.round(n * 1e6)
 
 // Signs with whichever of the given keys the transaction actually needs (the payer of the create
@@ -72,9 +72,13 @@ before(async () => {
     fund.add(createAssociatedTokenAccountIdempotentInstruction(platform.publicKey, ata, k.publicKey, usdcMint), createMintToInstruction(usdcMint, ata, platform.publicKey, 1_000_000_000n))
   }
   await send(conn, fund, [platform], 'mint test USDC')
+  record = await launch('Partner Tee')
+})
 
+// A fresh campaign with the platform as fee claimer (tier A, a short test vesting schedule).
+async function launch(name: string): Promise<CampaignRecord> {
   const campaign: Campaign = {
-    name: 'Partner Tee',
+    name,
     symbol: 'PTEE',
     uri: 'https://example.com/p.json',
     image: 'https://example.com/partner-tee.png',
@@ -86,7 +90,7 @@ before(async () => {
   }
   const built = await buildCreateCampaignTx({ connection: conn, campaign, tier: 'A', platform: platform.publicKey, maker: maker.publicKey, usdcMint })
   await send(conn, built.tx, [...neededSigners(built.tx, [maker, platform]), ...built.extraSigners], 'create campaign')
-  record = {
+  return {
     pool: built.pool.toBase58(),
     config: built.config.toBase58(),
     baseMint: built.baseMint.toBase58(),
@@ -101,7 +105,13 @@ before(async () => {
     fields: built.fields,
     migrationFeeOption: built.onChain.migrationFeeOption,
   }
-})
+}
+
+async function graduate(r: CampaignRecord) {
+  await send(conn, await buildBuyTx(conn, backer.publicKey, new PublicKey(r.pool), r.goalUsdc * 1.3), [backer], 'buy to the goal')
+  const mig = await buildMigrateTx(conn, platform.publicKey, new PublicKey(r.pool))
+  await send(conn, mig.tx, [platform, ...mig.extraSigners], 'migrateToDammV2')
+}
 
 test('pool listing: the maker publishes it after create, and it reads back', { skip }, async () => {
   const tx = await buildPoolMetadataTx(conn, record, maker.publicKey, ORIGIN)
@@ -126,9 +136,7 @@ test('partner listing: once per fee claimer', { skip }, async () => {
 })
 
 test('earnings: curve fees, the partner resale position and leftover, all from chain', { skip, timeout: 120_000 }, async () => {
-  await send(conn, await buildBuyTx(conn, backer.publicKey, new PublicKey(record.pool), record.goalUsdc * 1.3), [backer], 'buy to the goal')
-  const mig = await buildMigrateTx(conn, platform.publicKey, new PublicKey(record.pool))
-  await send(conn, mig.tx, [platform, ...mig.extraSigners], 'migrateToDammV2')
+  await graduate(record)
   await send(conn, await buildResaleSwapTx(conn, record, reseller.publicKey, 'buy', 3), [reseller], 'resale buy 3 USDC')
 
   const { campaigns, failed, totals } = await readPlatformEarnings(conn, [record, { ...record, pool: Keypair.generate().publicKey.toBase58() }])
@@ -210,4 +218,39 @@ test('the claim script prints unsigned base58 transactions when it does not hold
   const usdc0 = await balance(usdcMint, platform.publicKey)
   await send(conn, tx, [platform], 'claim signed elsewhere')
   assert.equal((await balance(usdcMint, platform.publicKey)).sub(usdc0).toNumber(), raw(owed), 'no treasury set: to the fee claimer')
+})
+
+test('leftover withdrawn by someone else first: shown as not burned, then burned on its own', { skip, timeout: 120_000 }, async () => {
+  const second = await launch('Partner Cap')
+  await graduate(second)
+  const owed = (await readPlatformEarnings(conn, [second])).campaigns[0].leftoverVouchers
+  assert.ok(owed > 0)
+
+  // withdrawLeftover is permissionless: a stranger calls it, and it still pays the leftover receiver.
+  const stranger = Keypair.generate()
+  await airdrop(stranger.publicKey, 1)
+  await send(conn, await dbcClient(conn).migration.withdrawLeftover({ payer: stranger.publicKey, pool: new PublicKey(second.pool) }), [stranger], 'withdrawLeftover by a stranger')
+  assert.equal((await balance(second.baseMint, platform.publicKey)).toNumber(), raw(owed))
+
+  // Both campaigns in one read (one scan of the claimer's positions): each gets its own resale position.
+  const { campaigns, totals } = await readPlatformEarnings(conn, [record, second])
+  const c = campaigns.find((x) => x.pool === second.pool)!
+  assert.equal(c.leftoverVouchers, 0)
+  assert.equal(raw(c.leftoverUnburnedVouchers), raw(owed))
+  assert.equal(raw(totals.leftoverUnburnedVouchers), raw(owed))
+  for (const x of campaigns) assert.ok(x.resaleLiquidityUsdc > 0 && x.resalePool !== null, x.name)
+  assert.notEqual(campaigns[0].resalePool, campaigns[1].resalePool)
+
+  const kept = await buildPlatformClaimTxs(conn, second, { burnLeftover: false })
+  assert.deepEqual(kept.filter((x) => x.kind === 'leftover'), [], '--keep-leftover keeps them')
+  const claims = (await buildPlatformClaimTxs(conn, second)).filter((x) => x.kind === 'leftover')
+  assert.equal(claims.length, 1)
+  assert.equal(claims[0].label, 'burn leftover vouchers withdrawn earlier')
+  assert.equal(claims[0].amount.toNumber(), raw(owed))
+  const supply0 = await supply(second)
+  await send(conn, claims[0].tx, [platform], claims[0].label)
+  assert.equal(supply0.sub(await supply(second)).toNumber(), raw(owed))
+  assert.ok((await balance(second.baseMint, platform.publicKey)).isZero())
+  assert.equal((await readPlatformEarnings(conn, [second])).campaigns[0].leftoverUnburnedVouchers, 0)
+  assert.deepEqual((await buildPlatformClaimTxs(conn, second)).filter((x) => x.kind === 'leftover'), [])
 })

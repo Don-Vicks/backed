@@ -31,11 +31,13 @@ export function PlatformView() {
   }
 
   const t = data.totals;
+  // Leftover someone else withdrew (anyone may) waits unburned until the next claim run burns it.
+  const leftoverNote = t.leftoverUnburnedVouchers > 0 ? `${vouchers(t.leftoverUnburnedVouchers)} withdrawn, not burned yet` : "burned when claimed";
   const stats = [
     { label: "Curve fees, unclaimed", value: usd(t.curveFeesUnclaimedUsdc, 3), note: `${usd(t.curveFeesClaimedUsdc, 3)} claimed` },
     { label: "Resale fees, unclaimed", value: usd(t.resaleFeesUnclaimedUsdc, 3), note: "from the platform’s resale positions" },
     { label: "Locked resale liquidity", value: usd(t.resaleLiquidityUsdc), note: `+ ${vouchers(t.resaleLiquidityVouchers)} vouchers, never withdrawable` },
-    { label: "Leftover vouchers", value: vouchers(t.leftoverVouchers), note: t.surplusUsdc > 0 ? `surplus ${usd(t.surplusUsdc, 3)}` : "burned when claimed" },
+    { label: "Leftover vouchers", value: vouchers(t.leftoverVouchers), note: t.surplusUsdc > 0 ? `${leftoverNote} · partner surplus ${usd(t.surplusUsdc, 3)}` : leftoverNote },
   ];
 
   return (
@@ -109,7 +111,10 @@ export function PlatformView() {
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums">{usd(c.resaleFeesUnclaimedUsdc, 3)}</td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums">{c.migrated ? usd(c.resaleLiquidityUsdc) : "–"}</td>
-                    <td className="px-4 py-3 text-right font-mono tabular-nums">{vouchers(c.leftoverVouchers)}</td>
+                    <td className="px-4 py-3 text-right font-mono tabular-nums">
+                      {vouchers(c.leftoverVouchers)}
+                      {c.leftoverUnburnedVouchers > 0 && <span className="block text-xs text-muted-foreground">{vouchers(c.leftoverUnburnedVouchers)} withdrawn, not burned</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>

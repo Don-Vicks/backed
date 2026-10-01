@@ -3,9 +3,10 @@
 // given: curve trading fees and resale-pool fees (to PLATFORM_TREASURY, else the fee claimer),
 // leftover vouchers (burned unless --keep-leftover) and any surplus. Signs and sends when this machine
 // holds the fee claimer's key; otherwise, or with --unsigned, prints each transaction as unsigned
-// base58 for the claimer to sign (e.g. import into a Squads multisig).
+// base58 for the claimer to sign (e.g. import into a Squads multisig). A campaign whose claim fails is
+// reported and skipped; the script exits non-zero at the end if any did.
 import { getConnection, getNetwork } from '../network'
-import { buildPlatformClaimTxs, platformTreasury, readPlatformEarnings, type PlatformTotals } from '../platform'
+import { buildPlatformClaimTxs, platformTreasury, positionReader, readPlatformEarnings, type PlatformTotals } from '../platform'
 import { getCampaign, listCampaigns, type CampaignRecord } from '../store'
 import { claimerKey, signOrPrint } from './claimer'
 
@@ -16,7 +17,7 @@ function summary(t: PlatformTotals) {
     `curve fees ${usd(t.curveFeesUnclaimedUsdc)} unclaimed (${usd(t.curveFeesClaimedUsdc)} claimed)`,
     `resale fees ${usd(t.resaleFeesUnclaimedUsdc)} unclaimed`,
     `locked resale liquidity ${usd(t.resaleLiquidityUsdc)} + ${t.resaleLiquidityVouchers.toFixed(6)} vouchers`,
-    `leftover ${t.leftoverVouchers.toFixed(6)} vouchers`,
+    `leftover ${t.leftoverVouchers.toFixed(6)} vouchers` + (t.leftoverUnburnedVouchers ? ` (+ ${t.leftoverUnburnedVouchers.toFixed(6)} withdrawn, not burned)` : ''),
     `surplus ${usd(t.surplusUsdc)}`,
   ].join(' · ')
 }
@@ -43,15 +44,24 @@ async function main() {
   console.log(`Total: ${summary(earnings.totals)}`)
 
   let built = 0
+  const failed: string[] = []
+  const reader = positionReader(connection)
   for (const record of records.filter((r) => !earnings.failed.includes(r.pool))) {
-    const claims = await buildPlatformClaimTxs(connection, record, { treasury, burnLeftover })
-    for (const claim of claims) {
-      built++
-      const key = claimerKey(claim.signer, unsigned)
-      await signOrPrint(connection, claim.tx, claim.signer, key, `${record.campaign.name}: ${claim.label} (${claim.amount.toString()} raw)`)
+    try {
+      const claims = await buildPlatformClaimTxs(connection, record, { treasury, burnLeftover, reader })
+      for (const claim of claims) {
+        built++
+        const key = claimerKey(claim.signer, unsigned)
+        await signOrPrint(connection, claim.tx, claim.signer, key, `${record.campaign.name}: ${claim.label} (${claim.amount.toString()} raw)`)
+      }
+    } catch (e) {
+      // One campaign's RPC hiccup or failed simulation doesn't stop the others.
+      failed.push(record.pool)
+      console.error(`- ${record.campaign.name} (${record.pool}): claim FAILED, skipped: ${e instanceof Error ? e.message : e}`)
     }
   }
-  if (!built) console.log('Nothing to claim.')
+  if (!built && !failed.length) console.log('Nothing to claim.')
+  if (failed.length) throw new Error(`${failed.length} campaign(s) not claimed: ${failed.join(', ')}`)
 }
 
 main().catch((e) => {

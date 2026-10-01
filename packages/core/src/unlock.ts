@@ -27,9 +27,15 @@ export const chainUnixTime = async (connection: Connection) => (await chainClock
 
 // The maker as recorded on chain (DBC pool creator), not as claimed by our own store.
 export async function onChainCreator(connection: Connection, pool: PublicKey | string): Promise<PublicKey> {
+  const creator = await readPoolCreator(connection, pool)
+  if (!creator) throw new Error(`pool ${pool.toString()} not found`)
+  return creator
+}
+
+// The same, null when the pool isn't on chain (an RPC failure still throws).
+export async function readPoolCreator(connection: Connection, pool: PublicKey | string): Promise<PublicKey | null> {
   const virtualPool = await dbcClient(connection).state.getPool(pool)
-  if (!virtualPool) throw new Error(`pool ${pool.toString()} not found`)
-  return virtualPool.poolState.creator
+  return virtualPool ? virtualPool.poolState.creator : null
 }
 
 // What the DBC config says happens to resale liquidity at graduation. Configs are immutable, so cached.

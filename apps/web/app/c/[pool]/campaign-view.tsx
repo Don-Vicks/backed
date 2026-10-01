@@ -81,7 +81,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
             <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
               {short(c.maker)}
             </a>
-            {c.listing && (
+            {c.listing?.official && (
               <>
                 {" · "}
                 <a href={explorerAccount(c.listing.address)} target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">

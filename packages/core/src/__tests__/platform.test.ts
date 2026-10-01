@@ -5,9 +5,11 @@ import { Keypair } from '@solana/web3.js'
 import { BRAND } from '../brand'
 import { campaignListing, partnerListing } from '../metadata'
 import {
+  earnsNoVouchers,
   leftoverVouchers,
   partnerCurveFees,
   partnerMigrationFee,
+  partnerSurplus,
   platformTotals,
   platformTreasury,
   poolSurplus,
@@ -37,6 +39,7 @@ const terms = (over: Partial<PartnerTerms> = {}): PartnerTerms => ({
   creatorTradingFeePct: 50,
   migrationFeePct: 20,
   creatorMigrationFeePct: 100,
+  quoteOnlyCurveFees: true,
   ...over,
 })
 
@@ -61,6 +64,22 @@ test('surplus: only USDC above the goal, once', () => {
   assert.equal(poolSurplus(pool({ quoteReserve: new BN(36_000_000), isPartnerWithdrawSurplus: 1 }), new BN(35_325_411)).toNumber(), 0)
 })
 
+test('partner surplus: 80% after Meteora, split with the maker like curve fees', () => {
+  // Meteora's worked example: threshold 100, reserve 105, creator 25% → partner 3 of the 5 surplus.
+  const t = terms({ migrationQuoteThreshold: new BN(100_000_000), creatorTradingFeePct: 25 })
+  assert.equal(partnerSurplus(pool({ quoteReserve: new BN(105_000_000) }), t).toNumber(), 3_000_000)
+  assert.equal(partnerSurplus(pool({ quoteReserve: new BN(105_000_000), isPartnerWithdrawSurplus: 1 }), t).toNumber(), 0)
+  assert.equal(partnerSurplus(pool({ quoteReserve: new BN(100_000_000) }), t).toNumber(), 0)
+  assert.equal(partnerSurplus(pool({ quoteReserve: new BN(36_000_000) }), terms()).toNumber(), 539_671 - 269_835)
+})
+
+test('the fee claimer earns no vouchers only when curve and resale fees are both USDC-only', () => {
+  assert.equal(earnsNoVouchers(terms(), { collectFeeMode: 1 }), true)
+  assert.equal(earnsNoVouchers(terms(), { collectFeeMode: 0 }), false, 'BothToken resale pool')
+  assert.equal(earnsNoVouchers(terms({ quoteOnlyCurveFees: false }), { collectFeeMode: 1 }), false)
+  assert.equal(earnsNoVouchers(terms(), null), false, 'resale pool not readable')
+})
+
 test('partner migration fee: 0 when the maker takes the whole payout, else the partner part until withdrawn', () => {
   assert.equal(partnerMigrationFee(pool(), terms()).toNumber(), 0)
   const shared = terms({ migrationQuoteThreshold: new BN(100_000_000), migrationFeePct: 20, creatorMigrationFeePct: 75 })
@@ -83,6 +102,7 @@ test('totals add up every campaign', () => {
     resaleLiquidityUsdc: 10,
     resaleLiquidityVouchers: 1,
     leftoverVouchers: 0.000002,
+    leftoverUnburnedVouchers: n === 2 ? 0.000003 : 0,
     surplusUsdc: 0,
     migrationFeeUsdc: 0,
   })
@@ -92,6 +112,7 @@ test('totals add up every campaign', () => {
   assert.equal(t.resaleFeesUnclaimedUsdc, 1)
   assert.equal(t.resaleLiquidityUsdc, 20)
   assert.ok(Math.abs(t.leftoverVouchers - 0.000004) < 1e-12)
+  assert.ok(Math.abs(t.leftoverUnburnedVouchers - 0.000003) < 1e-12)
   assert.equal(platformTotals([]).curveFeesUnclaimedUsdc, 0)
 })
 
