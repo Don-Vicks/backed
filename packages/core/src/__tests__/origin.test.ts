@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ConfigError, resolvePublicOrigin, siteHosts } from '../origin'
+import { ConfigError, publicOrigins, resolvePublicOrigin, siteHosts } from '../origin'
 
 test('PUBLIC_BASE_URL wins over RAILWAY_PUBLIC_DOMAIN and the request', () => {
   const env = { PUBLIC_BASE_URL: 'https://x.test/', RAILWAY_PUBLIC_DOMAIN: 'app.up.railway.app' }
@@ -34,4 +34,10 @@ test('site hosts: the public URL’s and Railway’s own domain, for checking si
   assert.deepEqual(siteHosts({ RAILWAY_PUBLIC_DOMAIN: 'backed.up.railway.app' }, 'devnet'), ['backed.up.railway.app'])
   assert.deepEqual(siteHosts({}, 'localnet', 'http://localhost:3201/api/redemptions/list'), ['localhost:3201'])
   assert.throws(() => siteHosts({}, 'mainnet', 'https://evil.example/x'), ConfigError, 'never the request’s host off localnet')
+})
+
+test('publicOrigins: the current origin first, then valid previous ones, deduplicated', () => {
+  const env = { PUBLIC_BASE_URL: 'https://backed.up.railway.app', PREVIOUS_BASE_URLS: ' https://old.up.railway.app/ , not a url,https://backed.up.railway.app' }
+  assert.deepEqual(publicOrigins(env, 'devnet'), ['https://backed.up.railway.app', 'https://old.up.railway.app'])
+  assert.deepEqual(publicOrigins({ PUBLIC_BASE_URL: 'https://a.test' }, 'mainnet'), ['https://a.test'])
 })

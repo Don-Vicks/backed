@@ -12,7 +12,7 @@ No custom program. Every rule comes from DBC config, DAMM v2 and SPL token burns
 
 Built for the Colosseum **Crypto World's Fair** and Meteora's **Best use of DBC** track.
 
-**Try it live (devnet):** <https://web-production-e2262.up.railway.app>. **See it work:** [the walkthrough](docs/walkthrough.md) follows one campaign from create to shipped order, with screenshots of the real app on a validator running the mainnet Meteora programs. The [demo script](docs/demo-script.md) is the 3-minute video version.
+**Try it live (devnet):** <https://backed.up.railway.app>. **Replicate and test it:** [docs/replicate.md](docs/replicate.md), from a one-minute try to the full chain and browser suites. **See it work:** [the walkthrough](docs/walkthrough.md) follows one campaign from create to shipped order, with screenshots of the real app on a validator running the mainnet Meteora programs. The [demo script](docs/demo-script.md) is the 3-minute video version.
 
 ### For judges
 
@@ -22,7 +22,7 @@ Built for the Colosseum **Crypto World's Fair** and Meteora's **Best use of DBC*
 | **Technical execution** | CI runs typecheck, lint, 188 unit tests and the build, then the full lifecycle on a validator loaded with the **mainnet** DBC and DAMM v2 binaries: once through the SDK ([`__tests__/localnet`](packages/core/src/__tests__/localnet)) and once clicked through the real app in Chromium ([`e2e/lifecycle.spec.ts`](apps/web/e2e/lifecycle.spec.ts)), from launch to a shipped order ([`ci.yml`](.github/workflows/ci.yml)).<br>Creation is maker-paid and the platform never signs. Every swap has a slippage minimum. Inputs pass zod schemas and an allowlist, and endpoints are rate-limited. Storage is SQLite with encrypted shipping data, and redemptions are memo-bound. |
 | **Originality & taste** | Pre-order crowdfunding where resale pays the maker. The bonding curve is the early-bird pricing, graduation is "funded", and the DAMM v2 pool is a royalty-paying resale market with a permanent floor. The app wears Meteora's own design language (its v2 palette, type and gradient; see [brand.md](brand.md)) and draws each campaign's real DBC price curve. |
 | **Impact** | Tokenized pre-orders as a new asset class: makers get funded without giving up resale, and early fans pay less. The economics are worked through in [Maker trust tier](#maker-trust-tier) and the payout panel. |
-| **Traction** | Live on devnet at <https://web-production-e2262.up.railway.app>, with a full lifecycle proven there ([Proof on devnet](#proof-on-devnet)). Mainnet needs only `NETWORK=mainnet`, a funded fee-claimer wallet and a real campaign ([Deploy](#deploy-railway)). |
+| **Traction** | Live on devnet at <https://backed.up.railway.app>, with a full lifecycle proven there ([Proof on devnet](#proof-on-devnet)). Mainnet needs only `NETWORK=mainnet`, a funded fee-claimer wallet and a real campaign ([Deploy](#deploy-railway)). |
 
 ---
 
@@ -90,7 +90,7 @@ A new or throwaway wallet can still run a campaign, but it takes less upfront an
 
 ## Proof on devnet
 
-**Live app (devnet): <https://web-production-e2262.up.railway.app>.** Connect Phantom, Solflare or Backpack on devnet and press **Get test USDC**. One campaign below ran its whole lifecycle through the deployed app's API (`packages/core/src/scripts/api-smoke.ts` with `WEB_URL` set to the live URL): [campaign page](https://web-production-e2262.up.railway.app/c/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk) · [DBC pool](https://solscan.io/account/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk?cluster=devnet) · [config](https://solscan.io/account/HErqhdimKwb3spkjEmfdMvxWtHAsuifu8uUgV4L88SS5?cluster=devnet) · [DAMM v2 resale pool](https://solscan.io/account/EoTKorP57G4C3jjr8Y5KXXHvZVSATCTFBRaTXgAMoffP?cluster=devnet).
+**Live app (devnet): <https://backed.up.railway.app>.** Connect Phantom, Solflare or Backpack on devnet and press **Get test USDC**. One campaign below ran its whole lifecycle through the deployed app's API (`packages/core/src/scripts/api-smoke.ts` with `WEB_URL` set to the live URL): [campaign page](https://backed.up.railway.app/c/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk) · [DBC pool](https://solscan.io/account/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk?cluster=devnet) · [config](https://solscan.io/account/HErqhdimKwb3spkjEmfdMvxWtHAsuifu8uUgV4L88SS5?cluster=devnet) · [DAMM v2 resale pool](https://solscan.io/account/EoTKorP57G4C3jjr8Y5KXXHvZVSATCTFBRaTXgAMoffP?cluster=devnet).
 
 | Step | Transaction |
 |---|---|
@@ -159,6 +159,8 @@ Stack: `@meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, `@meteora-ag/cp-amm-sdk@1
 ---
 
 ## Run it
+
+Step by step, with prerequisites, expected output and troubleshooting: **[docs/replicate.md](docs/replicate.md)**. The short version:
 
 Needs Node 22.22 (`engines.node`, which Railway's Railpack reads before `.node-version`), pnpm 10 (`packageManager`) and a Solana CLI wallet with some devnet SOL (used to fund the test wallets).
 
