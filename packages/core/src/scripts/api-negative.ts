@@ -7,9 +7,11 @@
 // TRUST_FIXTURES covers it. Requests carry a random X-Forwarded-For so each run gets fresh buckets.
 import { randomInt } from 'crypto'
 import bs58 from 'bs58'
+import nacl from 'tweetnacl'
 import { Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction } from '@solana/web3.js'
 import { getConnection, getNetwork } from '../network'
 import { MAX_BODY_BYTES } from '../requests'
+import { ordersMessage } from '../messages'
 
 const BASE = process.env.WEB_URL || 'http://localhost:3100'
 const conn = getConnection()
@@ -140,16 +142,33 @@ async function main() {
   expect('blink POST: no body', await call('POST', `${blink}?amount=5`, ''), 400)
   expect('blink POST: ok', await call('POST', `${blink}?amount=5`, { account: pk(backer1) }), 200)
 
-  // --- redemptions and orders
+  // --- redemptions and orders (funding: nothing is redeemable yet)
   const shipping = { name: 'Ada', email: '', address: '1 St', country: 'X' }
-  const redeem = (body: Record<string, unknown>) => call('POST', '/api/redemptions', { pool, wallet: pk(backer1), signature: createSig, shipping, ...body })
-  expect('redemption: missing fields', await redeem({ shipping: { name: 'a' } }), 400)
-  expect('redemption: bad email', await redeem({ shipping: { ...shipping, email: 'no' } }), 400)
-  expect('redemption: bad signature', await redeem({ signature: 'x' }), 400)
-  expect('redemption: not a burn', await redeem({}), 400)
+  // Their own client IP: these share the transaction-build bucket with everything above.
+  const redeemIp = { 'x-forwarded-for': ip() }
+  const prepare = (body: Record<string, unknown>) => call('POST', '/api/redemptions/prepare', { pool, wallet: pk(backer1), shipping, ...body }, redeemIp)
+  const confirm = (body: Record<string, unknown>) => call('POST', '/api/redemptions/confirm', body, redeemIp)
+  expect('redeem prepare: missing fields', await prepare({ shipping: { name: 'a' } }), 400)
+  expect('redeem prepare: bad email', await prepare({ shipping: { ...shipping, email: 'no' } }), 400)
+  expect('redeem prepare: unknown campaign', await prepare({ pool: stranger }), 404)
+  expect('redeem prepare: before graduation', await prepare({}), 409)
+  expect('redeem confirm: bad id', await confirm({ id: '../x', signature: createSig }), 400)
+  expect('redeem confirm: bad signature', await confirm({ id: 'AAAAAAAAAAAAAAAA', signature: 'x' }), 400)
+  expect('redeem confirm: unknown id', await confirm({ id: 'AAAAAAAAAAAAAAAA', signature: createSig }), 404)
+  expect('redeem pending: bad wallet', await call('GET', `/api/redemptions/pending?pool=${pool}&wallet=x`, undefined, redeemIp), 400)
+  expect('redeem pending: unknown campaign', await call('GET', `/api/redemptions/pending?pool=${stranger}&wallet=${pk(backer1)}`, undefined, redeemIp), 404)
+  expect('redeem pending: none', await call('GET', `/api/redemptions/pending?pool=${pool}&wallet=${pk(backer1)}`, undefined, redeemIp), 200)
+  expect('tx redeem: memo-less burn refused', await call('POST', '/api/tx', { pool, wallet: pk(backer1), kind: 'redeem' }, redeemIp), 400)
   expect('orders: no message', await call('POST', '/api/redemptions/list', { pool }), 400)
-  const msg = `Backed: view orders for campaign ${pool}\nIssued at: ${new Date().toISOString()}`
-  expect('orders: wrong signer', await call('POST', '/api/redemptions/list', { pool, message: msg, signature: bs58.encode(Buffer.alloc(64)) }), 403)
+  const host = new URL(BASE).host
+  const signed = (message: string, k = maker) => ({ pool, message, signature: bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), k.secretKey)) })
+  const msg = ordersMessage(pool, new Date().toISOString(), host)
+  expect('orders: wrong signer', await call('POST', '/api/redemptions/list', signed(msg, backer1)), 403)
+  expect('orders: other site', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, new Date().toISOString(), 'evil.example'))), 403)
+  expect('orders: dated ahead', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, new Date(Date.now() + 9 * 60_000).toISOString(), host))), 403)
+  expect('orders: undated', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, 'NaN', host))), 403)
+  expect('orders: substring', await call('POST', '/api/redemptions/list', signed(`gm ${pool}\nIssued at: ${new Date().toISOString()}`)), 403)
+  expect('orders: maker', await call('POST', '/api/redemptions/list', signed(msg)), 200)
 
   // --- fund to the goal: funded state
   const buy = expect('tx buy: to the goal', await tx({ kind: 'buy', usdc: 40 }), 200)
@@ -178,6 +197,22 @@ async function main() {
   expect('tx withdraw: maker after graduation', await call('POST', '/api/tx', { kind: 'withdraw', pool, wallet: pk(maker) }), 200)
   expect('tx withdraw: backer', await tx({ kind: 'withdraw' }), 400)
   expect('tx sell: reselling', await tx({ kind: 'sell' }), 409)
+  // --- redemption after graduation: prepare, burn, confirm; a hijack of that burn; the maker's orders
+  const prep = expect('redeem prepare: reselling', await prepare({}), 200)
+  if (prep.status === 200) {
+    const burn = await signSend(prep.json.tx, backer1)
+    expect('redeem confirm: ok', await confirm({ id: prep.json.id, signature: burn }), 200)
+    expect('redeem confirm: again', await confirm({ id: prep.json.id, signature: burn }), 200)
+    const forged = expect('redeem prepare: hijacker, victim’s wallet', await prepare({ shipping: { ...shipping, name: 'Mallory' } }), 200, 400)
+    if (forged.status === 200) expect('redeem confirm: hijack with the victim’s burn', await confirm({ id: forged.json.id, signature: burn }), 400)
+    const list = expect('orders: maker after a redemption', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, new Date().toISOString(), host))), 200)
+    if (list.json.redemptions?.[0]?.shipping?.name !== 'Ada') rows.push({ label: 'orders: shows the owner’s shipping', status: 0, want: [1], note: JSON.stringify(list.json.redemptions) })
+    const shipped = (order: string) => call('POST', '/api/redemptions/shipped', { ...signed(ordersMessage(pool, new Date().toISOString(), host)), order })
+    expect('orders: mark shipped', await shipped(burn), 200)
+    expect('orders: mark shipped, unknown order', await shipped(createSig), 404)
+  }
+  expect('redeem prepare: the maker', await prepare({ wallet: pk(maker) }), 409)
+  expect('redeem prepare: no vouchers', await prepare({ wallet: stranger }), 400)
   const gr = expect('blink GET: reselling', await call('GET', blink), 200)
   if (!gr.json.disabled || !/resale market/.test(gr.json.error?.message)) rows.push({ label: 'blink GET: reselling copy', status: 0, want: [1], note: JSON.stringify(gr.json.error) })
   expect('blink POST: reselling', await call('POST', `${blink}?amount=5`, { account: pk(backer2) }), 422)

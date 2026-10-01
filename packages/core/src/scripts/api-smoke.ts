@@ -89,10 +89,14 @@ async function finish(pool: string) {
   await signSend(wd, w.maker, 'maker withdraws budget')
   live = (await api<any>(`/api/campaigns/${created.pool}`)).campaign.live
   console.log(`status ${live.status}, resale pool ${live.resalePool}`)
+  const shipping = { name: 'Smoke Tester', email: '', address: '1 Test St', country: 'NL' }
   for (const b of backers) {
-    const r = await api<{ tx: string; lastValidBlockHeight: number }>('/api/tx', { kind: 'redeem', pool: created.pool, wallet: b.publicKey.toBase58() }).catch(() => null)
-    if (!r) continue
-    try { await signSend(r, b, 'redeem 1 voucher'); break } catch { /* holds < 1 voucher */ }
+    const r = await api<{ id: string; tx: string; lastValidBlockHeight: number }>('/api/redemptions/prepare', { pool: created.pool, wallet: b.publicKey.toBase58(), shipping }).catch(() => null)
+    if (!r) continue // holds < 1 voucher
+    const burn = await signSend(r, b, 'redeem 1 voucher')
+    await api('/api/redemptions/confirm', { id: r.id, signature: burn })
+    console.log('✓ order recorded')
+    break
   }
   console.log(`\nAPI smoke passed. Open ${BASE}/c/${created.pool}`)
 }

@@ -5,7 +5,6 @@ import {
   buildBuyTx,
   buildMakerClaimTx,
   buildMakerWithdrawTx,
-  buildRedeemTx,
   buildResaleSwapTx,
   buildSellBackTx,
   DEFAULT_SLIPPAGE_BPS,
@@ -73,7 +72,8 @@ export async function POST(req: Request) {
       tx = built.tx;
       quote = summarizeSellQuote(built.quote, bps);
     } else if (body.kind === "redeem") {
-      tx = buildRedeemTx(wallet, baseMint);
+      // A burn with no shipping details bound to it could never be claimed; redeeming starts there.
+      throw new BadRequest("Redeem through the shipping form (POST /api/redemptions/prepare)");
     } else if (body.kind === "withdraw") {
       if (wallet.toBase58() !== record.maker) throw new BadRequest("Only the maker can withdraw the budget");
       tx = await buildMakerWithdrawTx(conn, wallet, pool);

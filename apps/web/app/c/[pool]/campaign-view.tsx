@@ -19,7 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api, quoteErrorMessage, ReportedError, useSignAndSend, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
-import { ShippingForm } from "@/components/shipping-form";
+import { RedeemPanel } from "@/components/redeem-panel";
 import { IS_TEST_NETWORK, explorerAccount, short, units, usd } from "@/lib/format";
 import type { BuyQuote, CampaignWithLive, SellQuote } from "@/lib/types";
 
@@ -214,7 +214,6 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const [exitAmount, setExitAmount] = useState(""); // empty = the whole balance
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [shipFor, setShipFor] = useState<string | null>(null); // burn signature awaiting shipping details
 
   const usdcAmount = Number(amount);
   const debouncedAmount = useDebounced(usdcAmount, 350);
@@ -259,8 +258,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
       const built = await build();
       // The last buy before the goal only takes what is left; say so in the toasts.
       if (kind === "buy" && built.quote?.capped) label = `${label} with ${usd(built.quote.spentUsdc)}: the goal is reached`;
-      const signature = await signAndSend(built, label, build);
-      if (kind === "redeem") setShipFor(signature);
+      await signAndSend(built, label, build);
       if (kind === "sell") setExitAmount("");
       refresh();
     } catch (e) {
@@ -362,7 +360,9 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
         </div>
       )}
 
-      {shipFor && publicKey && <ShippingForm pool={c.pool} wallet={publicKey.toBase58()} signature={shipFor} productName={c.campaign.name} />}
+      {/* Keyed on the wallet: a switch drops a half-filled form and any "Order placed" from the last one.
+          The maker's own vouchers are not orders. */}
+      {live.status === "reselling" && publicKey && !isMaker && <RedeemPanel key={publicKey.toBase58()} c={c} vouchers={vouchers} onDone={refresh} />}
 
       {live.status === "reselling" && <ResalePanel c={c} run={run} busy={busy} vouchers={vouchers} />}
 
@@ -374,7 +374,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
             <span className="text-sm text-muted-foreground">Your vouchers</span>
             <span className="font-mono text-2xl tabular-nums">{units(vouchers)}</span>
           </div>
-          <div className="mt-4 grid gap-2">
+          <div className="mt-4 grid gap-2 empty:hidden">
             {live.status === "funding" && (
               <form
                 className="grid gap-2"
@@ -414,11 +414,6 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
                   ) : null}
                 </p>
               </form>
-            )}
-            {live.status === "reselling" && (
-              <Button onClick={() => run("redeem", "Redeem 1 voucher")} disabled={!!busy || vouchers < 1}>
-                {busy === "redeem" ? "Redeeming…" : vouchers < 1 ? "Need 1 whole voucher to redeem" : "Redeem 1 for the item"}
-              </Button>
             )}
           </div>
           {live.status === "funding" && <p className="mt-2 text-xs text-muted-foreground">Exiting sells back at today’s curve price, which may be higher or lower than what you paid.</p>}

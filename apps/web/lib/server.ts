@@ -3,11 +3,13 @@ import { randomBytes } from "crypto";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import {
   clientIp,
+  getCampaign,
   getConnection,
   getMetadata,
   getNetwork,
   HttpError,
   MAX_BODY_BYTES,
+  ordersMessage,
   parseWith,
   RATE_LIMITS,
   readCampaignLive,
@@ -20,6 +22,7 @@ import {
   trustFixture,
   trustRpcUrl,
   ttlCache,
+  verifyWalletMessage,
   withPriorityFee,
   type BodyOf,
   type BodySchema,
@@ -35,6 +38,20 @@ export const connection = (): Connection => getConnection();
 // Origin for URLs that leave the app (token metadata, Blink icons). Throws a ConfigError when
 // PUBLIC_BASE_URL is missing or not public https off localnet, so nothing immutable gets a bad URL.
 export const publicOrigin = (req?: Request) => resolvePublicOrigin(process.env, getNetwork().name, req?.url);
+
+// The maker's sign-in to the orders page: ordersMessage for this site's host and the campaign, signed
+// by the campaign's maker in the last few minutes. Returns the campaign; 404 or 403 otherwise.
+export function requireMakerSignIn(req: Request, body: { pool: PublicKey; message: string; signature: string }): CampaignRecord {
+  const record = getCampaign(body.pool.toBase58());
+  if (!record) throw new HttpError("Campaign not found", 404);
+  const domain = new URL(publicOrigin(req)).host;
+  try {
+    verifyWalletMessage(body.message, body.signature, new PublicKey(record.maker), (issuedAt) => ordersMessage(record.pool, issuedAt, domain));
+  } catch (e) {
+    throw new HttpError(e instanceof Error ? e.message : "Not authorized", 403);
+  }
+  return record;
+}
 
 export function metadataResponse(id: string) {
   const meta = getMetadata(id);

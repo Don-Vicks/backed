@@ -1,26 +1,192 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import bs58 from 'bs58'
 import nacl from 'tweetnacl'
 import { Keypair } from '@solana/web3.js'
-import { ordersMessage, verifyWalletMessage } from '../redemptions'
+
+// Point the repo root at a temp dir before anything writes data/ or keys/.
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'preorder-redemptions-'))
+fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), '')
+process.env.PREORDER_ROOT = root
+process.env.NETWORK = 'localnet'
+delete process.env.SHIPPING_ENCRYPTION_KEY
+
+import {
+  MAX_PENDING_REDEMPTIONS,
+  PENDING_REDEMPTION_RETENTION_MS,
+  checkShippingKey,
+  countPendingRedemptions,
+  getPendingRedemption,
+  listPendingRedemptions,
+  listRedemptionViews,
+  listRedemptions,
+  markRedemptionShipped,
+  newRedemptionId,
+  openShipping,
+  ordersMessage,
+  removePendingRedemption,
+  saveRedemption,
+  savePendingRedemption,
+  sealShipping,
+  shippingKey,
+  verifyWalletMessage,
+  type PendingRedemption,
+} from '../redemptions'
+import { MEMO_PROGRAM_ID, REDEEM_MEMO_PREFIX, buildRedeemTx } from '../chain'
 
 const sign = (kp: Keypair, msg: string) => bs58.encode(nacl.sign.detached(new TextEncoder().encode(msg), kp.secretKey))
+const DOMAIN = 'backed.example'
+const expected = (at: string) => ordersMessage('POOL', at, DOMAIN)
+const iso = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString()
 
-test('maker sign-in: valid signature passes', () => {
+test('maker sign-in: a fresh message for this site and pool passes', () => {
   const kp = Keypair.generate()
-  const msg = ordersMessage('POOL', new Date().toISOString())
-  assert.doesNotThrow(() => verifyWalletMessage(msg, sign(kp, msg), kp.publicKey))
+  const msg = expected(iso(0))
+  assert.doesNotThrow(() => verifyWalletMessage(msg, sign(kp, msg), kp.publicKey, expected))
+  assert.match(msg, /^backed\.example asks you to sign in to /)
 })
 
-test('maker sign-in: another wallet is rejected', () => {
+test('maker sign-in: another wallet or a malformed signature is rejected', () => {
   const kp = Keypair.generate()
-  const msg = ordersMessage('POOL', new Date().toISOString())
-  assert.throws(() => verifyWalletMessage(msg, sign(kp, msg), Keypair.generate().publicKey), /does not match/)
+  const msg = expected(iso(0))
+  assert.throws(() => verifyWalletMessage(msg, sign(kp, msg), Keypair.generate().publicKey, expected), /does not match/)
+  assert.throws(() => verifyWalletMessage(msg, 'not-base58-0OIl', kp.publicKey, expected), /does not match/)
+  assert.throws(() => verifyWalletMessage(msg, bs58.encode(Buffer.alloc(10)), kp.publicKey, expected), /does not match/)
 })
 
-test('maker sign-in: stale message is rejected', () => {
+test('maker sign-in: stale, future and undated messages are rejected', () => {
   const kp = Keypair.generate()
-  const msg = ordersMessage('POOL', new Date(Date.now() - 60 * 60_000).toISOString())
-  assert.throws(() => verifyWalletMessage(msg, sign(kp, msg), kp.publicKey), /expired/)
+  const check = (msg: string) => () => verifyWalletMessage(msg, sign(kp, msg), kp.publicKey, expected)
+  assert.throws(check(expected(iso(-6 * 60_000))), /expired/)
+  assert.throws(check(expected(iso(9 * 60_000))), /future/, 'a message dated ahead (to replay later) is refused')
+  assert.doesNotThrow(check(expected(iso(20_000))), 'a little clock skew is fine')
+  assert.throws(check(expected('not a date')), /no valid date/)
+  assert.throws(check(expected('NaN')), /no valid date/)
+})
+
+test('maker sign-in: only the exact message counts, not one that contains it', () => {
+  const kp = Keypair.generate()
+  const at = iso(0)
+  const check = (msg: string) => () => verifyWalletMessage(msg, sign(kp, msg), kp.publicKey, expected)
+  // The old check: any text that mentions the pool and ends with a date.
+  assert.throws(check(`Sign up for our airdrop! POOL\nIssued at: ${at}`), /not for this page/)
+  assert.throws(check(`Hello\n${expected(at)}`), /not for this page/)
+  assert.throws(check(ordersMessage('POOL', at, 'evil.example')), /not for this page/, 'signed for another site')
+  assert.throws(check(ordersMessage('OTHER', at, DOMAIN)), /not for this page/, 'signed for another campaign')
+  assert.throws(check(`${expected(at)}\n`), /not for this page/)
+})
+
+test('shipping is sealed at rest and only opens for its pool and wallet', () => {
+  const shipping = { name: 'Ada', email: 'ada@example.com', address: '12 Analytical Way', country: 'UK' }
+  const sealed = sealShipping(shipping, 'POOL', 'WALLET')
+  assert.equal(sealed.v, 1)
+  assert.ok(!JSON.stringify(sealed).includes('Ada'), 'no plaintext at rest')
+  assert.deepEqual(openShipping(sealed, 'POOL', 'WALLET'), shipping)
+  assert.throws(() => openShipping(sealed, 'POOL', 'OTHER'), 'bound to the wallet')
+  assert.throws(() => openShipping({ ...sealed, data: Buffer.from('x').toString('base64') }, 'POOL', 'WALLET'), 'tampering is detected')
+  assert.deepEqual(openShipping(shipping, 'POOL', 'WALLET'), shipping, 'older plaintext records still read')
+  assert.equal(openShipping(null, 'POOL', 'WALLET'), null)
+  // The generated dev key is stable across calls and readable by its owner only.
+  const file = path.join(root, 'keys', 'localnet', 'shipping-key')
+  assert.ok(fs.existsSync(file))
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  assert.ok(shippingKey().equals(shippingKey()))
+})
+
+test('SHIPPING_ENCRYPTION_KEY: hex or base64 of 32 bytes; required on mainnet', () => {
+  const hex = 'ab'.repeat(32)
+  assert.doesNotThrow(() => checkShippingKey({ SHIPPING_ENCRYPTION_KEY: hex }, 'mainnet'))
+  assert.doesNotThrow(() => checkShippingKey({ SHIPPING_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64') }, 'devnet'))
+  assert.throws(() => checkShippingKey({ SHIPPING_ENCRYPTION_KEY: 'short' }, 'devnet'), /32 bytes/)
+  assert.throws(() => checkShippingKey({}, 'mainnet'), /must be set on mainnet/)
+  assert.doesNotThrow(() => checkShippingKey({}, 'devnet'))
+  process.env.SHIPPING_ENCRYPTION_KEY = hex
+  try {
+    assert.ok(shippingKey().equals(Buffer.from(hex, 'hex')))
+    const sealed = sealShipping({ name: 'a', email: '', address: 'b', country: 'c' }, 'P', 'W')
+    assert.throws(() => openShipping(sealed, 'P', 'W', Buffer.alloc(32)), 'another key cannot open it')
+  } finally {
+    delete process.env.SHIPPING_ENCRYPTION_KEY
+  }
+})
+
+const pending = (over: Partial<PendingRedemption> = {}): PendingRedemption => ({
+  id: newRedemptionId(),
+  pool: 'POOL',
+  wallet: 'WALLET',
+  units: 1,
+  shipping: sealShipping({ name: 'Ada', email: '', address: '1 St', country: 'X' }, 'POOL', 'WALLET'),
+  createdAt: new Date().toISOString(),
+  ...over,
+})
+
+test('pending redemptions: save, find, count, remove; old ones expire', () => {
+  const now = Date.now()
+  const old = pending({ createdAt: new Date(now - PENDING_REDEMPTION_RETENTION_MS - 1000).toISOString() })
+  savePendingRedemption(old, now - PENDING_REDEMPTION_RETENTION_MS - 1000)
+  const a = pending()
+  const b = pending({ wallet: 'OTHER' })
+  savePendingRedemption(a, now)
+  savePendingRedemption(b, now)
+  assert.equal(getPendingRedemption(old.id), undefined, 'pruned on the next write')
+  assert.equal(getPendingRedemption(a.id)?.wallet, 'WALLET')
+  assert.deepEqual(listPendingRedemptions('POOL', 'WALLET').map((p) => p.id), [a.id])
+  assert.equal(countPendingRedemptions('POOL', 'WALLET', now - 60_000), 1)
+  assert.equal(countPendingRedemptions('POOL', 'WALLET', now + 60_000), 0)
+  removePendingRedemption(a.id)
+  assert.equal(getPendingRedemption(a.id), undefined)
+  assert.ok(getPendingRedemption(b.id))
+  assert.match(a.id, /^[A-Za-z0-9_-]{16}$/)
+})
+
+test('pending redemptions are capped, keeping the newest', () => {
+  const file = path.join(root, 'data', 'pending-redemptions.localnet.json')
+  const filler = Array.from({ length: MAX_PENDING_REDEMPTIONS }, (_, i) => ({ ...pending(), id: `fill${String(i).padStart(12, '0')}` }))
+  fs.writeFileSync(file, JSON.stringify(filler))
+  const fresh = pending()
+  savePendingRedemption(fresh)
+  const all = JSON.parse(fs.readFileSync(file, 'utf8')) as PendingRedemption[]
+  assert.equal(all.length, MAX_PENDING_REDEMPTIONS)
+  assert.equal(all[0].id, fresh.id)
+  fs.writeFileSync(file, '[]')
+})
+
+test('orders: one per burn; mark shipped deletes the shipping details; views open the rest', () => {
+  const sealed = sealShipping({ name: 'Ada', email: '', address: '1 St', country: 'X' }, 'SHIPPOOL', 'W1')
+  saveRedemption({ id: 'r1', pool: 'SHIPPOOL', signature: 'sig1', wallet: 'W1', units: 1, shipping: sealed, createdAt: new Date().toISOString() })
+  assert.throws(() => saveRedemption({ id: 'r2', pool: 'SHIPPOOL', signature: 'sig1', wallet: 'W1', units: 1, shipping: sealed, createdAt: '' }), /already submitted/)
+  assert.throws(() => saveRedemption({ id: 'r1', pool: 'SHIPPOOL', signature: 'sig9', wallet: 'W1', units: 1, shipping: sealed, createdAt: '' }), /already submitted/)
+  // A legacy plaintext record, and one sealed under another key.
+  saveRedemption({ pool: 'SHIPPOOL', signature: 'sig2', wallet: 'W2', units: 2, shipping: { name: 'Old', email: '', address: 'a', country: 'b' }, createdAt: '' })
+  const otherKey = sealShipping({ name: 'x', email: '', address: 'y', country: 'z' }, 'SHIPPOOL', 'W3', Buffer.alloc(32))
+  saveRedemption({ id: 'r3', pool: 'SHIPPOOL', signature: 'sig3', wallet: 'W3', units: 1, shipping: otherKey, createdAt: '' })
+
+  const views = listRedemptionViews('SHIPPOOL')
+  assert.equal(views.find((v) => v.signature === 'sig1')?.shipping?.name, 'Ada')
+  assert.equal(views.find((v) => v.signature === 'sig2')?.shipping?.name, 'Old')
+  const broken = views.find((v) => v.signature === 'sig3')
+  assert.equal(broken?.shipping, null)
+  assert.equal(broken?.unreadable, true)
+
+  assert.equal(markRedemptionShipped('SHIPPOOL', 'sig1'), true)
+  assert.equal(markRedemptionShipped('OTHERPOOL', 'sig2'), false, 'only the campaign’s own orders')
+  const shipped = listRedemptions('SHIPPOOL').find((r) => r.signature === 'sig1')!
+  assert.equal(shipped.shipping, null)
+  assert.ok(shipped.shippedAt)
+  assert.ok(!fs.readFileSync(path.join(root, 'data', 'redemptions.localnet.json'), 'utf8').includes(sealed.data), 'the sealed details are gone from disk')
+})
+
+test('the redeem transaction burns whole units and carries the owner-signed memo', () => {
+  const owner = Keypair.generate().publicKey
+  const mint = Keypair.generate().publicKey
+  const tx = buildRedeemTx(owner, mint, 'AbCd-_0123456789', 2)
+  assert.equal(tx.instructions.length, 2)
+  assert.equal(tx.instructions[0].data.readBigUInt64LE(1), BigInt(2_000_000))
+  const memo = tx.instructions[1]
+  assert.ok(memo.programId.equals(MEMO_PROGRAM_ID))
+  assert.equal(memo.data.toString('utf8'), `${REDEEM_MEMO_PREFIX}AbCd-_0123456789`)
+  assert.deepEqual(memo.keys, [{ pubkey: owner, isSigner: true, isWritable: false }])
 })

@@ -73,10 +73,15 @@ test('parseWith turns schema failures into 400s with a readable message', () => 
   assert.equal(parseWith(schemas.createCampaign, { campaign: {}, maker: wallet, verifiedSocial: true }).maker.toBase58(), wallet)
 
   const shipping = { name: ' Ada ', address: '1 St', country: 'X' }
-  const r = parseWith(schemas.redemption, { pool, signature: sig, wallet, shipping })
+  const r = parseWith(schemas.redeemPrepare, { pool, wallet, shipping })
   assert.deepEqual(r.shipping, { name: 'Ada', email: '', address: '1 St', country: 'X' })
-  bad(schemas.redemption, { pool, signature: sig, wallet, shipping: { name: 'a' } }, /Name, address and country are required/)
-  bad(schemas.redemption, { pool, signature: sig, wallet, shipping: { ...shipping, address: 'x'.repeat(501) } }, /address is too long/)
+  bad(schemas.redeemPrepare, { pool, wallet, shipping: { name: 'a' } }, /Name, address and country are required/)
+  bad(schemas.redeemPrepare, { pool, wallet, shipping: { ...shipping, address: 'x'.repeat(501) } }, /address is too long/)
+  assert.equal(parseWith(schemas.redeemConfirm, { id: 'AbCd-_0123456789', signature: sig }).id, 'AbCd-_0123456789')
+  bad(schemas.redeemConfirm, { id: '../../etc', signature: sig }, /not a redemption id/)
+  bad(schemas.redeemConfirm, { id: 'AbCd-_0123456789', signature: 'x' }, /not a valid transaction signature/)
+  bad(schemas.redeemPending, { pool, wallet: 'nope' }, /wallet is not a valid Solana address/)
+  bad(schemas.ordersShipped, { pool, message: 'm', signature: 's' }, /signature is missing|Invalid input/)
 
   assert.equal(parseWith(schemas.blinkAmount, '25'), 25)
   bad(schemas.blinkAmount, 'abc', /Enter an amount/)

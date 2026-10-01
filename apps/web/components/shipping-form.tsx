@@ -1,60 +1,41 @@
 "use client";
 
-import { useState } from "react";
-import { CheckCircle2 } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api } from "@/lib/client";
 
-// Shown after a voucher burn. Details go to the maker only; the burn signature is the proof of claim.
-export function ShippingForm({ pool, wallet, signature, productName }: { pool: string; wallet: string; signature: string; productName: string }) {
-  const [submitting, setSubmitting] = useState(false);
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export type ShippingDetails = { name: string; email: string; address: string; country: string };
 
-  async function submit(form: FormData) {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api("/api/redemptions", {
-        pool,
-        wallet,
-        signature,
-        shipping: { name: form.get("name"), email: form.get("email"), address: form.get("address"), country: form.get("country") },
-      });
-      setDone(true);
-      toast.success("Order placed. The maker will ship it.");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn’t submit");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  if (done) {
-    return (
-      <div className="rounded-xl border border-primary/50 bg-card p-5">
-        <p className="flex items-center gap-2 font-heading text-2xl">
-          <CheckCircle2 aria-hidden="true" className="size-5 text-primary" /> Order placed
-        </p>
-        <p className="mt-1 text-sm text-muted-foreground">Your {productName} is on the maker’s shipping list.</p>
-      </div>
-    );
-  }
-
+// Collected before the burn: the details are stored (encrypted, for the maker only) and the burn the
+// wallet then signs names them, so nobody else can claim that burn with other details.
+export function ShippingForm({
+  productName,
+  submitting,
+  error,
+  onSubmit,
+  onCancel,
+}: {
+  productName: string;
+  submitting: boolean;
+  error: string | null;
+  onSubmit: (shipping: ShippingDetails) => void;
+  onCancel: () => void;
+}) {
+  const text = (form: FormData, name: string) => String(form.get(name) ?? "");
   return (
     <form
       className="grid gap-3 rounded-xl border border-primary/50 bg-card p-5"
       onSubmit={(e) => {
         e.preventDefault();
-        submit(new FormData(e.currentTarget));
+        const form = new FormData(e.currentTarget);
+        onSubmit({ name: text(form, "name"), email: text(form, "email"), address: text(form, "address"), country: text(form, "country") });
       }}
     >
       <div>
         <p className="font-heading text-2xl">Where should it ship?</p>
-        <p className="text-sm text-muted-foreground">Your voucher is burned. Only the maker sees these details; they never go on-chain.</p>
+        <p className="text-sm text-muted-foreground">
+          Next, your wallet burns 1 voucher for your {productName}. Only the maker sees these details; they never go on-chain.
+        </p>
       </div>
       <div className="grid gap-2">
         <Label htmlFor="ship-name">Full name</Label>
@@ -81,7 +62,10 @@ export function ShippingForm({ pool, wallet, signature, productName }: { pool: s
         <Input id="ship-country" name="country" autoComplete="country-name" required maxLength={60} />
       </div>
       {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
-      <Button type="submit" disabled={submitting}>{submitting ? "Submitting…" : "Place order"}</Button>
+      <div className="flex gap-2">
+        <Button type="submit" className="flex-1" disabled={submitting}>{submitting ? "Redeeming…" : "Burn 1 voucher and place order"}</Button>
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={submitting}>Cancel</Button>
+      </div>
     </form>
   );
 }

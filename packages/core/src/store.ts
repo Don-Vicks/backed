@@ -79,7 +79,7 @@ export function getMetadata(id: string): TokenMetadata | undefined {
 
 // Writes a temp file and renames it into place, so a crash or a full volume mid-write leaves the old
 // file whole instead of a truncated one.
-function writeFileAtomic(file: string, data: string) {
+export function writeFileAtomic(file: string, data: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`
   fs.writeFileSync(tmp, data)

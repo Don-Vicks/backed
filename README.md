@@ -84,19 +84,20 @@ packages/core       All Solana logic, shared by the scripts and the web server
   pricing.ts        pure tier → goal/units math (also used in the browser)
   engine.ts         campaignToConfig(): campaign + trust tier → DBC ConfigParameters
   trust.ts          maker trust tier from mainnet wallet history
-  chain.ts          transaction builders: create, buy, exit, graduate, withdraw, redeem
+  chain.ts          transaction builders: create, buy, exit, graduate, withdraw, redeem (burn + memo)
   live.ts           live campaign state, quotes, devnet/localnet faucet
   swaps.ts          slippage, chain clock, referral resolution, quote summaries
   network.ts        NETWORK switch (localnet, devnet, mainnet), RPC and explorer links
   resale.ts         DAMM v2 resale pool, quotes, swaps, maker earnings + claim
-  redemptions.ts    on-chain burn verification, shipping records, maker sign-in
+  redemptions.ts    prepare/confirm/recover redemptions, burn verification, sealed shipping, maker sign-in
   scripts/          lifecycle proof, launch, API smoke tests
 ```
 
 - **Wallet flow.** The server builds each transaction and the browser wallet signs it. Every wallet transaction carries a compute-unit price (p75 of recent fees on its writable accounts, capped by `PRIORITY_FEE_MAX_MICROLAMPORTS`; none on localnet). Campaign creation is paid and signed by the maker's wallet (payer and pool creator); the server only signs with the fresh config and mint keys, never the platform key. The server builds the campaign from an allowlist of fields: name ≤ 32 bytes, ticker `A–Z0–9` ≤ 10, description ≤ 1000, https image ≤ 200, whole units, at most 4 tiers, and the fixed launch fee (15% → 1% over 1, 2 or 5 min), with the goal at most 10,000,000 USDC and the final price at most 100× the first tier's. A create too large for one transaction goes out as createConfig then createPool in one approval; if only the first lands, **Finish launch** (`POST /api/campaigns/<pool>/resume`) creates the pool on the config the maker already paid for, with a fresh mint.
 - **Graduation** can be triggered by anyone once the goal is reached, and the clicking wallet pays (about 0.033 SOL, mostly rent). The platform-paid path is reserved for an operator sending `Authorization: Bearer $ADMIN_TOKEN`. If Meteora's keeper graduates the pool first, the app says so.
 - **Blinks.** Every campaign URL `/c/<pool>` is also a Solana Action (`/actions.json` maps it to `/api/actions/back/<pool>`). Shared links can show **Back $10 / $25 / custom** buttons in X or any Blink client, and the `?ref=` referral carries through. Funded campaigns return a disabled Action that points to the resale market.
-- **Redemption.** The backer burns one whole voucher. The server checks the burn on-chain (mint, authority, amount, never reused) before accepting shipping details, and the details never go on-chain. The maker views orders by signing a time-stamped message with their wallet.
+- **Redemption** opens once the campaign graduates. The backer enters shipping details first (`POST /api/redemptions/prepare`): the server stores them encrypted as a pending redemption and returns a burn of one whole voucher carrying an SPL Memo `backed:redeem:<id>` that the owner signs. `POST /api/redemptions/confirm` records the order only for that burn (the memo's id, the pending wallet as burn authority, this campaign's mint, exactly the units), so a burn signature seen on-chain cannot be claimed with someone else's address, and a burn without the memo never counts. Burns inside a transaction that calls the curve or the resale pool (a maker unlocking production funds) and burns signed by the pool's creator are refused. A burn whose confirm never arrived is found again by its memo (`GET /api/redemptions/pending`) and finished when the backer next opens the page. Shipping details never go on-chain.
+- **Maker orders.** The maker signs a message naming this site's host and the campaign (exact text, dated within the last 5 minutes, not in the future) to list orders, download a CSV (cells that a spreadsheet would run as a formula are neutralised) and mark orders shipped, which deletes their shipping details.
 
 Stack: `@meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, `@meteora-ag/cp-amm-sdk@1.5.0`, `@solana/web3.js` v1, Next.js 16, React 19, Tailwind 4, shadcn/ui, Solana wallet adapter.
 
@@ -119,8 +120,8 @@ In the app, connect Phantom, Solflare or Backpack on **devnet** and click **Get 
 Other commands:
 
 ```bash
-pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, request schemas, caches, sign-in, config)
-pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): create (every share, split, maker-paid), graduation, swaps, slippage, referrals
+pnpm core:test                                        # unit tests (pricing, engine vs SDK validation, trust, request schemas, caches, sign-in, sealed shipping, CSV, config)
+pnpm core:test:localnet                               # against a local validator (LOCALNET_RPC_URL): create (every share, split, maker-paid), graduation, swaps, slippage, referrals, redemptions
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
@@ -135,6 +136,7 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 - **`PUBLIC_BASE_URL`** is the app's https origin. It goes into immutable on-chain metadata URIs and Blink icons, so it is required off localnet (`RAILWAY_PUBLIC_DOMAIN` is the fallback). Creating a campaign fails fast without it. Creating campaigns from a laptop on devnet therefore needs a public https URL (a tunnel); use localnet for local work.
 - **`PLATFORM_SECRET_KEY`** and **`USDC_MINT`** let a deployed server run without the gitignored `keys/` directory. `PLATFORM_FEE_CLAIMER` sets who receives partner fees and leftover on every new campaign config; configs are immutable, so set it before launching. Campaign creation never uses the platform key; it signs only the faucet and the admin-only graduation path.
 - **`ADMIN_TOKEN`** unlocks the platform-paid graduation (`POST /api/campaigns/<pool>/migrate` with `Authorization: Bearer …`). Use a random token of at least 32 characters (`openssl rand -hex 32`); empty or shorter disables that path, and a wrong token gets 401.
+- **`SHIPPING_ENCRYPTION_KEY`** encrypts backers' shipping details at rest (AES-256-GCM, 32 bytes as hex or base64). Required on mainnet (`/api/health` fails without it); set it on every deployed server, because a lost or changed key makes stored addresses unreadable. Off mainnet an unset key is generated once into `keys/<network>/shipping-key`.
 - **`PRIORITY_FEE_MAX_MICROLAMPORTS`** caps the compute-unit price added to wallet transactions and the admin graduation (default 1,000,000). `/api/health` fails while it is not a whole number ≥ 1000.
 - **Localnet**: `NETWORK=localnet` with a `solana-test-validator` that has the mainnet DBC, DAMM v2, Metaplex and Locker programs cloned. `LOCALNET_RPC_URL` defaults to `http://127.0.0.1:8899`, explorer links use the Solana Explorer's custom cluster, and `TRUST_FIXTURES` can stand in for mainnet wallet history.
 
@@ -145,11 +147,11 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 - Per-IP token buckets on create, preview, quotes, transaction builds (`/api/tx`, confirm, resume, redemptions), trust lookups, uncached campaign reads, faucet, graduation and the Blink POST (429 when empty). The client IP is the `X-Forwarded-For` entry `TRUSTED_PROXY_HOPS` from the right; an invalid value fails `/api/health` and every limited request rather than putting all clients in one bucket. With no proxy in front, `next start` fills `X-Forwarded-For` from the socket only when the client sent none, so the header is client-controlled: set `TRUSTED_PROXY_HOPS=0` there (one shared bucket). The bucket file is written atomically and an unreadable one fails open.
 - Faucet (devnet/localnet): one claim per wallet per 24 h, 5 per IP and 300 in total per day. A claim is recorded before the transfer is sent, so concurrent requests can't all pass the caps, and given back only when the transfer provably did not run. `RATE_LIMITS=off` lifts the limits on localnet only.
 - Live campaign state is cached per pool for 3 s and the resale panels' reads for 5 s, with concurrent reads coalesced; the listing reads pools and mints in batched `getMultipleAccountsInfo` calls; configs are read once. `GET /api/campaigns/<pool>?fresh=1` (rate-limited) skips the cache, the page uses it right after a graduation, and the status gates re-read a pool before refusing an action whose status the cache may not show yet. The pages keep the last data under a "delayed" banner when a poll fails.
-- Status gates: buy and sell only while funding, withdraw and resale swaps only after graduation (409), quotes only for listed campaigns (404); the Blink is disabled with the right copy outside funding or when its live state can't be read, and its POST answers 422.
+- Status gates: buy and sell only while funding, withdraw, resale swaps and redemptions only after graduation (409), quotes only for listed campaigns (404); the Blink is disabled with the right copy outside funding or when its live state can't be read, and its POST answers 422.
 
 ### Deploy (Railway)
 
-`railway.json` builds from the repo root with Railpack (`pnpm build`), starts with `pnpm start` (Next reads `PORT`) and health-checks `/api/health`, a liveness route that makes no RPC call. Railpack takes the Node version from `engines.node` (`22.22.x`). Set `NETWORK`, the RPC URLs, `PUBLIC_RPC_URL`, `PUBLIC_BASE_URL`, `PLATFORM_SECRET_KEY`, `PLATFORM_FEE_CLAIMER` and (off mainnet) `USDC_MINT` as service variables before the first build, and keep the service root at the repo root so the workspace resolves.
+`railway.json` builds from the repo root with Railpack (`pnpm build`), starts with `pnpm start` (Next reads `PORT`) and health-checks `/api/health`, a liveness route that makes no RPC call. Railpack takes the Node version from `engines.node` (`22.22.x`). Set `NETWORK`, the RPC URLs, `PUBLIC_RPC_URL`, `PUBLIC_BASE_URL`, `PLATFORM_SECRET_KEY`, `PLATFORM_FEE_CLAIMER`, `SHIPPING_ENCRYPTION_KEY` and (off mainnet) `USDC_MINT` as service variables before the first build, and keep the service root at the repo root so the workspace resolves.
 
 ---
 
@@ -157,7 +159,8 @@ Every variable is documented in [`.env.example`](.env.example). The ones that ma
 
 - **Trust-minimized, not trustless.** A maker can take the upfront share and never ship. The trust tier limits how much they can take upfront, and the rest stays locked in the resale pool.
 - **Exit ≠ refund.** Selling back before the goal pays the current curve price, which can be more or less than the price paid.
-- **Demo storage.** Campaign records, token metadata and shipping details are kept in JSON files on the server. Production needs a database, and encryption for shipping data.
+- **Demo storage.** Campaign records, token metadata and shipping details are kept in JSON files on the server (shipping details encrypted, and deleted once the maker marks an order shipped). Production needs a database.
+- **Maker sign-in is short-lived, not single-use.** A signed orders message works for 5 minutes on this site only; there is no server nonce or session cookie yet.
 - **Trust signals are simple.** Wallet age, activity and first funder can be gamed with aged wallets, and activity with a month of daily self-transfers. They are one input, shown openly, and not a verdict; an attestation (X OAuth or SAS) is an open decision.
 
 ## Business model

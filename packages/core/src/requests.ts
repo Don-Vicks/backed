@@ -94,6 +94,10 @@ const REQUIRED_SHIPPING = 'Name, address and country are required'
 const shippingField = (what: string, max: number) =>
   z.string({ error: REQUIRED_SHIPPING }).trim().min(1, { error: REQUIRED_SHIPPING }).max(max, { error: `${what} is too long (at most ${max} characters)` })
 
+// Server-made redemption id (newRedemptionId): 16 base64url characters.
+const redemptionId = z.string({ error: 'id is missing' }).regex(/^[A-Za-z0-9_-]{16}$/, { error: 'id is not a redemption id' })
+const ordersSignIn = z.object({ pool: addressSchema('pool'), message: text('message', 500), signature: z.string({ error: 'signature is missing' }).max(200) })
+
 // One schema per route body. Unknown keys are dropped; campaign is checked by campaignFromInput.
 export const schemas = {
   createCampaign: z.object({ campaign: z.unknown(), maker: addressSchema('maker') }),
@@ -113,16 +117,18 @@ export const schemas = {
     slippageBps: slippage,
   }),
   faucet: z.object({ wallet: addressSchema('wallet') }),
-  redemption: z.object({
+  redeemPrepare: z.object({
     pool: addressSchema('pool'),
-    signature: signatureSchema,
     wallet: addressSchema('wallet'),
     shipping: z.object(
       { name: shippingField('name', 100), email: text('email', 200).default(''), address: shippingField('address', 500), country: shippingField('country', 60) },
       { error: REQUIRED_SHIPPING },
     ),
   }),
-  ordersSignIn: z.object({ pool: addressSchema('pool'), message: text('message', 500), signature: z.string({ error: 'signature is missing' }).max(200) }),
+  redeemConfirm: z.object({ id: redemptionId, signature: signatureSchema }),
+  redeemPending: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet') }),
+  ordersSignIn: ordersSignIn,
+  ordersShipped: ordersSignIn.extend({ order: signatureSchema }), // order = the burn signature
   blinkPost: z.object({ account: addressSchema('account') }),
   blinkAmount: z.coerce.number({ error: 'Enter an amount in USDC' }).pipe(amountSchema),
 }
@@ -162,8 +168,8 @@ export const RATE_LIMITS = {
   faucet: { capacity: 5, perSec: 1 / 60 },
   migrate: { capacity: 5, perSec: 1 / 10 },
   blink: { capacity: 10, perSec: 1 / 2 },
-  // Building a wallet transaction, confirming a launch or recording a redemption: the quote bucket's size,
-  // far above the few transactions a minute a person signs.
+  // Building a wallet transaction, confirming a launch or a redemption, or looking for unfinished
+  // redemptions: the quote bucket's size, far above the few transactions a minute a person signs.
   tx: { capacity: 30, perSec: 2 },
   // Spent only on a trust-cache miss: each walks up to 20 pages of mainnet history.
   trust: { capacity: 5, perSec: 1 / 30 },

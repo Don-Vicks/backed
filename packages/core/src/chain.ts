@@ -3,7 +3,7 @@
 import fs from 'fs'
 import path from 'path'
 import BN from 'bn.js'
-import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js'
+import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js'
 import { createBurnInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import {
   DAMM_V2_MIGRATION_FEE_ADDRESS,
@@ -273,8 +273,21 @@ export async function buildMakerWithdrawTx(connection: Connection, maker: Public
   return dbcClient(connection).creator.creatorWithdrawMigrationFee({ pool, sender: maker })
 }
 
-// Redemption: burn exactly one whole voucher. The signature is the proof of claim.
-export function buildRedeemTx(owner: PublicKey, baseMint: PublicKey) {
+// SPL Memo v2. A memo instruction that lists an account fails unless that account signed.
+export const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr')
+export const REDEEM_MEMO_PREFIX = 'backed:redeem:'
+
+// Redemption: burn whole vouchers, with a memo naming the pending redemption (which holds the shipping
+// details) and signed by the owner. Only a burn carrying that memo can be claimed for those details,
+// so a burn signature seen on-chain is useless to anyone with other shipping details.
+export function buildRedeemTx(owner: PublicKey, baseMint: PublicKey, redemptionId: string, units = 1) {
   const ata = getAssociatedTokenAddressSync(baseMint, owner)
-  return new Transaction().add(createBurnInstruction(ata, baseMint, owner, BigInt(10 ** VOUCHER_DECIMALS)))
+  return new Transaction().add(
+    createBurnInstruction(ata, baseMint, owner, BigInt(units) * BigInt(10 ** VOUCHER_DECIMALS)),
+    new TransactionInstruction({
+      programId: MEMO_PROGRAM_ID,
+      keys: [{ pubkey: owner, isSigner: true, isWritable: false }],
+      data: Buffer.from(REDEEM_MEMO_PREFIX + redemptionId, 'utf8'),
+    }),
+  )
 }

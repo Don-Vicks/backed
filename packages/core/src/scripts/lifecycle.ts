@@ -35,6 +35,7 @@ import {
   saveMockUsdcMint,
   toUsdcRaw,
 } from '../chain'
+import { newRedemptionId } from '../redemptions'
 
 const TRUST_RPC = trustRpcUrl()
 const fmt = (bn: BN | bigint, decimals = 6) => (Number(bn.toString()) / 10 ** decimals).toFixed(4)
@@ -259,7 +260,8 @@ async function main() {
     const holdings = await Promise.all(backers.map(async (b) => ({ b, v: await balanceOf(connection, baseMint, b.publicKey) })))
     const top = holdings.sort((x, y) => y.v.cmp(x.v))[0]
     if (top.v.lt(new BN(10 ** VOUCHER_DECIMALS))) throw new Error('no backer holds a whole voucher')
-    const sig = await send(connection, buildRedeemTx(top.b.publicKey, baseMint), [top.b], `${name(top.b)} burns 1 voucher`)
+    // The web app stores the shipping details as a pending redemption first; its id goes in the burn's memo.
+    const sig = await send(connection, buildRedeemTx(top.b.publicKey, baseMint, newRedemptionId()), [top.b], `${name(top.b)} burns 1 voucher`)
     console.log(`    ${name(top.b)} vouchers: ${fmt(top.v)} → ${fmt(await balanceOf(connection, baseMint, top.b.publicKey))}`)
     return sig
   })
