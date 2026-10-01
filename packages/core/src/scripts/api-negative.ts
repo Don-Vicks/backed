@@ -147,11 +147,20 @@ async function main() {
   // Their own client IP: these share the transaction-build bucket with everything above.
   const redeemIp = { 'x-forwarded-for': ip() }
   const prepare = (body: Record<string, unknown>) => call('POST', '/api/redemptions/prepare', { pool, wallet: pk(backer1), shipping, ...body }, redeemIp)
+  const submit = (body: Record<string, unknown>) => call('POST', '/api/redemptions/submit', { pool, shipping, ...body }, redeemIp)
   const confirm = (body: Record<string, unknown>) => call('POST', '/api/redemptions/confirm', body, redeemIp)
+  const signB64 = (b64: string, k: Keypair, payer?: Keypair) => {
+    const t = Transaction.from(Buffer.from(b64, 'base64'))
+    if (payer) t.feePayer = payer.publicKey
+    t.partialSign(payer ?? k)
+    return t.serialize({ requireAllSignatures: false }).toString('base64')
+  }
   expect('redeem prepare: missing fields', await prepare({ shipping: { name: 'a' } }), 400)
   expect('redeem prepare: bad email', await prepare({ shipping: { ...shipping, email: 'no' } }), 400)
   expect('redeem prepare: unknown campaign', await prepare({ pool: stranger }), 404)
   expect('redeem prepare: before graduation', await prepare({}), 409)
+  expect('redeem submit: not a transaction', await submit({ id: 'AAAAAAAAAAAAAAAA', tx: 'AAAA' }), 400)
+  expect('redeem submit: not base64', await submit({ id: 'AAAAAAAAAAAAAAAA', tx: 'not base64!' }), 400)
   expect('redeem confirm: bad id', await confirm({ id: '../x', signature: createSig }), 400)
   expect('redeem confirm: bad signature', await confirm({ id: 'AAAAAAAAAAAAAAAA', signature: 'x' }), 400)
   expect('redeem confirm: unknown id', await confirm({ id: 'AAAAAAAAAAAAAAAA', signature: createSig }), 404)
@@ -197,14 +206,25 @@ async function main() {
   expect('tx withdraw: maker after graduation', await call('POST', '/api/tx', { kind: 'withdraw', pool, wallet: pk(maker) }), 200)
   expect('tx withdraw: backer', await tx({ kind: 'withdraw' }), 400)
   expect('tx sell: reselling', await tx({ kind: 'sell' }), 409)
-  // --- redemption after graduation: prepare, burn, confirm; a hijack of that burn; the maker's orders
+  // --- redemption after graduation: prepare, sign, submit; a hijack of that burn; the maker's orders
+  // Anyone may prepare in the backer's name, as often as the IP limit allows: nothing is stored, so it
+  // locks no one out.
+  const thirdParty = { 'x-forwarded-for': ip() }
+  for (let i = 0; i < 6; i++) {
+    expect('redeem prepare: a third party, backer’s wallet', await call('POST', '/api/redemptions/prepare', { pool, wallet: pk(backer1), shipping }, thirdParty), 200)
+  }
   const prep = expect('redeem prepare: reselling', await prepare({}), 200)
   if (prep.status === 200) {
-    const burn = await signSend(prep.json.tx, backer1)
-    expect('redeem confirm: ok', await confirm({ id: prep.json.id, signature: burn }), 200)
+    expect('redeem submit: unsigned', await submit({ id: prep.json.id, tx: prep.json.tx }), 400)
+    expect('redeem submit: signed by someone else', await submit({ id: prep.json.id, tx: signB64(prep.json.tx, backer1, backer2) }), 400)
+    const signedBurn = signB64(prep.json.tx, backer1)
+    expect('redeem submit: for another id', await submit({ id: 'AAAAAAAAAAAAAAAA', tx: signedBurn }), 400)
+    const done = expect('redeem submit: ok', await submit({ id: prep.json.id, tx: signedBurn }), 200)
+    expect('redeem submit: again, other shipping', await submit({ id: prep.json.id, tx: signedBurn, shipping: { ...shipping, name: 'Mallory' } }), 200)
+    const burn: string = done.json.signature ?? createSig
     expect('redeem confirm: again', await confirm({ id: prep.json.id, signature: burn }), 200)
-    const forged = expect('redeem prepare: hijacker, victim’s wallet', await prepare({ shipping: { ...shipping, name: 'Mallory' } }), 200, 400)
-    if (forged.status === 200) expect('redeem confirm: hijack with the victim’s burn', await confirm({ id: forged.json.id, signature: burn }), 400)
+    const forged = expect('redeem prepare: hijacker, backer’s wallet', await prepare({ shipping: { ...shipping, name: 'Mallory' } }), 200, 400)
+    if (forged.status === 200) expect('redeem confirm: hijack with the backer’s burn', await confirm({ id: forged.json.id, signature: burn }), 404)
     const list = expect('orders: maker after a redemption', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, new Date().toISOString(), host))), 200)
     if (list.json.redemptions?.[0]?.shipping?.name !== 'Ada') rows.push({ label: 'orders: shows the owner’s shipping', status: 0, want: [1], note: JSON.stringify(list.json.redemptions) })
     const shipped = (order: string) => call('POST', '/api/redemptions/shipped', { ...signed(ordersMessage(pool, new Date().toISOString(), host)), order })

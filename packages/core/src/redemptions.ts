@@ -1,12 +1,13 @@
-// Redemptions: a backer gives shipping details first, then burns 1+ whole voucher in a transaction
-// whose memo names that pending redemption. The server records the order only after checking that
-// burn on-chain, so a burn can only ever be claimed for the details its owner signed for.
+// Redemptions: the server builds a burn of 1+ whole voucher whose memo names a new redemption id; the
+// backer's wallet signs it and hands it back with the shipping details. The server keeps the details
+// (as a pending redemption) only for a burn its owner signed, sends it, and records the order once the
+// burn checks out on-chain. A burn can only ever be claimed for the details sent with it.
 import fs from 'fs'
 import path from 'path'
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto'
 import bs58 from 'bs58'
 import nacl from 'tweetnacl'
-import { Connection, PublicKey } from '@solana/web3.js'
+import { ComputeBudgetProgram, Connection, PublicKey, Transaction, TransactionExpiredBlockheightExceededError, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import { getAccount, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import { DAMM_V2_PROGRAM_ID, DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-curve-sdk'
 import { getNetwork, type NetworkName } from './network'
@@ -17,13 +18,25 @@ import { VOUCHER_DECIMALS } from './engine'
 import { MEMO_PROGRAM_ID, REDEEM_MEMO_PREFIX, buildRedeemTx, dbcClient } from './chain'
 import { getCampaign, writeFileAtomic, type CampaignRecord } from './store'
 import { HttpError } from './errors'
+import { friendlyTxError } from './tx-errors'
 
 export type Shipping = { name: string; email: string; address: string; country: string }
 // Shipping details at rest: AES-256-GCM under SHIPPING_ENCRYPTION_KEY, bound to the pool and wallet.
 export type SealedShipping = { v: 1; iv: string; tag: string; data: string }
 
-// Built for a wallet, not yet burned (or burned, but the confirm never arrived).
-export type PendingRedemption = { id: string; pool: string; wallet: string; units: number; shipping: SealedShipping; createdAt: string }
+// A burn its wallet signed, kept from just before the server sends it until its order is recorded or it
+// is known not to have landed: the server sends and confirms in one request, so a row outlives that
+// request only when the confirmation was lost (an RPC failure, a restart).
+export type PendingRedemption = {
+  id: string
+  pool: string
+  wallet: string
+  units: number
+  shipping: SealedShipping
+  createdAt: string
+  signature: string // the signed burn's
+  lastValidBlockHeight: number // past this height a burn that has not landed never will
+}
 // An order. Older records have no id and plain shipping; shipping is null once the maker marks it shipped.
 export type Redemption = {
   id?: string
@@ -51,16 +64,17 @@ function parseShippingKey(raw: string): Buffer {
   return bytes
 }
 
-// For /api/health: a key that is set must parse, and mainnet must have one. Reads no file.
+// For /api/health: a key that is set must parse, and every network but localnet must have one (a
+// generated key would sit next to the data it protects, or be lost on a redeploy). Reads no file.
 export function checkShippingKey(env: NodeJS.ProcessEnv = process.env, network: NetworkName = getNetwork().name) {
   const raw = env.SHIPPING_ENCRYPTION_KEY?.trim()
   if (raw) parseShippingKey(raw)
-  else if (network === 'mainnet') throw new ConfigError('SHIPPING_ENCRYPTION_KEY must be set on mainnet')
+  else if (network !== 'localnet') throw new ConfigError(`SHIPPING_ENCRYPTION_KEY must be set on ${network}`)
 }
 
-// The key from the environment. Off mainnet, without one, a key is generated once into keys/<network>/
-// next to the other local keys, so a dev server works out of the box. A deployed server sets the
-// variable: a lost key makes every stored address unreadable.
+// The key from the environment. On localnet, without one, a key is generated once into keys/localnet/
+// next to the other local keys, so a dev server works out of the box. Everywhere else the variable is
+// required: a lost key makes every stored address unreadable.
 export function shippingKey(): Buffer {
   checkShippingKey()
   const raw = process.env.SHIPPING_ENCRYPTION_KEY?.trim()
@@ -108,10 +122,19 @@ export function getRedemption(id: string): Redemption | undefined {
   return readAll().find((r) => r.id === id)
 }
 
+// Orders written before shipping details were encrypted are sealed on the next write.
+const writeRedemptions = (all: Redemption[]) => {
+  if (all.some((r) => r.shipping && !('v' in r.shipping))) {
+    const key = shippingKey()
+    for (const r of all) if (r.shipping && !('v' in r.shipping)) r.shipping = sealShipping(r.shipping, r.pool, r.wallet, key)
+  }
+  writeFileAtomic(redemptionsPath(), JSON.stringify(all, null, 2))
+}
+
 export function saveRedemption(r: Redemption) {
   const all = readAll()
   if (all.some((x) => x.signature === r.signature || (r.id && x.id === r.id))) throw new HttpError('This redemption was already submitted', 409)
-  writeFileAtomic(redemptionsPath(), JSON.stringify([r, ...all], null, 2))
+  writeRedemptions([r, ...all])
 }
 
 // The maker shipped it: the record stays (units, burn, dates) but the shipping details are deleted.
@@ -122,7 +145,7 @@ export function markRedemptionShipped(pool: string, signature: string, now = new
   if (!r) return false
   r.shippedAt ??= now.toISOString()
   r.shipping = null
-  writeFileAtomic(redemptionsPath(), JSON.stringify(all, null, 2))
+  writeRedemptions(all)
   return true
 }
 
@@ -140,8 +163,10 @@ export function listRedemptionViews(pool: string): RedemptionView[] {
   })
 }
 
-// Pending rows are kept long enough to recover a burn whose confirm never arrived, and capped so a
-// flood of prepares cannot fill the disk (the oldest go first).
+// Pending rows are kept long enough to recover a burn whose confirm never arrived. The file is capped:
+// when it is full, new redemptions wait (429) and no row younger than the retention is ever dropped,
+// since it may be the only record of a burn. Each row needs a burn its wallet signed, a few at a time
+// per wallet (MAX_OPEN_REDEMPTIONS), so filling it takes many funded wallets.
 export const PENDING_REDEMPTION_RETENTION_MS = 30 * 24 * 60 * 60_000
 export const MAX_PENDING_REDEMPTIONS = 5000
 const pendingRedemptionsPath = () => path.join(repoRoot(), 'data', `pending-redemptions.${getNetwork().name}.json`)
@@ -150,7 +175,8 @@ const readPendingRedemptions = (): PendingRedemption[] =>
 
 export function savePendingRedemption(p: PendingRedemption, now = Date.now()) {
   const kept = readPendingRedemptions().filter((x) => x.id !== p.id && now - Date.parse(x.createdAt) <= PENDING_REDEMPTION_RETENTION_MS)
-  writeFileAtomic(pendingRedemptionsPath(), JSON.stringify([p, ...kept].slice(0, MAX_PENDING_REDEMPTIONS)))
+  if (kept.length >= MAX_PENDING_REDEMPTIONS) throw new HttpError('Redemptions are busy right now. Try again in a few minutes.', 429)
+  writeFileAtomic(pendingRedemptionsPath(), JSON.stringify([p, ...kept]))
 }
 
 export function getPendingRedemption(id: string): PendingRedemption | undefined {
@@ -161,8 +187,8 @@ export function listPendingRedemptions(pool: string, wallet: string): PendingRed
   return readPendingRedemptions().filter((p) => p.pool === pool && p.wallet === wallet)
 }
 
-export function countPendingRedemptions(pool: string, wallet: string, sinceMs: number): number {
-  return listPendingRedemptions(pool, wallet).filter((p) => Date.parse(p.createdAt) >= sinceMs).length
+export function countPendingRedemptions(pool: string, wallet: string): number {
+  return listPendingRedemptions(pool, wallet).length
 }
 
 export function removePendingRedemption(id: string) {
@@ -171,39 +197,146 @@ export function removePendingRedemption(id: string) {
   writeFileAtomic(pendingRedemptionsPath(), JSON.stringify(all.filter((p) => p.id !== id)))
 }
 
-// --- The flow: prepare, burn, confirm (and recover) -----------------------------------------------
+// --- The flow: prepare, submit (sign, send, confirm) and recover -----------------------------------
 
-// A wallet may start this many redemptions per window (a blockhash's life and some): enough for
-// retries, not for filling the pending file in someone else's name.
-export const OPEN_REDEMPTIONS = { max: 5, windowMs: 2 * 60_000 }
+// Pending rows one wallet may have open in a campaign: burns sent whose confirmation was lost. They
+// clear as the page finishes them, so this only stops a wallet from filling the file.
+export const MAX_OPEN_REDEMPTIONS = 5
 
 export const newRedemptionId = () => randomBytes(12).toString('base64url') // 16 characters
 
-// Checks that the campaign has graduated, the wallet is not the pool's creator and holds the vouchers,
-// then stores the pending redemption with its shipping sealed. Returns it with the burn transaction
-// (unsigned, no blockhash) whose memo names it.
-export async function prepareRedemption(connection: Connection, record: CampaignRecord, wallet: PublicKey, shipping: Shipping, units = 1, now = Date.now()) {
+// The campaign has graduated and the wallet is not the pool's creator (409 otherwise).
+async function requireRedeemable(connection: Connection, record: CampaignRecord, wallet: PublicKey) {
   const virtualPool = await dbcClient(connection).state.getPool(new PublicKey(record.pool))
   if (!virtualPool) throw new HttpError('Campaign pool not found', 404)
   if (Number(virtualPool.poolState.isMigrated) !== 1) throw new HttpError('Redemptions open once the campaign graduates', 409)
   // The maker's vouchers come back from the resale pool when production funds unlock; they are not orders.
   if (virtualPool.poolState.creator.equals(wallet)) throw new HttpError('The maker’s own vouchers can’t be redeemed as orders', 409)
+}
+
+// Checks that the campaign has graduated, the wallet is not the pool's creator and holds the vouchers.
+// Returns a new redemption id and the burn transaction (unsigned, no blockhash) whose memo names it.
+// Nothing is stored: anyone may ask, for any wallet, and only the wallet's signature makes it count.
+export async function prepareRedemption(connection: Connection, record: CampaignRecord, wallet: PublicKey, units = 1) {
+  await requireRedeemable(connection, record, wallet)
   const baseMint = new PublicKey(record.baseMint)
   const account = await getAccount(connection, getAssociatedTokenAddressSync(baseMint, wallet)).catch(() => null)
   if (!account || account.amount < BigInt(units) * UNIT) throw new HttpError(`You need ${units} whole voucher${units === 1 ? '' : 's'} to redeem`, 400)
-  if (countPendingRedemptions(record.pool, wallet.toBase58(), now - OPEN_REDEMPTIONS.windowMs) >= OPEN_REDEMPTIONS.max) {
-    throw new HttpError('You just started several redemptions. Finish one, or wait a minute and try again.', 429)
+  const id = newRedemptionId()
+  return { id, tx: buildRedeemTx(wallet, baseMint, id, units) }
+}
+
+// Instructions a signed burn may carry besides the redemption's own: the priority fee.
+const FEE_PROGRAMS = [ComputeBudgetProgram.programId.toBase58()]
+
+// A decoded instruction's keys carry the message's flags (the fee payer is writable everywhere), so a key
+// only has to be at least the signer and writable the built one asked for.
+const sameInstruction = (a: TransactionInstruction, b: TransactionInstruction) =>
+  a.programId.equals(b.programId) &&
+  a.data.equals(b.data) &&
+  a.keys.length === b.keys.length &&
+  a.keys.every((k, i) => k.pubkey.equals(b.keys[i].pubkey) && (k.isSigner || !b.keys[i].isSigner) && (k.isWritable || !b.keys[i].isWritable))
+
+// A signed burn handed back for redemption `id`: one signature, its fee payer's, valid; and exactly the
+// instructions buildRedeemTx makes for that wallet and id, plus priority-fee ones. Returns the wallet.
+export function checkSignedRedeemTx(record: CampaignRecord, tx: Transaction, id: string, units = 1): PublicKey {
+  const wallet = tx.feePayer
+  if (!wallet || tx.signatures.length !== 1 || !tx.signatures[0].publicKey.equals(wallet) || !tx.verifySignatures(true)) {
+    throw new HttpError('That transaction is not signed by its wallet', 400)
   }
-  const pending: PendingRedemption = {
-    id: newRedemptionId(),
-    pool: record.pool,
-    wallet: wallet.toBase58(),
-    units,
-    shipping: sealShipping(shipping, record.pool, wallet.toBase58()),
-    createdAt: new Date(now).toISOString(),
+  const expected = buildRedeemTx(wallet, new PublicKey(record.baseMint), id, units).instructions
+  const own = tx.instructions.filter((ix) => !FEE_PROGRAMS.includes(ix.programId.toBase58()))
+  if (own.length !== expected.length || !own.every((ix, i) => sameInstruction(ix, expected[i]))) {
+    throw new HttpError('That is not the redemption transaction built for you; start again', 400)
   }
-  savePendingRedemption(pending, now)
-  return { pending, tx: buildRedeemTx(wallet, baseMint, pending.id, units) }
+  return wallet
+}
+
+// 503: the burn was sent but its order is not known to be recorded; it may have landed. The page finds
+// it again through findUnfinishedRedemptions. No other answer of submit is a 503.
+const STILL_LANDING = 'Your burn was sent but isn’t confirmed yet. Your order is finished automatically once it lands; reload in a minute.'
+const EXPIRED = 'That transaction has expired before it landed. Approve the new one.' // isExpiredTxError matches it
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// Takes the burn the wallet signed for `id` with the shipping details, keeps them as a pending
+// redemption, sends the burn and confirms it, then records the order. A 4xx, or an error that is not an
+// HttpError, means nothing was burned (refused, failed simulation, expired, failed on-chain, an RPC
+// failure before sending); a 503 means the burn may have landed, and the pending row lets
+// findUnfinishedRedemptions finish it. Sending the same signed burn again is harmless.
+export async function submitRedemption(connection: Connection, record: CampaignRecord, raw: Buffer, id: string, shipping: Shipping, now = new Date()) {
+  let tx: Transaction
+  try {
+    tx = Transaction.from(raw)
+  } catch {
+    throw new HttpError('tx is not a transaction', 400)
+  }
+  const wallet = checkSignedRedeemTx(record, tx, id)
+  const signature = bs58.encode(tx.signature!)
+  const done = getRedemption(id)
+  if (done) {
+    if (done.signature !== signature) throw new HttpError('This redemption was already confirmed with another burn', 409)
+    return { redemption: done, already: true }
+  }
+  let pending = getPendingRedemption(id)
+  if (pending && pending.signature !== signature) throw new HttpError('This redemption was already sent with another burn', 409)
+  if (!pending) {
+    await requireRedeemable(connection, record, wallet)
+    if (countPendingRedemptions(record.pool, wallet.toBase58()) >= MAX_OPEN_REDEMPTIONS) {
+      throw new HttpError('You have redemptions that haven’t finished yet. Reload the page to finish them, then try again.', 429)
+    }
+    // The exact bytes, simulated first: a burn that would fail is never sent, and nothing is kept.
+    const sim = await connection.simulateTransaction(VersionedTransaction.deserialize(raw), { sigVerify: true, commitment: 'confirmed' })
+    const err = sim.value.err
+    if (err === 'BlockhashNotFound') throw new HttpError(EXPIRED, 400)
+    if (err && err !== 'AlreadyProcessed') {
+      const message = `${JSON.stringify(err)} ${(sim.value.logs ?? []).join(' ')}`
+      throw new HttpError(`The burn was not sent. ${friendlyTxError(message) ?? 'It would fail on-chain; nothing was burned.'}`, 400)
+    }
+    pending = {
+      id,
+      pool: record.pool,
+      wallet: wallet.toBase58(),
+      units: 1,
+      shipping: sealShipping(shipping, record.pool, wallet.toBase58()),
+      createdAt: now.toISOString(),
+      signature,
+      // A blockhash that simulates is at most this many blocks from expiry.
+      lastValidBlockHeight: (await connection.getBlockHeight('confirmed')) + 150,
+    }
+    savePendingRedemption(pending, now.getTime())
+  }
+  try {
+    await connection.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 5 })
+    const result = await connection.confirmTransaction(
+      { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: pending.lastValidBlockHeight },
+      'confirmed',
+    )
+    if (result.value.err) {
+      removePendingRedemption(id)
+      throw new HttpError(`The burn failed on-chain, so no voucher was used. ${friendlyTxError(JSON.stringify(result.value.err)) ?? 'Try again.'}`, 400)
+    }
+  } catch (e) {
+    if (e instanceof HttpError) throw e
+    if (!(e instanceof TransactionExpiredBlockheightExceededError)) throw new HttpError(STILL_LANDING, 503)
+    const status = await connection
+      .getSignatureStatuses([signature], { searchTransactionHistory: true })
+      .then((r) => r.value[0], () => Promise.reject(new HttpError(STILL_LANDING, 503)))
+    if (!status || status.err) {
+      removePendingRedemption(id)
+      throw new HttpError(status ? 'The burn failed on-chain, so no voucher was used. Try again.' : EXPIRED, 400)
+    }
+  }
+  // Landed. The RPC may need a moment to return it in full.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await confirmRedemption(connection, id, signature, now)
+    } catch (e) {
+      if (!(e instanceof HttpError) || (e.status === 409 && attempt >= 3)) throw new HttpError(STILL_LANDING, 503)
+      if (e.status !== 409) throw e
+      await sleep(1000)
+    }
+  }
 }
 
 // Programs a redemption never calls: the curve and the resale pool.
@@ -255,8 +388,9 @@ export async function verifyRedeemBurn(
   return pending.units
 }
 
-// Records the order for a pending redemption once its burn checks out. Safe to repeat: the same burn
-// again answers with the order already recorded.
+// Records the order for a pending redemption once its burn (the one sent for it) checks out. Safe to
+// repeat: the same burn again answers with the order already recorded. A burn that landed but can never
+// count (400) drops the pending row, so it is not offered again.
 export async function confirmRedemption(connection: Connection, id: string, signature: string, now = new Date()) {
   const done = getRedemption(id)
   if (done) {
@@ -265,10 +399,17 @@ export async function confirmRedemption(connection: Connection, id: string, sign
   }
   const pending = getPendingRedemption(id)
   if (!pending) throw new HttpError('Redemption not found. It may have expired; start again.', 404)
+  if (pending.signature !== signature) throw new HttpError('That is not the burn sent for this redemption', 400)
   const record = getCampaign(pending.pool)
   if (!record) throw new HttpError('Campaign not found', 404)
   const virtualPool = await dbcClient(connection).state.getPool(new PublicKey(record.pool))
-  const units = await verifyRedeemBurn(connection, record, pending, signature, virtualPool?.poolState.creator ?? null)
+  let units: number
+  try {
+    units = await verifyRedeemBurn(connection, record, pending, signature, virtualPool?.poolState.creator ?? null)
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 400) removePendingRedemption(id)
+    throw e
+  }
   const redemption: Redemption = { id, pool: pending.pool, signature, wallet: pending.wallet, units, shipping: pending.shipping, createdAt: now.toISOString() }
   saveRedemption(redemption)
   removePendingRedemption(id)
@@ -277,27 +418,23 @@ export async function confirmRedemption(connection: Connection, id: string, sign
 
 export type UnfinishedRedemption = { id: string; signature: string; units: number; createdAt: string }
 
-// This wallet's pending redemptions whose burn landed but was never confirmed (a closed tab, a lost
-// connection), found by their memo among the voucher account's recent signatures. The caller confirms
-// each with confirmRedemption, which checks the burn in full.
+// This wallet's pending redemptions whose burn landed but whose order was never recorded (the server
+// lost the confirmation), by the status of the burn each one was sent with. The caller confirms each with
+// confirmRedemption, which checks the burn in full. Rows whose burn failed, or expired without landing,
+// are dropped here: nothing was burned for them.
 export async function findUnfinishedRedemptions(connection: Connection, record: CampaignRecord, wallet: PublicKey): Promise<UnfinishedRedemption[]> {
   const pending = listPendingRedemptions(record.pool, wallet.toBase58())
   if (pending.length === 0) return []
-  const byMemo = new Map(pending.map((p) => [REDEEM_MEMO_PREFIX + p.id, p]))
-  const ata = getAssociatedTokenAddressSync(new PublicKey(record.baseMint), wallet)
-  const sigs = await connection.getSignaturesForAddress(ata, { limit: 200 }, 'confirmed')
+  const statuses = (await connection.getSignatureStatuses(pending.map((p) => p.signature), { searchTransactionHistory: true })).value
+  const height = statuses.some((s) => !s) ? await connection.getBlockHeight('confirmed') : 0
   const found: UnfinishedRedemption[] = []
-  for (const s of sigs) {
-    if (s.err || !s.memo) continue
-    // The RPC lists a transaction's memos as "[len] text; [len] text".
-    for (const [, text] of s.memo.matchAll(/\[\d+\] ([^;]*)/g)) {
-      const p = byMemo.get(text.trim())
-      if (p && !found.some((f) => f.id === p.id)) found.push({ id: p.id, signature: s.signature, units: p.units, createdAt: p.createdAt })
-    }
-  }
+  pending.forEach((p, i) => {
+    const s = statuses[i]
+    if (s?.err || (!s && height > p.lastValidBlockHeight)) removePendingRedemption(p.id)
+    else if (s && s.confirmationStatus !== 'processed') found.push({ id: p.id, signature: p.signature, units: p.units, createdAt: p.createdAt })
+  })
   return found
 }
-
 // --- Maker sign-in ---------------------------------------------------------------------------------
 
 // The maker signs ordersMessage() for this site; it is good for a few minutes after its date.

@@ -24,3 +24,12 @@ export function resolvePublicOrigin(env: NodeJS.ProcessEnv, network: NetworkName
   }
   return url.origin
 }
+
+// Hosts the app answers on, for checking which site a wallet signed a message for: PUBLIC_BASE_URL's
+// and, on Railway, the service's own domain (both reach the same server); the request's on localnet.
+export function siteHosts(env: NodeJS.ProcessEnv, network: NetworkName, requestUrl?: string): string[] {
+  const hosts = new Set([new URL(resolvePublicOrigin(env, network, requestUrl)).host])
+  const railway = env.RAILWAY_PUBLIC_DOMAIN?.trim()
+  if (railway) hosts.add(railway)
+  return [...hosts]
+}

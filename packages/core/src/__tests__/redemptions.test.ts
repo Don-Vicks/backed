@@ -5,7 +5,7 @@ import os from 'os'
 import path from 'path'
 import bs58 from 'bs58'
 import nacl from 'tweetnacl'
-import { Keypair } from '@solana/web3.js'
+import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js'
 
 // Point the repo root at a temp dir before anything writes data/ or keys/.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'preorder-redemptions-'))
@@ -16,6 +16,7 @@ delete process.env.SHIPPING_ENCRYPTION_KEY
 
 import {
   MAX_PENDING_REDEMPTIONS,
+  checkSignedRedeemTx,
   PENDING_REDEMPTION_RETENTION_MS,
   checkShippingKey,
   countPendingRedemptions,
@@ -96,13 +97,14 @@ test('shipping is sealed at rest and only opens for its pool and wallet', () => 
   assert.ok(shippingKey().equals(shippingKey()))
 })
 
-test('SHIPPING_ENCRYPTION_KEY: hex or base64 of 32 bytes; required on mainnet', () => {
+test('SHIPPING_ENCRYPTION_KEY: hex or base64 of 32 bytes; required everywhere but localnet', () => {
   const hex = 'ab'.repeat(32)
   assert.doesNotThrow(() => checkShippingKey({ SHIPPING_ENCRYPTION_KEY: hex }, 'mainnet'))
   assert.doesNotThrow(() => checkShippingKey({ SHIPPING_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64') }, 'devnet'))
   assert.throws(() => checkShippingKey({ SHIPPING_ENCRYPTION_KEY: 'short' }, 'devnet'), /32 bytes/)
   assert.throws(() => checkShippingKey({}, 'mainnet'), /must be set on mainnet/)
-  assert.doesNotThrow(() => checkShippingKey({}, 'devnet'))
+  assert.throws(() => checkShippingKey({}, 'devnet'), /must be set on devnet/, 'a deployed devnet keeps its key out of the data volume')
+  assert.doesNotThrow(() => checkShippingKey({}, 'localnet'))
   process.env.SHIPPING_ENCRYPTION_KEY = hex
   try {
     assert.ok(shippingKey().equals(Buffer.from(hex, 'hex')))
@@ -120,6 +122,8 @@ const pending = (over: Partial<PendingRedemption> = {}): PendingRedemption => ({
   units: 1,
   shipping: sealShipping({ name: 'Ada', email: '', address: '1 St', country: 'X' }, 'POOL', 'WALLET'),
   createdAt: new Date().toISOString(),
+  signature: 'SIG',
+  lastValidBlockHeight: 100,
   ...over,
 })
 
@@ -134,23 +138,30 @@ test('pending redemptions: save, find, count, remove; old ones expire', () => {
   assert.equal(getPendingRedemption(old.id), undefined, 'pruned on the next write')
   assert.equal(getPendingRedemption(a.id)?.wallet, 'WALLET')
   assert.deepEqual(listPendingRedemptions('POOL', 'WALLET').map((p) => p.id), [a.id])
-  assert.equal(countPendingRedemptions('POOL', 'WALLET', now - 60_000), 1)
-  assert.equal(countPendingRedemptions('POOL', 'WALLET', now + 60_000), 0)
+  assert.equal(countPendingRedemptions('POOL', 'WALLET'), 1)
+  assert.equal(countPendingRedemptions('POOL', 'NOBODY'), 0)
   removePendingRedemption(a.id)
   assert.equal(getPendingRedemption(a.id), undefined)
   assert.ok(getPendingRedemption(b.id))
   assert.match(a.id, /^[A-Za-z0-9_-]{16}$/)
 })
 
-test('pending redemptions are capped, keeping the newest', () => {
+test('a full pending file refuses new rows and keeps every existing one', () => {
   const file = path.join(root, 'data', 'pending-redemptions.localnet.json')
-  const filler = Array.from({ length: MAX_PENDING_REDEMPTIONS }, (_, i) => ({ ...pending(), id: `fill${String(i).padStart(12, '0')}` }))
-  fs.writeFileSync(file, JSON.stringify(filler))
+  // The oldest row is someone's landed burn whose confirm was lost: a flood must not push it out.
+  const burned = pending({ wallet: 'VICTIM', createdAt: new Date(Date.now() - 29 * 24 * 60 * 60_000).toISOString() })
+  const filler = Array.from({ length: MAX_PENDING_REDEMPTIONS - 1 }, (_, i) => ({ ...pending(), id: `fill${String(i).padStart(12, '0')}` }))
+  fs.writeFileSync(file, JSON.stringify([...filler, burned]))
+  const before = fs.readFileSync(file, 'utf8')
+  assert.throws(() => savePendingRedemption(pending()), (e: any) => e.status === 429 && /busy/.test(e.message))
+  assert.equal(fs.readFileSync(file, 'utf8'), before, 'nothing dropped, nothing added')
+  assert.equal(getPendingRedemption(burned.id)?.wallet, 'VICTIM')
+  // Rows past the retention make room again.
+  const expired = filler.map((p) => ({ ...p, createdAt: new Date(Date.now() - PENDING_REDEMPTION_RETENTION_MS - 1000).toISOString() }))
+  fs.writeFileSync(file, JSON.stringify([...expired, burned]))
   const fresh = pending()
   savePendingRedemption(fresh)
-  const all = JSON.parse(fs.readFileSync(file, 'utf8')) as PendingRedemption[]
-  assert.equal(all.length, MAX_PENDING_REDEMPTIONS)
-  assert.equal(all[0].id, fresh.id)
+  assert.deepEqual((JSON.parse(fs.readFileSync(file, 'utf8')) as PendingRedemption[]).map((p) => p.id), [fresh.id, burned.id])
   fs.writeFileSync(file, '[]')
 })
 
@@ -163,6 +174,8 @@ test('orders: one per burn; mark shipped deletes the shipping details; views ope
   saveRedemption({ pool: 'SHIPPOOL', signature: 'sig2', wallet: 'W2', units: 2, shipping: { name: 'Old', email: '', address: 'a', country: 'b' }, createdAt: '' })
   const otherKey = sealShipping({ name: 'x', email: '', address: 'y', country: 'z' }, 'SHIPPOOL', 'W3', Buffer.alloc(32))
   saveRedemption({ id: 'r3', pool: 'SHIPPOOL', signature: 'sig3', wallet: 'W3', units: 1, shipping: otherKey, createdAt: '' })
+
+  assert.ok(!fs.readFileSync(path.join(root, 'data', 'redemptions.localnet.json'), 'utf8').includes('Old'), 'a plaintext order is sealed on the next write')
 
   const views = listRedemptionViews('SHIPPOOL')
   assert.equal(views.find((v) => v.signature === 'sig1')?.shipping?.name, 'Ada')
@@ -189,4 +202,45 @@ test('the redeem transaction burns whole units and carries the owner-signed memo
   assert.ok(memo.programId.equals(MEMO_PROGRAM_ID))
   assert.equal(memo.data.toString('utf8'), `${REDEEM_MEMO_PREFIX}AbCd-_0123456789`)
   assert.deepEqual(memo.keys, [{ pubkey: owner, isSigner: true, isWritable: false }])
+})
+
+test('a signed burn counts only as built for its wallet and id, signed by that wallet alone', () => {
+  const owner = Keypair.generate()
+  const record = { baseMint: Keypair.generate().publicKey.toBase58() } as Parameters<typeof checkSignedRedeemTx>[0]
+  const id = 'AbCd-_0123456789'
+  const blockhash = Keypair.generate().publicKey.toBase58()
+  const signed = (tx: Transaction, payer = owner, ...more: Keypair[]) => {
+    tx.feePayer = payer.publicKey
+    tx.recentBlockhash = blockhash
+    tx.sign(payer, ...more)
+    return Transaction.from(tx.serialize({ requireAllSignatures: false })) // as the server receives it
+  }
+  const built = () => buildRedeemTx(owner.publicKey, new PublicKey(record.baseMint), id)
+  const fee = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 })
+
+  assert.ok(checkSignedRedeemTx(record, signed(built()), id).equals(owner.publicKey))
+  assert.ok(checkSignedRedeemTx(record, signed(new Transaction().add(fee, ...built().instructions)), id), 'a priority fee is fine')
+  assert.throws(() => checkSignedRedeemTx(record, signed(built()), 'ZZZZ-_0123456789'), /not the redemption transaction/, 'another id')
+  const unsigned = built()
+  unsigned.feePayer = owner.publicKey
+  unsigned.recentBlockhash = blockhash
+  assert.throws(() => checkSignedRedeemTx(record, Transaction.from(unsigned.serialize({ requireAllSignatures: false })), id), /not signed by its wallet/)
+  // Someone else's key cannot sign it: the burn and memo need the owner, so a forger signs as payer only.
+  const forger = Keypair.generate()
+  const forged = built()
+  forged.feePayer = forger.publicKey
+  forged.recentBlockhash = blockhash
+  forged.partialSign(forger)
+  assert.throws(() => checkSignedRedeemTx(record, Transaction.from(forged.serialize({ requireAllSignatures: false })), id), /not signed by its wallet/)
+  // A tampered signature.
+  const tampered = signed(built())
+  tampered.signatures[0].signature![0] ^= 1
+  assert.throws(() => checkSignedRedeemTx(record, tampered, id), /not signed by its wallet/)
+  // Two units, an extra instruction, or a co-signer: not the burn that was built.
+  assert.throws(() => checkSignedRedeemTx(record, signed(buildRedeemTx(owner.publicKey, new PublicKey(record.baseMint), id, 2)), id), /not the redemption transaction/)
+  const extra = new Transaction().add(...built().instructions, SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: forger.publicKey, lamports: 1 }))
+  assert.throws(() => checkSignedRedeemTx(record, signed(extra), id), /not the redemption transaction/)
+  const cosigner = Keypair.generate()
+  const cosigned = new Transaction().add(...built().instructions, SystemProgram.transfer({ fromPubkey: cosigner.publicKey, toPubkey: owner.publicKey, lamports: 1 }))
+  assert.throws(() => checkSignedRedeemTx(record, signed(cosigned, owner, cosigner), id), /not signed by its wallet/)
 })

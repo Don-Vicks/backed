@@ -3,8 +3,8 @@ import { checkShippingKey, getNetwork, priorityFeeMax, trustedProxyHops } from "
 // Liveness for the platform healthcheck: no RPC call, so a slow RPC never blocks a deploy.
 // Fails when the server's NETWORK differs from the one baked into the browser bundle at build time, or
 // when PRIORITY_FEE_MAX_MICROLAMPORTS or TRUSTED_PROXY_HOPS is invalid (every wallet transaction, or every
-// rate-limited request, would fail at request time), or SHIPPING_ENCRYPTION_KEY is invalid or, on
-// mainnet, missing (no redemption could be stored).
+// rate-limited request, would fail at request time), or SHIPPING_ENCRYPTION_KEY is invalid or, off
+// localnet, missing (no redemption could be stored).
 export function GET() {
   try {
     const network = getNetwork().name;

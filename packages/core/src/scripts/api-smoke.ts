@@ -93,9 +93,10 @@ async function finish(pool: string) {
   for (const b of backers) {
     const r = await api<{ id: string; tx: string; lastValidBlockHeight: number }>('/api/redemptions/prepare', { pool: created.pool, wallet: b.publicKey.toBase58(), shipping }).catch(() => null)
     if (!r) continue // holds < 1 voucher
-    const burn = await signSend(r, b, 'redeem 1 voucher')
-    await api('/api/redemptions/confirm', { id: r.id, signature: burn })
-    console.log('✓ order recorded')
+    const tx = Transaction.from(Buffer.from(r.tx, 'base64'))
+    tx.partialSign(b)
+    const done = await api<{ signature: string }>('/api/redemptions/submit', { pool: created.pool, id: r.id, tx: tx.serialize().toString('base64'), shipping })
+    console.log(`✓ redeem 1 voucher ${done.signature.slice(0, 16)}…, order recorded`)
     break
   }
   console.log(`\nAPI smoke passed. Open ${BASE}/c/${created.pool}`)

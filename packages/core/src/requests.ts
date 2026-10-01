@@ -96,6 +96,19 @@ const shippingField = (what: string, max: number) =>
 
 // Server-made redemption id (newRedemptionId): 16 base64url characters.
 const redemptionId = z.string({ error: 'id is missing' }).regex(/^[A-Za-z0-9_-]{16}$/, { error: 'id is not a redemption id' })
+const shipping = z.object(
+  {
+    name: shippingField('name', 100),
+    email: text('email', 200)
+      .default('')
+      .refine((e) => !e || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e), { error: 'Enter a valid email' }),
+    address: shippingField('address', 500),
+    country: shippingField('country', 60),
+  },
+  { error: REQUIRED_SHIPPING },
+)
+// A signed transaction, base64: at most 1232 bytes on the wire.
+const signedTx = z.string({ error: 'tx is missing' }).max(1700, { error: 'tx is too large' }).regex(/^[A-Za-z0-9+/]+={0,2}$/, { error: 'tx is not base64' })
 const ordersSignIn = z.object({ pool: addressSchema('pool'), message: text('message', 500), signature: z.string({ error: 'signature is missing' }).max(200) })
 
 // One schema per route body. Unknown keys are dropped; campaign is checked by campaignFromInput.
@@ -117,14 +130,9 @@ export const schemas = {
     slippageBps: slippage,
   }),
   faucet: z.object({ wallet: addressSchema('wallet') }),
-  redeemPrepare: z.object({
-    pool: addressSchema('pool'),
-    wallet: addressSchema('wallet'),
-    shipping: z.object(
-      { name: shippingField('name', 100), email: text('email', 200).default(''), address: shippingField('address', 500), country: shippingField('country', 60) },
-      { error: REQUIRED_SHIPPING },
-    ),
-  }),
+  redeemPrepare: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet'), shipping }),
+  // The burn prepare built for `id`, signed by the wallet, with the shipping details it is for.
+  redeemSubmit: z.object({ pool: addressSchema('pool'), id: redemptionId, tx: signedTx, shipping }),
   redeemConfirm: z.object({ id: redemptionId, signature: signatureSchema }),
   redeemPending: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet') }),
   ordersSignIn: ordersSignIn,

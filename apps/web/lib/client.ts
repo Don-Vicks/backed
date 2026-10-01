@@ -79,18 +79,24 @@ function fromBase64(b64: string) {
 
 // Takes a server-built transaction, has the wallet sign it, sends it and waits for confirmation. With
 // `rebuild`, a transaction whose blockhash expired (a slow approval, a congested network) is built
-// again and the wallet asked once more.
+// again and the wallet asked once more. With `submit`, the signed transaction goes there instead of to
+// the RPC (a server that sends it and waits for it), resolving with its signature once it has landed;
+// an error whose message isExpiredTxError matches rebuilds as above.
 export function useSignAndSend() {
   const { connection } = useConnection();
   const { signTransaction, publicKey } = useWallet();
 
   return useCallback(
-    async (built: BuiltTx, label: string, rebuild?: () => Promise<BuiltTx>) => {
+    async (built: BuiltTx, label: string, rebuild?: () => Promise<BuiltTx>, submit?: (signed: Transaction) => Promise<string>) => {
       if (!publicKey || !signTransaction) throw new Error("Connect a wallet first");
       const toastId = toast.loading(`${label}: approve in your wallet`);
       const attempt = async (b: BuiltTx) => {
         const tx = Transaction.from(fromBase64(b.tx));
         const signed = await signTransaction(tx);
+        if (submit) {
+          toast.loading(`${label}: confirming`, { id: toastId });
+          return submit(signed);
+        }
         toast.loading(`${label}: sending`, { id: toastId });
         const signature = await connection.sendRawTransaction(signed.serialize(), { maxRetries: 3 });
         toast.loading(`${label}: confirming`, { id: toastId });

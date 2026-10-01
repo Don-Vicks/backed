@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { Transaction } from "@solana/web3.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { CheckCircle2 } from "lucide-react";
@@ -14,7 +15,8 @@ type Unfinished = { id: string; signature: string; units: number; createdAt: str
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Records the order for a landed burn. The server may not see the burn for a moment (409): retry a few times.
+// Records the order for a landed burn whose submit did not. The server may not see the burn for a moment
+// (409): retry a few times.
 async function confirm(id: string, signature: string) {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -26,10 +28,10 @@ async function confirm(id: string, signature: string) {
   }
 }
 
-// Redeem a voucher for the item, after graduation. Shipping details come first; the burn the wallet
-// signs names them; then the order is confirmed. A burn whose confirm never arrived (closed tab, lost
-// connection) is found again on the next visit and finished. Keyed on the wallet by the parent, so a
-// wallet switch starts clean.
+// Redeem a voucher for the item, after graduation. Shipping details come first; the wallet signs the burn
+// built for them, and the server sends it and records the order in one request. A burn whose order the
+// server could not record (a lost confirmation) is found again on the next visit and finished. Keyed on
+// the wallet by the parent, so a wallet switch starts clean.
 export function RedeemPanel({ c, vouchers, onDone }: { c: CampaignWithLive; vouchers: number; onDone: () => void }) {
   const { publicKey } = useWallet();
   const wallet = publicKey?.toBase58() ?? "";
@@ -48,6 +50,7 @@ export function RedeemPanel({ c, vouchers, onDone }: { c: CampaignWithLive; vouc
     enabled: !!wallet,
     staleTime: Infinity,
     retry: false,
+    refetchInterval: notice ? 15_000 : false, // a sent burn may land after the first look
   });
   const finish = useMutation({
     // Each one on its own: one that can't be confirmed does not hold up the rest.
@@ -75,24 +78,33 @@ export function RedeemPanel({ c, vouchers, onDone }: { c: CampaignWithLive; vouc
     setSubmitting(true);
     setError(null);
     setNotice(null);
-    let burned = false;
+    let maybeBurned = false;
     try {
       const prepare = () => api<BuiltTx & { id: string }>("/api/redemptions/prepare", { pool: c.pool, wallet, shipping });
       let built = await prepare();
-      // An expired blockhash prepares again: a new pending redemption, named by the new burn.
-      const signature = await signAndSend(built, "Redeem 1 voucher", async () => (built = await prepare()));
-      burned = true;
-      await confirm(built.id, signature);
+      // The server sends the signed burn and records the order once it lands. A 4xx (or a 500) means
+      // nothing was burned; a 503, a gateway error or no answer at all means it may have been.
+      const submit = async (signed: Transaction) => {
+        try {
+          const tx = signed.serialize().toString("base64");
+          return (await api<{ signature: string }>("/api/redemptions/submit", { pool: c.pool, id: built.id, tx, shipping })).signature;
+        } catch (e) {
+          if (!(e instanceof ApiError) || e.status > 500) maybeBurned = true;
+          throw e;
+        }
+      };
+      // An expired blockhash prepares again: a new redemption id, named by the new burn.
+      await signAndSend(built, "Redeem 1 voucher", async () => (built = await prepare()), submit);
       setFormKey(null);
       setPlaced((n) => n + 1);
       toast.success("Order placed. The maker will ship it.");
       onDone();
     } catch (e) {
-      if (burned) {
-        // The voucher is gone but the order is not recorded yet. Close the form (submitting it again would
+      if (maybeBurned) {
+        // The voucher may be gone without the order recorded. Close the form (submitting it again would
         // burn another voucher) and let the unfinished-redemption check finish it.
         setFormKey(null);
-        setNotice("Your voucher is burned, but the order didn’t go through yet. It is finished automatically; if this stays, reload the page.");
+        setNotice("Your burn was sent, but the order isn’t confirmed yet. It is finished automatically once the burn lands; if this stays, reload the page in a minute.");
         finish.reset();
         queryClient.invalidateQueries({ queryKey: pendingKey });
       } else if (!(e instanceof ReportedError)) setError(e instanceof Error ? e.message : "Couldn’t redeem");

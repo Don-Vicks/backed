@@ -1,5 +1,5 @@
 // Redemption through the web API on a graduated campaign (WEB_URL, default http://localhost:3100):
-// prepare with shipping, burn, confirm; then the hijack attempts and the maker's orders sign-in.
+// prepare, sign and submit with shipping; then the hijack attempts and the maker's orders sign-in.
 //   pnpm --filter @preorder/core exec ts-node src/scripts/redeem-check.ts <pool>
 import bs58 from 'bs58'
 import nacl from 'tweetnacl'
@@ -30,14 +30,12 @@ async function main() {
   const shipping = { name: 'Ada Lovelace', email: 'ada@example.com', address: '12 Analytical Way\nLondon', country: 'UK' }
   const built = (await post('/api/redemptions/prepare', { pool, wallet: holder.publicKey.toBase58(), shipping })).body
   const tx = Transaction.from(Buffer.from(built.tx, 'base64')); tx.partialSign(holder)
-  const sig = await c.sendRawTransaction(tx.serialize())
-  await c.confirmTransaction({ signature: sig, blockhash: tx.recentBlockhash!, lastValidBlockHeight: built.lastValidBlockHeight }, 'confirmed')
-  console.log('✓ burned 1 voucher', sig.slice(0, 16))
-  console.log('confirm       →', await post('/api/redemptions/confirm', { id: built.id, signature: sig }))
-  console.log('confirm again →', await post('/api/redemptions/confirm', { id: built.id, signature: sig }))
-  // A hijacker prepares in the holder's name with their own address, then claims the holder's burn.
+  const signed = tx.serialize().toString('base64')
+  console.log('submit        →', await post('/api/redemptions/submit', { pool, id: built.id, tx: signed, shipping }))
+  console.log('submit again  →', await post('/api/redemptions/submit', { pool, id: built.id, tx: signed, shipping: { ...shipping, name: 'Mallory' } }))
+  // A hijacker claims the holder's burn for a redemption of their own: only the burn sent for it counts.
   const forged = (await post('/api/redemptions/prepare', { pool, wallet: holder.publicKey.toBase58(), shipping: { ...shipping, name: 'Mallory' } })).body
-  console.log('hijack        →', await post('/api/redemptions/confirm', { id: forged.id, signature: sig }))
+  console.log('hijack        →', await post('/api/redemptions/confirm', { id: forged.id, signature: bs58.encode(tx.signature!) }))
   const msg = ordersMessage(pool, new Date().toISOString(), new URL(BASE).host)
   const signAs = (kp: typeof w.maker) => bs58.encode(nacl.sign.detached(new TextEncoder().encode(msg), kp.secretKey))
   const asMaker = await post('/api/redemptions/list', { pool, message: msg, signature: signAs(w.maker) })

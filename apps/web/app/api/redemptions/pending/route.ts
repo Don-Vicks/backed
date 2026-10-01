@@ -1,8 +1,8 @@
 import { findUnfinishedRedemptions, getCampaign, HttpError, parseWith, schemas } from "@preorder/core";
 import { connection, errorResponse, rateLimit, requestLog } from "@/lib/server";
 
-// ?pool&wallet: this wallet's redemptions whose burn landed but whose confirm never arrived, for the page
-// to finish. No shipping details: ids and burn signatures only, which are public on-chain anyway.
+// ?pool&wallet: this wallet's redemptions whose burn landed but whose order was never recorded, for the
+// page to finish (rows whose burn failed or expired are dropped on the way). No shipping details: ids and burn signatures only, which are public on-chain anyway.
 export async function GET(req: Request) {
   const log = requestLog("GET /api/redemptions/pending");
   try {

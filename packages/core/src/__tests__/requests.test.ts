@@ -81,6 +81,12 @@ test('parseWith turns schema failures into 400s with a readable message', () => 
   bad(schemas.redeemConfirm, { id: '../../etc', signature: sig }, /not a redemption id/)
   bad(schemas.redeemConfirm, { id: 'AbCd-_0123456789', signature: 'x' }, /not a valid transaction signature/)
   bad(schemas.redeemPending, { pool, wallet: 'nope' }, /wallet is not a valid Solana address/)
+  bad(schemas.redeemPrepare, { pool, wallet, shipping: { ...shipping, email: 'no' } }, /Enter a valid email/)
+  const signedTx = Buffer.alloc(300, 1).toString('base64')
+  assert.equal(parseWith(schemas.redeemSubmit, { pool, id: 'AbCd-_0123456789', tx: signedTx, shipping: { ...shipping, email: 'a@b.co' } }).tx, signedTx)
+  bad(schemas.redeemSubmit, { pool, id: 'AbCd-_0123456789', tx: 'not base64!', shipping }, /tx is not base64/)
+  bad(schemas.redeemSubmit, { pool, id: 'AbCd-_0123456789', tx: 'A'.repeat(1701), shipping }, /tx is too large/)
+  bad(schemas.redeemSubmit, { pool, id: 'AbCd-_0123456789', shipping }, /tx is missing/)
   bad(schemas.ordersShipped, { pool, message: 'm', signature: 's' }, /signature is missing|Invalid input/)
 
   assert.equal(parseWith(schemas.blinkAmount, '25'), 25)

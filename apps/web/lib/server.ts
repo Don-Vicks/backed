@@ -17,6 +17,7 @@ import {
   readTrustSignals,
   resolvePublicOrigin,
   scoreSignals,
+  siteHosts,
   SwapError,
   takeRateToken,
   trustFixture,
@@ -39,12 +40,15 @@ export const connection = (): Connection => getConnection();
 // PUBLIC_BASE_URL is missing or not public https off localnet, so nothing immutable gets a bad URL.
 export const publicOrigin = (req?: Request) => resolvePublicOrigin(process.env, getNetwork().name, req?.url);
 
-// The maker's sign-in to the orders page: ordersMessage for this site's host and the campaign, signed
-// by the campaign's maker in the last few minutes. Returns the campaign; 404 or 403 otherwise.
+// The maker's sign-in to the orders page: ordersMessage for one of this site's hosts (siteHosts) and the
+// campaign, signed by the campaign's maker in the last few minutes. Returns the campaign; 404 or 403 otherwise.
 export function requireMakerSignIn(req: Request, body: { pool: PublicKey; message: string; signature: string }): CampaignRecord {
   const record = getCampaign(body.pool.toBase58());
   if (!record) throw new HttpError("Campaign not found", 404);
-  const domain = new URL(publicOrigin(req)).host;
+  // The page signs for the host it is open on, which the message starts with.
+  const hosts = siteHosts(process.env, getNetwork().name, req.url);
+  const domain = hosts.find((h) => body.message.startsWith(`${h} `));
+  if (!domain) throw new HttpError(`That sign-in is for another site. Open the orders page on ${hosts[0]} and sign in again.`, 403);
   try {
     verifyWalletMessage(body.message, body.signature, new PublicKey(record.maker), (issuedAt) => ordersMessage(record.pool, issuedAt, domain));
   } catch (e) {
