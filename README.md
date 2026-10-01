@@ -20,12 +20,13 @@ The maker fills in a plain form. `campaignToConfig()` ([`packages/core/src/engin
 
 | What the maker sets | DBC setting | Why it's built this way |
 |---|---|---|
-| **Early-bird tiers** (units + start price per tier) | `curve[]` segments, `sqrtStartPrice` | Each tier is one curve segment. Liquidity is solved per segment so each tier sells exactly its units. |
+| **Early-bird tiers** (whole units + start price per tier) | `curve[]` segments, `sqrtStartPrice` | Each tier is one curve segment. Liquidity is solved per segment so each tier sells its units, sized 10 raw units (0.00001 voucher) over so DBC's round-down on swap output never leaves a tier short. |
 | **Funding goal** | `migrationQuoteThreshold` | Graduation *is* "funded". The goal is derived from the tiers: each tier raises units × √(start price × end price). |
 | **Maker's upfront share** | `migrationFee.feePercentage`, `creatorFeePercentage: 100` | The production budget comes out of the raise at graduation and is withdrawn with `creatorWithdrawMigrationFee`. The maker's trust tier caps it (below). |
 | **Drop-bot window** | `baseFee`: `FeeSchedulerExponential` | Scalpers rushing a drop are the same as snipers. The fee starts at 50% and falls to 1% over 5–30 min. (DBC deprecated the rate limiter for new pools in SDK 1.5.12, so there is no per-buy size limit.) |
 | **Limited edition** | `tokenSupply` (fixed), `tokenUpdateAuthority: Immutable` | The supply cap is the production cap, and nobody can mint more. Supply is exactly the curve units plus the resale units. The curve ends at the migration price, so there is no swap buffer and nothing is minted or burned at graduation. |
 | **Price in dollars** | `quoteMint` = USDC, `collectFeeMode: QuoteToken` | Product prices shouldn't move with SOL. All fees are collected in USDC. |
+| **Back N units** | swap2 `SwapMode.ExactOut` (`amountOut` = N vouchers, `maximumAmountIn` from `swapQuote2`) | A voucher redeems for one item only when whole, so backers pick a number of units, not dollars. ExactOut delivers exactly N vouchers for at most the quote plus 1%. When the buy would leave less than one unit on the curve, it switches to `PartialFill` and takes everything left, so whole-unit buys alone reach the goal. A fractional balance from a dollar-amount buy (still under *Advanced*) can be topped up to the next whole voucher the same way. |
 | **Exit before the goal** | *(DBC sells are always open)* | A backer can sell back along the curve at any time before graduation. It isn't a refund: it pays the current curve price. |
 | **Resale market** | `migrationOption: MET_DAMM_V2` | Graduation opens a DAMM v2 pool, so vouchers stay liquid after the pre-order. |
 | **Resale royalty** (1–10%, default 3%) | `migrationFeeOption: Customizable`, `migratedPoolFee: { poolFeeBps, collectFeeMode: QuoteToken, dynamicFee: Enabled }` | The maker picks the resale pool's fee. Every resale pays it in USDC, plus DAMM v2's volatility fee when the price moves fast. The DAMM v2 config the pool migrates into (and so the pool's address) follows from the config's on-chain `migrationFeeOption`; campaigns created before this kept the fixed 2% config (`FixedBps200`). |
@@ -94,6 +95,8 @@ packages/core       All Solana logic, shared by the scripts and the web server
   engine.ts         campaignToConfig(): campaign + trust tier → DBC ConfigParameters
   trust.ts          maker trust tier from mainnet wallet history
   chain.ts          transaction builders: create, buy, exit, graduate, withdraw, redeem
+  units.ts          back N whole units (ExactOut, last-buy sweep), top-up to a whole voucher, quotes
+  voucher-units.ts  whole-unit rules: units validation, whole/fraction split, sweep decision (pure)
   live.ts           live campaign state, quotes, devnet/localnet faucet
   network.ts        NETWORK switch (localnet, devnet, mainnet), RPC and explorer links
   resale.ts         DAMM v2 resale pool, quotes, swaps, maker earnings + claim
@@ -105,7 +108,7 @@ packages/core       All Solana logic, shared by the scripts and the web server
 
 - **Wallet flow.** The server builds each transaction and the browser wallet signs it. Campaign creation is signed by the platform key (the DBC partner) and the fresh config and mint keys on the server, then by the maker's wallet as pool creator.
 - **Graduation** can be triggered by anyone once the goal is reached, and the platform pays the fee.
-- **Blinks.** Every campaign URL `/c/<pool>` is also a Solana Action (`/actions.json` maps it to `/api/actions/back/<pool>`). Shared links can show **Back $10 / $25 / custom** buttons in X or any Blink client, and the `?ref=` referral carries through. Funded campaigns return a disabled Action that points to the resale market.
+- **Blinks.** Every campaign URL `/c/<pool>` is also a Solana Action (`/actions.json` maps it to `/api/actions/back/<pool>`). Shared links show **Back 1 · $X**, **Back 2 · $Y** and a whole-number **units** field in X or any Blink client, priced live with fees included; while the launch fee is above 5% the description says how high it is and when it falls. The `?ref=` referral carries through. Links shared before units existed (`?amount=`) still work. Funded campaigns return a disabled Action that points to the resale market.
 - **Redemption.** The backer burns one whole voucher. The server checks the burn on-chain (mint, authority, amount, never reused) before accepting shipping details, and the details never go on-chain. The maker views orders by signing a time-stamped message with their wallet.
 
 Stack: `@meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, `@meteora-ag/cp-amm-sdk@1.5.0`, `@solana/web3.js` v1, Next.js 16, React 19, Tailwind 4, shadcn/ui, Solana wallet adapter.

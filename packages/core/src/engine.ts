@@ -106,6 +106,9 @@ export function vestingScheduleOverride(env: NodeJS.ProcessEnv = process.env): V
   return out
 }
 
+// Raw vouchers added to each curve segment so it sells at least its units (0.00001 voucher per tier).
+export const CURVE_MARGIN_RAW = 10
+
 const toRaw = (amount: number, decimals: number) => new Decimal(amount).mul(new Decimal(10).pow(decimals))
 const fromRaw = (raw: BN, decimals: number) => new Decimal(raw.toString()).div(new Decimal(10).pow(decimals)).toNumber()
 
@@ -130,8 +133,10 @@ export function campaignToConfig(campaign: Campaign, tier: TrustTierName): Campa
     const s0 = new Decimal(sqrtPrices[i].toString())
     const s1 = new Decimal(sqrtPrices[i + 1].toString())
     // base = L · (s1 − s0) / (s0 · s1)   (sqrt prices in Q64, as in the SDK's own builders)
-    const liquidity = toRaw(t.units, VOUCHER_DECIMALS).mul(s0).mul(s1).div(s1.sub(s0))
-    return { sqrtPrice: sqrtPrices[i + 1], liquidity: convertDecimalToBN(liquidity) }
+    // Sized for a hair more than the tier's units: swaps round their output down, so a curve sized
+    // exactly sold a 7-unit plan as 6.999999, and backing one unit at a time left the last backer 1.999998.
+    const liquidity = toRaw(t.units, VOUCHER_DECIMALS).add(CURVE_MARGIN_RAW).mul(s0).mul(s1).div(s1.sub(s0))
+    return { sqrtPrice: sqrtPrices[i + 1], liquidity: convertDecimalToBN(liquidity.ceil()) }
   })
   const sqrtStartPrice = sqrtPrices[0]
   const sqrtMigrationPrice = sqrtPrices[sqrtPrices.length - 1]

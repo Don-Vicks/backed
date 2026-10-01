@@ -3,23 +3,31 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import {
   buildBuyTx,
+  buildBuyUnitsTx,
   buildMakerClaimTx,
   buildMakerUnlockTx,
   buildMakerWithdrawTx,
   buildRedeemTx,
   buildResaleSwapTx,
   buildSellBackTx,
+  buildTopUpTx,
   getCampaign,
   onChainCreator,
+  unitsReferral,
+  UnitsError,
+  type UnitsQuote,
 } from "@preorder/core";
 import { BadRequest, connection, errorResponse, finalizeForWallet, publicKey, serialize } from "@/lib/server";
 
 type Body = {
-  kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell";
+  kind: "buy" | "buyUnits" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell";
   pool: string;
   wallet: string;
   usdc?: number;
   vouchers?: number;
+  units?: number; // buyUnits: whole pre-order units
+  topUp?: boolean; // buyUnits: instead of units, the rest of the next whole voucher
+  slippageBps?: number; // buyUnits: 10–500, default 100
   ref?: string;
 };
 
@@ -40,7 +48,15 @@ export async function POST(req: Request) {
     const baseMint = new PublicKey(record.baseMint);
 
     let tx;
-    if (body.kind === "buy") {
+    let quote: UnitsQuote | undefined; // what a units buy was built from, for the UI
+    if (body.kind === "buyUnits") {
+      // A bad, self or unusable referral is dropped: it must never block the buy.
+      const referral = await unitsReferral(conn, new PublicKey(record.usdcMint), body.ref, wallet);
+      const opts = { referral, slippageBps: body.slippageBps };
+      const built = body.topUp ? await buildTopUpTx(conn, wallet, pool, baseMint, opts) : await buildBuyUnitsTx(conn, wallet, pool, body.units as number, opts);
+      tx = built.tx;
+      quote = built.quote;
+    } else if (body.kind === "buy") {
       if (!(body.usdc && body.usdc > 0)) throw new BadRequest("Enter an amount");
       const referral = body.ref ? getAssociatedTokenAddressSync(new PublicKey(record.usdcMint), publicKey(body.ref, "ref"), true) : null;
       tx = await buildBuyTx(conn, wallet, pool, body.usdc, referral);
@@ -71,8 +87,9 @@ export async function POST(req: Request) {
     } else {
       throw new BadRequest("Unknown transaction kind");
     }
-    return Response.json(serialize(await finalizeForWallet(tx, wallet)));
+    return Response.json({ ...serialize(await finalizeForWallet(tx, wallet)), ...(quote && { quote }) });
   } catch (e) {
+    if (e instanceof UnitsError) return Response.json({ error: e.message }, { status: e.status });
     return errorResponse(e);
   }
 }

@@ -129,7 +129,8 @@ test('positions after graduation: maker 80/95 vesting + 15/95 permanent, platfor
   const m = (await makerPosition()).positionState
   const makerTotal = m.unlockedLiquidity.add(m.vestedLiquidity).add(m.permanentLockedLiquidity)
   const ratio = (a: BN, b: BN) => Number(a.muln(1_000_000).div(b).toString()) / 1_000_000
-  assert.ok(m.unlockedLiquidity.isZero())
+  // Nothing is unlocked at graduation beyond rounding dust (2 raw units for some plans).
+  assert.ok(m.unlockedLiquidity.lt(makerTotal.div(new BN(1_000_000_000))), `unlocked ${m.unlockedLiquidity}`)
   assert.ok(Math.abs(ratio(m.vestedLiquidity, makerTotal) - 80 / 95) < 1e-5, `vested ${ratio(m.vestedLiquidity, makerTotal)}`)
   assert.ok(Math.abs(ratio(m.permanentLockedLiquidity, makerTotal) - 15 / 95) < 1e-5)
   const platformPositions = await cpAmm.getUserPositionByPool(damm, platform.publicKey)
@@ -176,8 +177,9 @@ test('after the cliff the maker unlocks the cliff tranche and the vouchers are b
   await waitForChainTime(start.innerVesting.cliffPoint.toNumber())
   const built = (await buildMakerUnlockTx(conn, record, maker.publicKey, { slippageBps: 0 }))!
   assert.ok(built, 'nothing to unlock after the cliff')
-  // Cliff only (the first period is 10s later): 50% of the vesting bucket.
-  assert.ok(built.liquidityDelta.eq(start.innerVesting.cliffUnlockLiquidity), `${built.liquidityDelta} vs ${start.innerVesting.cliffUnlockLiquidity}`)
+  // Cliff only (the first period is 10s later): 50% of the vesting bucket, plus any graduation dust.
+  const cliff = start.innerVesting.cliffUnlockLiquidity.add(start.unlockedLiquidity)
+  assert.ok(built.liquidityDelta.eq(cliff), `${built.liquidityDelta} vs ${cliff}`)
   assert.ok(built.minUsdc.eq(built.outUsdc))
 
   const [usdc0, vouchers0, supply0] = [await balance(record.usdcMint, maker.publicKey), await balance(record.baseMint, maker.publicKey), await supply()]
@@ -197,7 +199,7 @@ test('after full vesting the rest unlocks with default slippage; only the perman
   const start = (await makerPosition()).positionState
   await waitForChainTime(start.innerVesting.cliffPoint.toNumber() + SCHEDULE.periods * SCHEDULE.periodSec)
   const built = (await buildMakerUnlockTx(conn, record, maker.publicKey))!
-  assert.ok(built.liquidityDelta.eq(start.vestedLiquidity), 'the whole remaining vesting bucket')
+  assert.ok(built.liquidityDelta.eq(start.vestedLiquidity.add(start.unlockedLiquidity)), 'the whole remaining vesting bucket')
   assert.ok(built.minUsdc.lt(built.outUsdc) && built.minUsdc.gtn(0), 'the USDC threshold is the quote minus 1%, never 0')
 
   const [usdc0, vouchers0, supply0] = [await balance(record.usdcMint, maker.publicKey), await balance(record.baseMint, maker.publicKey), await supply()]

@@ -21,3 +21,8 @@ test('tiers must rise in price', () => {
   assert.throws(() => priceTiers({ tiers: [{ units: 5, startPrice: 10 }, { units: 5, startPrice: 8 }], finalPrice: 12, makerSharePct: 0 }))
   assert.throws(() => priceTiers({ tiers: [{ units: 5, startPrice: 10 }], finalPrice: 10, makerSharePct: 0 }))
 })
+
+test('tiers sell whole units: a fractional tier is rejected', () => {
+  assert.throws(() => priceTiers({ tiers: [{ units: 2.5, startPrice: 4 }], finalPrice: 9, makerSharePct: 0 }), /whole number/)
+  assert.doesNotThrow(() => priceTiers({ tiers: [{ units: 3, startPrice: 4 }], finalPrice: 9, makerSharePct: 0 }))
+})

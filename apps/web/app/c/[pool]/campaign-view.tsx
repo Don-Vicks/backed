@@ -8,7 +8,7 @@ import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { Check, Coins, Copy, ExternalLink, Hourglass, Lock, ShieldCheck, Timer } from "lucide-react";
+import { Check, Coins, Copy, ExternalLink, Hourglass, Lock, Minus, Plus, ShieldCheck, Timer } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,9 +22,12 @@ import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { ShippingForm } from "@/components/shipping-form";
 import { explorerAccount, short, units, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
+import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
 import type { CampaignWithLive } from "@/lib/types";
 
 type Quote = { vouchers: number; feeUsdc: number; feePct: number; minVouchers: number };
+// /api/quote/units (UnitsQuote in core): a whole-units buy, or the top-up of a fractional balance.
+type UnitsQuote = { vouchers: number; usdc: number; maxUsdc: number; feePct: number; completesGoal: boolean; maxUnits: number };
 
 export function CampaignView({ pool }: { pool: string }) {
   const { data, isPending, isError, error, refetch } = useQuery({
@@ -234,10 +237,10 @@ function useBalances(c: CampaignWithLive) {
       const read = async (mint: string) => {
         const ata = getAssociatedTokenAddressSync(new PublicKey(mint), publicKey!);
         const bal = await connection.getTokenAccountBalance(ata).catch(() => null);
-        return bal ? Number(bal.value.uiAmount ?? 0) : 0;
+        return { ui: bal ? Number(bal.value.uiAmount ?? 0) : 0, raw: bal?.value.amount ?? "0" };
       };
       const [vouchers, usdc] = await Promise.all([read(c.baseMint), read(c.usdcMint)]);
-      return { vouchers, usdc };
+      return { vouchers: vouchers.ui, vouchersRaw: vouchers.raw, usdc: usdc.ui };
     },
   });
 }
@@ -251,6 +254,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const searchParams = useSearchParams();
   const ref = searchParams.get("ref") ?? undefined;
   const balances = useBalances(c);
+  const [unitsInput, setUnitsInput] = useState("1");
   const [amount, setAmount] = useState("10");
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -266,13 +270,39 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   });
   const quote = quoteEnabled ? quoteData ?? null : null;
 
+  // Whole units: the default way to back. The quote also says how many units are left.
+  const unitCount = Number(unitsInput);
+  const unitsValid = Number.isInteger(unitCount) && unitCount >= 1 && unitCount <= MAX_UNITS_PER_BUY;
+  const debouncedUnits = useDebounced(unitsValid ? unitCount : 0, 250);
+  const unitsQuoteEnabled = live.status === "funding" && debouncedUnits > 0;
+  const { data: unitsQuoteData, error: unitsQuoteError } = useQuery({
+    queryKey: ["quote-units", c.pool, debouncedUnits, live.raisedUsdc],
+    queryFn: () => api<UnitsQuote>("/api/quote/units", { pool: c.pool, units: debouncedUnits }),
+    enabled: unitsQuoteEnabled,
+    retry: false,
+  });
+  const unitsQuote = unitsQuoteEnabled && debouncedUnits === unitCount ? unitsQuoteData ?? null : null;
+  const maxUnits = unitsQuoteData?.maxUnits ?? MAX_UNITS_PER_BUY;
+  const stepUnits = (delta: number) => setUnitsInput(String(Math.min(maxUnits, Math.max(1, (unitsValid ? unitCount : 1) + delta))));
+
+  // A fractional balance (from a USDC-amount buy) can't be redeemed alone; offer to top it up.
+  const held = splitVouchers(BigInt(balances.data?.vouchersRaw ?? "0"));
+  const topUpEnabled = live.status === "funding" && !!publicKey && held.fractionRaw > BigInt(0);
+  const { data: topUpData } = useQuery({
+    queryKey: ["quote-topup", c.pool, publicKey?.toBase58(), balances.data?.vouchersRaw, live.raisedUsdc],
+    queryFn: () => api<UnitsQuote>("/api/quote/units", { pool: c.pool, wallet: publicKey!.toBase58(), topUp: true }),
+    enabled: topUpEnabled,
+    retry: false,
+  });
+  const topUp = topUpEnabled ? topUpData ?? null : null;
+
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["campaign", c.pool] });
     queryClient.invalidateQueries({ queryKey: ["balances", c.pool] });
     queryClient.invalidateQueries({ queryKey: ["resale", c.pool] });
   };
 
-  async function run(kind: "buy" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell", label: string, extra: Record<string, unknown> = {}) {
+  async function run(kind: "buy" | "buyUnits" | "sell" | "redeem" | "withdraw" | "claim" | "unlock" | "resaleBuy" | "resaleSell", label: string, extra: Record<string, unknown> = {}) {
     if (!publicKey) return setVisible(true);
     setBusy(kind);
     try {
@@ -315,33 +345,88 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   return (
     <div className="flex flex-col gap-4">
       {live.status === "funding" && (
-        <form
-          className="rounded-xl border border-border bg-card p-5"
-          onSubmit={(e) => {
-            e.preventDefault();
-            run("buy", `Back ${c.campaign.name}`, { usdc: usdcAmount, ref });
-          }}
-        >
-          <Label htmlFor="amount">Back with (USDC)</Label>
-          <div className="mt-2 flex gap-2">
-            <Input id="amount" type="number" inputMode="decimal" min={0.01} step={0.01} value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono" />
-            <Button type="submit" disabled={!!busy || !(usdcAmount > 0)}>{busy === "buy" ? "Backing…" : "Back this"}</Button>
-          </div>
-          <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
-            {quote ? (
-              <>
-                ≈ <span className="font-mono text-foreground">{units(quote.vouchers)}</span> vouchers · fee{" "}
-                <span className={`font-mono ${quote.feePct > 5 ? "text-primary" : ""}`}>{quote.feePct.toFixed(1)}%</span>
-                {quote.feePct > 5 && " (drop-bot window still open)"}
-              </>
-            ) : null}
-          </p>
-          {publicKey && balances.data && (
-            <p className="text-xs text-muted-foreground">
-              Wallet: <span className="font-mono">{usd(balances.data.usdc)}</span> USDC
+        <div className="rounded-xl border border-border bg-card p-5">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              run("buyUnits", `Back ${unitCount} unit${unitCount === 1 ? "" : "s"} of ${c.campaign.name}`, { units: unitCount, ref });
+            }}
+          >
+            <Label htmlFor="units">Pre-order units</Label>
+            <p className="mt-1 text-xs text-muted-foreground">Each unit is one voucher, redeemable for one item.</p>
+            <div className="mt-2 flex gap-2">
+              <div className="flex items-center rounded-md border border-input">
+                <Button type="button" variant="ghost" size="icon" aria-label="One unit fewer" onClick={() => stepUnits(-1)} disabled={!unitsValid || unitCount <= 1}>
+                  <Minus aria-hidden="true" />
+                </Button>
+                <Input
+                  id="units"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={maxUnits}
+                  step={1}
+                  value={unitsInput}
+                  onChange={(e) => setUnitsInput(e.target.value)}
+                  aria-invalid={!unitsValid}
+                  className="w-14 border-0 text-center font-mono shadow-none focus-visible:ring-0"
+                />
+                <Button type="button" variant="ghost" size="icon" aria-label="One unit more" onClick={() => stepUnits(1)} disabled={unitsValid && unitCount >= maxUnits}>
+                  <Plus aria-hidden="true" />
+                </Button>
+              </div>
+              <Button type="submit" className="flex-1" disabled={!!busy || !unitsValid || (!!unitsQuoteData && unitCount > maxUnits)}>
+                {busy === "buyUnits" ? "Backing…" : unitsQuote ? `Back ${unitCount} · ${usd(unitsQuote.usdc)}` : `Back ${unitsValid ? unitCount : ""}`}
+              </Button>
+            </div>
+            <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
+              {!unitsValid ? (
+                <span className="text-destructive">Pick a whole number of units</span>
+              ) : unitsQuote ? (
+                <>
+                  ≈ <span className="font-mono text-foreground">{usd(unitsQuote.usdc)}</span> · fee{" "}
+                  <span className={`font-mono ${unitsQuote.feePct > 5 ? "text-primary" : ""}`}>{unitsQuote.feePct.toFixed(1)}%</span>
+                  {unitsQuote.feePct > 5 && " (launch fee still high)"} · at most <span className="font-mono">{usd(unitsQuote.maxUsdc)}</span>
+                  {unitsQuote.completesGoal && <> · completes the goal with {units(unitsQuote.vouchers)} vouchers</>}
+                </>
+              ) : unitsQuoteError && debouncedUnits === unitCount ? (
+                <span className="text-destructive">{unitsQuoteError.message}</span>
+              ) : null}
             </p>
-          )}
-        </form>
+            {publicKey && balances.data && (
+              <p className="text-xs text-muted-foreground">
+                Wallet: <span className="font-mono">{usd(balances.data.usdc)}</span> USDC
+              </p>
+            )}
+          </form>
+
+          <details className="mt-4 border-t border-border pt-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">Advanced: back with a USDC amount</summary>
+            <form
+              className="mt-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                run("buy", `Back ${c.campaign.name}`, { usdc: usdcAmount, ref });
+              }}
+            >
+              <Label htmlFor="amount">Back with (USDC)</Label>
+              <div className="mt-2 flex gap-2">
+                <Input id="amount" type="number" inputMode="decimal" min={0.01} step={0.01} value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono" />
+                <Button type="submit" variant="secondary" disabled={!!busy || !(usdcAmount > 0)}>{busy === "buy" ? "Backing…" : "Back this"}</Button>
+              </div>
+              <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
+                {quote ? (
+                  <>
+                    ≈ <span className="font-mono text-foreground">{units(quote.vouchers)}</span> vouchers · fee{" "}
+                    <span className={`font-mono ${quote.feePct > 5 ? "text-primary" : ""}`}>{quote.feePct.toFixed(1)}%</span>
+                    {quote.feePct > 5 && " (drop-bot window still open)"}
+                  </>
+                ) : null}
+              </p>
+              <p className="text-xs text-muted-foreground">A dollar amount usually buys a fraction of a voucher. Only whole vouchers redeem for an item.</p>
+            </form>
+          </details>
+        </div>
       )}
 
       {live.status === "funded" && (
@@ -362,8 +447,20 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="flex items-baseline justify-between">
             <span className="text-sm text-muted-foreground">Your vouchers</span>
-            <span className="font-mono text-2xl tabular-nums">{units(vouchers)}</span>
+            <span className="font-mono text-2xl tabular-nums">{held.whole}</span>
           </div>
+          {held.fractionRaw > BigInt(0) && (
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="text-muted-foreground">
+                + <span className="font-mono">{held.fraction.toFixed(6).replace(/0+$/, "")}</span> of a voucher, not redeemable alone
+              </span>
+              {live.status === "funding" && (
+                <Button size="sm" variant="secondary" onClick={() => run("buyUnits", `Top up to ${held.whole + 1}`, { topUp: true, ref })} disabled={!!busy}>
+                  {busy === "buyUnits" ? "Topping up…" : `Top up to ${held.whole + 1}${topUp ? ` · ${usd(topUp.usdc)}` : ""}`}
+                </Button>
+              )}
+            </div>
+          )}
           <div className="mt-4 grid gap-2">
             {live.status === "funding" && (
               <Button variant="secondary" onClick={() => run("sell", "Exit at curve price")} disabled={!!busy}>
@@ -371,8 +468,8 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
               </Button>
             )}
             {live.status === "reselling" && (
-              <Button onClick={() => run("redeem", "Redeem 1 voucher")} disabled={!!busy || vouchers < 1}>
-                {busy === "redeem" ? "Redeeming…" : vouchers < 1 ? "Need 1 whole voucher to redeem" : "Redeem 1 for the item"}
+              <Button onClick={() => run("redeem", "Redeem 1 voucher")} disabled={!!busy || held.whole < 1}>
+                {busy === "redeem" ? "Redeeming…" : held.whole < 1 ? "Need 1 whole voucher to redeem" : "Redeem 1 for the item"}
               </Button>
             )}
           </div>
