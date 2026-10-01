@@ -23,6 +23,8 @@ type MakerEarnings = {
 };
 type ResaleView = { pool: string; priceUsdc: number; vouchersInPool: number; usdcInPool: number; maker: MakerEarnings; floor?: BackerFloor | null; royalty?: ResaleRoyalty | null };
 type ResaleQuote = { out: number; minOut: number; feeUsdcEquivalent: number; priceImpactPct: number };
+const WARN_IMPACT_PCT = 5; // shown in the accent color
+const HIGH_IMPACT_PCT = 25; // needs a second press
 
 export type RunTx = (kind: "resaleBuy" | "resaleSell" | "claim" | "withdraw" | "unlock", label: string, extra?: Record<string, unknown>) => Promise<void>;
 
@@ -42,6 +44,8 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
   const resale = useResale(c, true);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("5");
+  // A trade that moves the pool price a lot needs a second press (a thin pool punishes a fat finger).
+  const [confirmImpact, setConfirmImpact] = useState(false);
   const value = Number(amount);
   const debounced = useDebounced(value, 350);
   const quote = useQuery({
@@ -66,12 +70,16 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
 
   const change = ((view.priceUsdc - lastPreorderPrice) / lastPreorderPrice) * 100;
   const notEnough = side === "sell" && value > vouchers;
+  const impact = quote.data && debounced === value ? quote.data.priceImpactPct : 0;
+  const needsConfirm = impact > HIGH_IMPACT_PCT && !confirmImpact;
 
   return (
     <form
       className="rounded-xl border border-border bg-card p-5"
       onSubmit={(e) => {
         e.preventDefault();
+        if (needsConfirm) return setConfirmImpact(true);
+        setConfirmImpact(false);
         run(side === "buy" ? "resaleBuy" : "resaleSell", side === "buy" ? "Buy on resale" : "Sell on resale", side === "buy" ? { usdc: value } : { vouchers: value });
       }}
     >
@@ -100,6 +108,7 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
             aria-checked={side === s}
             onClick={() => {
               setSide(s);
+              setConfirmImpact(false);
               setAmount(s === "buy" ? "5" : String(Math.min(1, Math.floor(vouchers * 100) / 100) || "0.5"));
             }}
             className={`min-h-9 rounded-md text-sm font-medium capitalize transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${side === s ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
@@ -111,9 +120,9 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
 
       <Label htmlFor="resale-amount" className="mt-4 block">{side === "buy" ? "Spend (USDC)" : "Sell (vouchers)"}</Label>
       <div className="mt-2 flex gap-2">
-        <Input id="resale-amount" type="number" inputMode="decimal" min={0.000001} step="any" value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono" />
+        <Input id="resale-amount" type="number" inputMode="decimal" min={0.000001} step="any" value={amount} onChange={(e) => { setAmount(e.target.value); setConfirmImpact(false); }} className="font-mono" />
         <Button type="submit" disabled={!!busy || !(value > 0) || notEnough}>
-          {busy === "resaleBuy" || busy === "resaleSell" ? "Sending…" : side === "buy" ? "Buy" : "Sell"}
+          {busy === "resaleBuy" || busy === "resaleSell" ? "Sending…" : `${confirmImpact ? "Confirm " : ""}${side === "buy" ? "Buy" : "Sell"}`}
         </Button>
       </div>
       <p className="mt-2 min-h-5 text-sm text-muted-foreground" aria-live="polite">
@@ -124,7 +133,17 @@ export function ResalePanel({ c, run, busy, vouchers }: { c: CampaignWithLive; r
         ) : quote.data ? (
           <>
             ≈ <span className="font-mono text-foreground">{side === "buy" ? `${units(quote.data.out)} vouchers` : usd(quote.data.out)}</span>
-            {quote.data.priceImpactPct > 2 && <> · price impact <span className="font-mono">{quote.data.priceImpactPct.toFixed(1)}%</span></>}
+            {quote.data.priceImpactPct > 2 && (
+              <>
+                {" "}· price impact{" "}
+                <span className={`font-mono ${quote.data.priceImpactPct > WARN_IMPACT_PCT ? "text-primary" : ""}`}>{quote.data.priceImpactPct.toFixed(1)}%</span>
+              </>
+            )}
+            {confirmImpact && (
+              <span className="mt-1 block text-primary">
+                This trade moves the price {impact.toFixed(0)}%. A smaller amount gets a better price. Press again to confirm.
+              </span>
+            )}
           </>
         ) : null}
       </p>

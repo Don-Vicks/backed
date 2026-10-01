@@ -20,6 +20,8 @@ import { api, quoteErrorMessage, ReportedError, useSignAndSend, type BuiltTx } f
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { RedeemPanel } from "@/components/redeem-panel";
+import { CurveChart } from "@/components/curve-chart";
+import { OnChainCard } from "@/components/onchain-card";
 import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
@@ -152,6 +154,9 @@ function Loaded({ c }: { c: CampaignWithLive }) {
               );
             })}
           </ol>
+          <div className="mt-4">
+            <CurveChart plan={plan} unitsSold={live.unitsSold} graduated={live.status !== "funding"} />
+          </div>
         </section>
 
         <section aria-labelledby="terms-title" className="rounded-xl border border-border bg-card p-5">
@@ -167,6 +172,8 @@ function Loaded({ c }: { c: CampaignWithLive }) {
             Verify the config on-chain <ExternalLink aria-hidden="true" className="size-3.5" />
           </a>
         </section>
+
+        <OnChainCard c={c} />
       </div>
     </div>
   );

@@ -23,7 +23,11 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
 });
 
+// Absolute base for link-preview images (opengraph-image), from the same public origin as token metadata.
+const publicBase = process.env.PUBLIC_BASE_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : "");
+
 export const metadata: Metadata = {
+  metadataBase: publicBase ? new URL(publicBase) : undefined,
   title: BRAND,
   description: "Back it early, pay less. Pre-orders for real products on a bonding curve.",
 };

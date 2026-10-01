@@ -28,6 +28,7 @@ import { api, ApiError, ReportedError, useSignAndSendAll, type BuiltTx } from "@
 import { useDebounced } from "@/lib/use-debounced";
 import { confirmLaunch, setPendingLaunch, usePendingLaunch, type PendingLaunch } from "@/lib/pending-launch";
 import { FinishListing } from "./finish-listing";
+import { CurveChart } from "@/components/curve-chart";
 import { units, usd } from "@/lib/format";
 import type { Campaign, PreviewResponse, PricingSummary, VestingSchedule } from "@/lib/types";
 
@@ -379,6 +380,11 @@ export function CreateForm() {
             </dl>
           ) : (
             <p className="mt-3 text-sm text-destructive" role="alert">{pricing.error}</p>
+          )}
+          {pricing.ok && (
+            <div className="mt-4">
+              <CurveChart plan={campaign.plan} />
+            </div>
           )}
         </div>
         {pricing.ok && vesting && <PayoutCard pricing={pricing.ok} share={effectiveShare} vesting={vesting} unitCost={num(unitCost)} />}

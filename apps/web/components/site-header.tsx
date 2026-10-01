@@ -18,6 +18,9 @@ export function SiteHeader() {
         )}
         <nav className="ml-auto flex items-center gap-1 sm:gap-2">
           <FaucetButton />
+          <Button asChild variant="ghost" className="hidden md:inline-flex">
+            <Link href="/stats">Stats</Link>
+          </Button>
           <Button asChild variant="ghost" className="hidden sm:inline-flex">
             <Link href="/create">
               <Plus aria-hidden="true" />
