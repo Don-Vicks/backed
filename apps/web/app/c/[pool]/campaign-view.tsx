@@ -340,7 +340,9 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     retry: false,
   });
   const unitsQuote = unitsQuoteEnabled && debouncedUnits === unitCount ? unitsQuoteData ?? null : null;
-  const maxUnits = unitsQuoteData?.maxUnits ?? MAX_UNITS_PER_BUY;
+  // Until the quote answers, cap the stepper by what live state says is left (the server's own cap).
+  const unitsLeft = c.campaign.plan.tiers.reduce((a, t) => a + t.units, 0) - live.unitsSold;
+  const maxUnits = unitsQuoteData?.maxUnits ?? Math.min(MAX_UNITS_PER_BUY, Math.max(1, Math.floor(unitsLeft)));
   // The most the units buy may spend, against the wallet (like shortOfUsdc for a dollar amount).
   const shortForUnits = !!publicKey && !!balances.data && !!unitsQuote && balances.data.usdc < unitsQuote.maxUsdc;
   const stepUnits = (delta: number) => setUnitsInput(String(Math.min(maxUnits, Math.max(1, (unitsValid ? unitCount : 1) + delta))));
@@ -359,7 +361,11 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   const topUpLabel = topUp?.completesGoal ? `Back the last ${unitsDown(topUp.vouchers)}` : `Top up to ${held.whole + 1}`;
 
   const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: ["campaign", c.pool] });
+    // Live state is cached for a few seconds server-side: read it once fresh so the raise and units move
+    // as soon as the wallet's trade confirms (falls back to a normal refetch if that is rate-limited).
+    api<{ campaign: CampaignWithLive }>(`/api/campaigns/${c.pool}?fresh=1`)
+      .then((d) => queryClient.setQueryData(["campaign", c.pool], d))
+      .catch(() => queryClient.invalidateQueries({ queryKey: ["campaign", c.pool] }));
     queryClient.invalidateQueries({ queryKey: ["balances", c.pool] });
     queryClient.invalidateQueries({ queryKey: ["resale", c.pool] });
   };
