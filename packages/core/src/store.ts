@@ -42,6 +42,11 @@ export function savePending(record: CampaignRecord) {
   fs.writeFileSync(pendingPath(), JSON.stringify([record, ...all.filter((c) => c.pool !== record.pool)].slice(0, 50), null, 2))
 }
 
+export function getPending(pool: string): CampaignRecord | undefined {
+  if (!fs.existsSync(pendingPath())) return undefined
+  return (JSON.parse(fs.readFileSync(pendingPath(), 'utf8')) as CampaignRecord[]).find((c) => c.pool === pool)
+}
+
 export function takePending(pool: string): CampaignRecord | undefined {
   if (!fs.existsSync(pendingPath())) return undefined
   const all = JSON.parse(fs.readFileSync(pendingPath(), 'utf8')) as CampaignRecord[]

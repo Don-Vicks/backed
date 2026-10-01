@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DROP_BOT_START_FEE_BPS, NORMAL_FEE_BPS, campaignFromInput } from '../campaign-input'
+import { DROP_BOT_START_FEE_BPS, MAX_GOAL_USDC, MAX_PRICE_RATIO, NORMAL_FEE_BPS, campaignFromInput } from '../campaign-input'
 import { MAX_TIERS, priceTiers } from '../pricing'
 
 const URI = 'https://backed.example/m/abcdefghij'
@@ -74,4 +74,15 @@ test('MAX_TIERS is enforced by the shared pricing validation too', () => {
   const tiers = Array.from({ length: MAX_TIERS + 1 }, (_, i) => ({ units: 1, startPrice: 1 + i }))
   assert.throws(() => priceTiers({ tiers, finalPrice: 20, makerSharePct: 0 }), /at most 4 tiers/)
   assert.throws(() => priceTiers({ tiers: [{ units: 1.5, startPrice: 1 }], finalPrice: 2, makerSharePct: 0 }), /whole/)
+})
+
+test('plan: the goal and the price ratio are bounded, with a clear message', () => {
+  // The case that used to reach the SDK: in range per tier, ~1e12 USDC in total.
+  assert.throws(() => campaignFromInput(body({ plan: plan({ tiers: [{ units: 1_000_000, startPrice: 999_999 }], finalPrice: 1_000_000 }) }), URI), /goal can be at most 10,000,000 USDC/)
+  const flat = (startPrice: number) => body({ plan: plan({ tiers: [{ units: 1_000_000, startPrice }], finalPrice: 10.1 }) })
+  assert.ok(priceTiers(campaignFromInput(flat(9.9), URI).plan).goalUsdc <= MAX_GOAL_USDC)
+  assert.throws(() => campaignFromInput(flat(10), URI), /goal/)
+  // Final price up to MAX_PRICE_RATIO times the first tier's price.
+  assert.doesNotThrow(() => campaignFromInput(body({ plan: plan({ tiers: [{ units: 1, startPrice: 0.01 }], finalPrice: 0.01 * MAX_PRICE_RATIO }) }), URI))
+  assert.throws(() => campaignFromInput(body({ plan: plan({ tiers: [{ units: 1, startPrice: 0.01 }], finalPrice: 1.01 }) }), URI), /at most 100× the first tier/)
 })

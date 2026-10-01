@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, quoteErrorMessage, useSignAndSend, type BuiltTx } from "@/lib/client";
+import { api, quoteErrorMessage, ReportedError, useSignAndSend, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { ShippingForm } from "@/components/shipping-form";
@@ -256,23 +256,24 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
     }
   }
 
-  // The clicking wallet pays for graduation. Meteora's keeper may graduate the pool first: the server
-  // then answers `already`, and a send that fails because of it still ends in the resale market.
+  // The clicking wallet pays for graduation. Meteora's keeper or another wallet may graduate the pool
+  // first: the server then answers `already`, and a send that fails because of it still ends in the
+  // resale market (its error toast is replaced, not stacked).
   async function graduate() {
     if (!publicKey) return setVisible(true);
     setBusy("migrate");
-    const keeperWon = () => toast.success("Graduated by Meteora’s keeper. The resale market is open.");
+    const alreadyDone = (id?: string | number) => toast.success("Already graduated. The resale market is open.", { id });
     try {
       const built = await api<Partial<BuiltTx> & { already?: boolean }>(`/api/campaigns/${c.pool}/migrate`, { wallet: publicKey.toBase58() });
-      if (built.already || !built.tx) keeperWon();
+      if (built.already || !built.tx) alreadyDone();
       else await signAndSend(built as BuiltTx, "Graduate to the resale market");
       refresh();
     } catch (e) {
       const now = await api<{ campaign: CampaignWithLive }>(`/api/campaigns/${c.pool}`).catch(() => null);
       if (now?.campaign.live?.status === "reselling") {
-        keeperWon();
+        alreadyDone(e instanceof ReportedError ? e.toastId : undefined);
         refresh();
-      } else if (e instanceof Error && !/cancelled|rejected|failed:/i.test(e.message)) toast.error(e.message);
+      } else if (e instanceof Error && !(e instanceof ReportedError)) toast.error(e.message);
     } finally {
       setBusy(null);
     }

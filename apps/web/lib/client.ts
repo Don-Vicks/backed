@@ -34,6 +34,31 @@ export function quoteErrorMessage(e: unknown) {
 
 export type BuiltTx = { tx: string; lastValidBlockHeight: number };
 
+// Thrown by the sign-and-send hooks after they have shown their own error toast, so callers skip a
+// second one. The message is that toast's text; `toastId` lets a caller replace it, and `landed`
+// counts the transactions that confirmed before the failure (a split create can stop halfway).
+export class ReportedError extends Error {
+  constructor(
+    message: string,
+    readonly toastId: string | number,
+    readonly landed = 0,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
+
+function report(e: unknown, label: string, toastId: string | number, landed = 0): ReportedError {
+  const message = e instanceof Error ? e.message : String(e);
+  const text = message.includes("User rejected") ? `${label}: cancelled` : `${label} failed: ${message}`;
+  toast.error(text, { id: toastId });
+  return new ReportedError(text, toastId, landed, { cause: e });
+}
+
+// Blocks a split create needs left on its last transaction's blockhash when the first is sent: room for
+// the first to confirm (~0.4 s a block) before the next goes out.
+const STEP_MARGIN_BLOCKS = 40;
+
 function fromBase64(b64: string) {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 }
@@ -64,9 +89,7 @@ export function useSignAndSend() {
         });
         return signature;
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        toast.error(message.includes("User rejected") ? `${label}: cancelled` : `${label} failed: ${message}`, { id: toastId });
-        throw e;
+        throw report(e, label, toastId);
       }
     },
     [connection, publicKey, signTransaction],
@@ -74,7 +97,8 @@ export function useSignAndSend() {
 }
 
 // Several server-built transactions that must land in order (a large create: config, then pool).
-// The wallet signs them all in one prompt; each is sent only after the one before it confirms.
+// The wallet signs them all in one prompt; each is sent only after the one before it confirms. If the
+// approval took so long that the last one could expire before its turn, nothing is sent.
 export function useSignAndSendAll() {
   const { connection } = useConnection();
   const { signAllTransactions, signTransaction, publicKey } = useWallet();
@@ -83,9 +107,13 @@ export function useSignAndSendAll() {
     async (built: BuiltTx[], label: string) => {
       if (!publicKey || !signTransaction) throw new Error("Connect a wallet first");
       const toastId = toast.loading(`${label}: approve in your wallet`);
+      let landed = 0;
       try {
         const txs = built.map((b) => Transaction.from(fromBase64(b.tx)));
         const signed = signAllTransactions ? await signAllTransactions(txs) : await sequence(txs.map((tx) => () => signTransaction(tx)));
+        if (built.length > 1 && (await connection.getBlockHeight("confirmed")) + STEP_MARGIN_BLOCKS > built[built.length - 1].lastValidBlockHeight) {
+          throw new Error("the approval took too long, so nothing was sent. Try again.");
+        }
         let signature = "";
         for (const [i, tx] of signed.entries()) {
           const step = signed.length > 1 ? ` (${i + 1}/${signed.length})` : "";
@@ -97,6 +125,7 @@ export function useSignAndSendAll() {
             "confirmed",
           );
           if (result.value.err) throw new Error("Transaction failed on-chain");
+          landed++;
         }
         toast.success(label, {
           id: toastId,
@@ -104,9 +133,7 @@ export function useSignAndSendAll() {
         });
         return signature; // the last one, which completes the action
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        toast.error(message.includes("User rejected") ? `${label}: cancelled` : `${label} failed: ${message}`, { id: toastId });
-        throw e;
+        throw report(e, label, toastId, landed);
       }
     },
     [connection, publicKey, signAllTransactions, signTransaction],

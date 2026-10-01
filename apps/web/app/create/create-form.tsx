@@ -22,7 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, useSignAndSendAll, type BuiltTx } from "@/lib/client";
+import { api, ApiError, ReportedError, useSignAndSendAll, type BuiltTx } from "@/lib/client";
 import { useDebounced } from "@/lib/use-debounced";
 import { units, usd } from "@/lib/format";
 import type { Campaign, PreviewResponse } from "@/lib/types";
@@ -56,6 +56,8 @@ export function CreateForm() {
   const [dropWindow, setDropWindow] = useState<number>(DEFAULT_DROP_BOT_WINDOW_SEC);
   const [verifiedSocial, setVerifiedSocial] = useState(false);
   const [launching, setLaunching] = useState(false);
+  // A split create whose config landed but whose pool did not: launching again finishes it on that config.
+  const [resumePool, setResumePool] = useState<string | null>(null);
 
   // The upfront share can never exceed the tier cap; derived, not synced with an effect.
   const [previewCap, setPreviewCap] = useState(10);
@@ -107,12 +109,26 @@ export function CreateForm() {
     setLaunching(true);
     try {
       // One transaction, or two (config, then pool) for larger campaigns; either way one wallet prompt.
-      const { pool, txs } = await api<{ txs: BuiltTx[]; pool: string }>("/api/campaigns", { campaign, maker: publicKey.toBase58(), verifiedSocial });
-      const signature = await signAndSendAll(txs, "Launch campaign");
-      await api("/api/campaigns/confirm", { pool, signature });
+      // A resume is one createPool on the config that already landed (none when the pool exists too).
+      const maker = publicKey.toBase58();
+      const { pool, txs } = resumePool
+        ? await api<{ txs: BuiltTx[]; pool: string }>(`/api/campaigns/${resumePool}/resume`, { maker })
+        : await api<{ txs: BuiltTx[]; pool: string }>("/api/campaigns", { campaign, maker, verifiedSocial });
+      if (txs.length > 1) toast.info("Two steps in one approval. Your wallet may warn that step 2 will fail: it can’t see the config step 1 creates.");
+      if (txs.length) {
+        try {
+          const signature = await signAndSendAll(txs, resumePool ? "Finish launch" : "Launch campaign");
+          setResumePool(pool); // landed: a failed confirm below is retried as a resume, which lists it
+          await api("/api/campaigns/confirm", { pool, signature });
+        } catch (e) {
+          if (resumePool || (e instanceof ReportedError && e.landed > 0)) setResumePool(pool);
+          throw e;
+        }
+      }
       router.push(`/c/${pool}`);
     } catch (e) {
-      if (!(e instanceof Error && /cancelled|rejected/i.test(e.message))) toast.error(e instanceof Error ? e.message : "Launch failed");
+      if (e instanceof ApiError && e.status === 404) setResumePool(null); // nothing left to resume: start over
+      if (!(e instanceof ReportedError)) toast.error(e instanceof Error ? e.message : "Launch failed");
     } finally {
       setLaunching(false);
     }
@@ -224,9 +240,15 @@ export function CreateForm() {
         </fieldset>
 
         <div className="flex flex-col gap-2">
-          <Button type="submit" size="lg" disabled={launching || (!!publicKey && !!blocking)}>
-            {!publicKey ? "Connect wallet to launch" : launching ? "Launching…" : "Launch campaign"}
+          <Button type="submit" size="lg" disabled={launching || (!!publicKey && !resumePool && !!blocking)}>
+            {!publicKey ? "Connect wallet to launch" : launching ? "Launching…" : resumePool ? "Finish launch" : "Launch campaign"}
           </Button>
+          {resumePool && (
+            <p className="text-sm text-muted-foreground" role="status">
+              Step 1 landed: this campaign’s terms are on-chain. Finish launch creates its pool on them (one more approval); form edits no
+              longer apply.
+            </p>
+          )}
           {publicKey && blocking && <p className="text-sm text-destructive" role="alert">{blocking}</p>}
         </div>
       </form>

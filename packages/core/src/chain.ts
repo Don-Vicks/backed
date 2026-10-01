@@ -118,6 +118,30 @@ export function createCampaignSteps(built: { tx: Transaction; config: PublicKey;
   ]
 }
 
+// The pool step again, for a split create whose config landed but whose pool did not (expired, failed,
+// or the maker gave up): a createPool on that existing config with a fresh mint key, so the maker
+// keeps the config they paid for. The pool address follows the new mint.
+export async function buildCreatePoolTx(args: {
+  connection: Connection
+  config: PublicKey
+  campaign: Pick<Campaign, 'name' | 'symbol' | 'uri'>
+  maker: PublicKey
+  usdcMint: PublicKey
+}) {
+  const baseMint = Keypair.generate()
+  const tx = await dbcClient(args.connection).creator.createPool({
+    config: args.config,
+    baseMint: baseMint.publicKey,
+    name: args.campaign.name,
+    symbol: args.campaign.symbol,
+    uri: args.campaign.uri,
+    payer: args.maker,
+    poolCreator: args.maker,
+  })
+  const pool = deriveDbcPoolAddress(args.usdcMint, baseMint.publicKey, args.config)
+  return { tx, extraSigners: [baseMint], baseMint: baseMint.publicKey, pool }
+}
+
 // Quote a curve swap against the live pool at the chain's clock, so the fee schedule matches
 // what the program charges. Throws a SwapError the routes can show when the curve can't take it.
 type CurveSwap = { swapBaseForQuote: boolean; hasReferral?: boolean; slippageBps?: number } & (

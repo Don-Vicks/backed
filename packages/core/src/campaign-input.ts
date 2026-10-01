@@ -1,7 +1,7 @@
 // What a maker may choose for a new campaign, and the parser that builds a Campaign from an untrusted
 // request body. Only allowlisted fields get through, so nothing a client sends can reach the DBC config
 // unchecked. Pure (no SDK), so the create form shares the same limits.
-import { MAX_TIERS, validatePlan, type TierPlan } from './pricing'
+import { MAX_TIERS, priceTiers, validatePlan, type TierPlan } from './pricing'
 import type { Campaign } from './engine'
 
 // Launch (drop-bot) fee: the same for every campaign. It starts at 15% and falls to 1% over a short
@@ -19,6 +19,10 @@ export const IMAGE_URL_MAX_CHARS = 200
 const MAX_UNITS_PER_TIER = 1_000_000
 const MIN_PRICE = 0.01
 const MAX_PRICE = 1_000_000
+// Whole-plan bounds, so an in-range but extreme plan gets a clear message instead of an SDK error.
+// Both ends were simulated against the mainnet DBC program on localnet.
+export const MAX_GOAL_USDC = 10_000_000
+export const MAX_PRICE_RATIO = 100 // final price / first early-bird price
 
 // Throws unless the fee schedule is the fixed launch fee with an allowed window. Configs are immutable,
 // so this is the only point where a predatory fee (say 90% for good) can be stopped.
@@ -83,6 +87,10 @@ export function campaignFromInput(input: unknown, uri: string): Campaign {
     makerSharePct: numberIn(rawPlan.makerSharePct, 'maker share', 0, 50),
   }
   validatePlan(plan) // whole units, rising prices, whole-percent share
+  if (plan.finalPrice > plan.tiers[0].startPrice * MAX_PRICE_RATIO) {
+    throw new Error(`the final price can be at most ${MAX_PRICE_RATIO}× the first tier's price`)
+  }
+  if (priceTiers(plan).goalUsdc > MAX_GOAL_USDC) throw new Error(`the goal can be at most ${MAX_GOAL_USDC.toLocaleString('en-US')} USDC`)
 
   // Fee fields a client leaves out get the fixed values; any other value is rejected, not rewritten.
   const dropBot = isObject(input.dropBot) ? input.dropBot : {}
