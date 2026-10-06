@@ -11,7 +11,7 @@ export async function generateMetadata({ params }: PageProps<"/c/[pool]">): Prom
   if (!record) return { title: `Campaign not found · ${BRAND}` };
   const { name, description, plan } = record.campaign;
   const title = `${name} · ${BRAND}`;
-  const lead = `Pre-order from $${plan.tiers[0].startPrice.toFixed(2)}, priced on a Meteora bonding curve: early backers pay less.`;
+  const lead = `Pre-order from $${plan.tiers[0].startPrice.toFixed(2)}, the price rises as more people back it, so early backers pay less.`;
   const text = description?.trim() ? `${description.trim()} ${lead}` : lead;
   return {
     title,

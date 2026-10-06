@@ -39,6 +39,7 @@ export function CreateForm() {
   // The short code is made from the product name until the maker edits it (under Advanced settings).
   const [symbolInput, setSymbolInput] = useState<string | null>(null);
   const symbol = symbolInput ?? deriveTicker(name);
+  const [makerName, setMakerName] = useState("");
   const [description, setDescription] = useState("Heavyweight cotton hoodie, printed after the goal is reached.");
   const [image, setImage] = useState("");
   // A local copy of an uploaded photo, shown at once (the uploaded URL is what the campaign stores).
@@ -74,6 +75,7 @@ export function CreateForm() {
       symbol,
       uri: "",
       description,
+      makerName: makerName.trim() || undefined,
       image: image.trim() || undefined,
       plan: {
         tiers: tiers.map((t) => ({ units: num(t.units), startPrice: num(t.startPrice) })),
@@ -85,7 +87,7 @@ export function CreateForm() {
       shipDays: num(shipDays),
       resaleRoyaltyBps: Math.round(num(royaltyPct) * 100),
     }),
-    [name, symbol, description, image, tiers, finalPrice, effectiveShare, dropWindow, shipDays, royaltyPct],
+    [name, symbol, description, makerName, image, tiers, finalPrice, effectiveShare, dropWindow, shipDays, royaltyPct],
   );
 
   // Instant numbers, computed in the browser.
@@ -268,7 +270,7 @@ export function CreateForm() {
       >
         <StepIndicator step={step} maxStep={maxStep} onGo={go} />
 
-        {step === 1 && <ProductStep name={name} setName={setName} description={description} setDescription={setDescription} image={image} imagePreview={imagePreview} setImage={changeImage} />}
+        {step === 1 && <ProductStep name={name} setName={setName} makerName={makerName} setMakerName={setMakerName} description={description} setDescription={setDescription} image={image} imagePreview={imagePreview} setImage={changeImage} />}
         {step === 2 && (
           <PriceStep
             tiers={tiers}
@@ -340,7 +342,7 @@ export function CreateForm() {
       </form>
 
       <aside className="lg:sticky lg:top-24 lg:self-start" aria-label="Live preview">
-        <CampaignPreview name={name} description={description} image={imagePreview ?? image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
+        <CampaignPreview name={name} makerName={makerName} description={description} image={imagePreview ?? image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
       </aside>
     </div>
   );

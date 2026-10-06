@@ -8,6 +8,7 @@ import { MAX_TIERS } from "@preorder/core/src/pricing";
 import {
   DESCRIPTION_MAX_CHARS,
   DROP_BOT_START_FEE_BPS,
+  MAKER_NAME_MAX_CHARS,
   NAME_MAX_BYTES,
   NORMAL_FEE_BPS,
 } from "@preorder/core/src/campaign-input";
@@ -90,6 +91,8 @@ function Hint({ children }: { children: ReactNode }) {
 export function ProductStep(p: {
   name: string;
   setName: (v: string) => void;
+  makerName: string;
+  setMakerName: (v: string) => void;
   description: string;
   setDescription: (v: string) => void;
   image: string;
@@ -104,6 +107,11 @@ export function ProductStep(p: {
       <div className="grid gap-2">
         <Label htmlFor="name">Product name</Label>
         <Input id="name" value={p.name} maxLength={NAME_MAX_BYTES} autoComplete="off" placeholder="e.g. Hackathon Hoodie" onChange={(e) => p.setName(e.target.value)} required />
+      </div>
+      <div className="grid gap-2">
+        <Label htmlFor="makerName">Your name or brand <span className="font-normal text-muted-foreground">(optional)</span></Label>
+        <Input id="makerName" value={p.makerName} maxLength={MAKER_NAME_MAX_CHARS} autoComplete="organization" placeholder="e.g. Porto Studio" onChange={(e) => p.setMakerName(e.target.value)} />
+        <p className="text-xs text-muted-foreground">Shown to backers instead of your wallet address.</p>
       </div>
       <div className="grid gap-2">
         <Label htmlFor="description">What do backers get?</Label>
@@ -436,6 +444,7 @@ export function ReviewStep(p: {
 
 export function CampaignPreview(p: {
   name: string;
+  makerName: string;
   description: string;
   image: string;
   pricing: PricingSummary | null;
@@ -463,6 +472,7 @@ export function CampaignPreview(p: {
           <h3 className="font-heading text-3xl leading-tight [overflow-wrap:anywhere]">{p.name.trim() || "Your product"}</h3>
           {p.tier && <Badge variant="outline">Maker level {p.tier}</Badge>}
         </div>
+        {p.makerName.trim() && <p className="-mt-1 text-sm text-muted-foreground">by {p.makerName.trim()}</p>}
         {p.description.trim() && <p className="line-clamp-3 text-sm text-muted-foreground">{p.description.trim()}</p>}
         <Progress value={0} aria-label="Funding progress" />
         {first && last && p.pricing ? (

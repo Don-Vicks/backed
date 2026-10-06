@@ -15,7 +15,7 @@ export function SiteFooter() {
             <span className="font-heading text-lg font-bold">{BRAND}</span>
           </Link>
           <p className="mt-3 text-sm text-muted-foreground">
-            Pre-orders priced on Meteora’s Dynamic Bonding Curve. Funded campaigns graduate to a Meteora DAMM v2 resale market.
+            Pre-orders where early backers pay less and the maker earns on every resale. Built on Meteora.
           </p>
         </div>
         <nav aria-label="Footer" className="grid grid-cols-2 gap-x-10 gap-y-2 text-sm text-muted-foreground">

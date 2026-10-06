@@ -49,7 +49,7 @@ export function CampaignCard({ c }: { c: CampaignWithLive }) {
         ) : (
           <p className="text-sm text-muted-foreground">Live data unavailable right now.</p>
         )}
-        <p className="mt-auto text-xs text-muted-foreground">Maker trust level {c.trust.tier}</p>
+        <p className="mt-auto text-xs text-muted-foreground">{c.campaign.makerName ? `by ${c.campaign.makerName} · ` : ""}Maker trust level {c.trust.tier}</p>
       </div>
     </Link>
   );

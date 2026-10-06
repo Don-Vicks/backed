@@ -40,7 +40,7 @@ export function StatsView() {
       <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Campaigns launched" value={String(campaigns.length)} />
         <Stat label="Funded and reselling" value={String(graduated)} detail={`${funding} still funding`} />
-        <Stat label="Raised on the curves" value={usd(raised)} detail="USDC, graduated goals included" />
+        <Stat label="Raised so far" value={usd(raised)} detail="USDC, including funded campaigns" />
         <Stat label="Pre-order units sold" value={units(sold)} />
       </dl>
       {unread > 0 && <p className="text-sm text-muted-foreground">{unread} campaign{unread === 1 ? "" : "s"} couldn’t be read from chain just now and {unread === 1 ? "is" : "are"} left out.</p>}

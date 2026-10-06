@@ -17,6 +17,7 @@
     "partner:metadata": "ts-node src/scripts/partner-metadata.ts",
     "test:localnet": "LOCALNET=1 node -r ts-node/register --test 'src/__tests__/localnet/**/*.test.ts'",
     "seed:demo": "ts-node src/scripts/seed-demo.ts",
+    "seed:activity": "ts-node src/scripts/seed-activity.ts",
     "campaigns": "ts-node src/scripts/campaigns.ts"
   },
   "dependencies": {

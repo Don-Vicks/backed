@@ -27,6 +27,7 @@ const SEEDS: Seed[] = [
     photo: 'hoodie.jpg',
     input: {
       name: 'Studio Hoodie',
+      makerName: 'Porto Studio',
       symbol: 'HOODIE',
       description: 'Heavyweight 450gsm cotton fleece, garment-dyed in sunset orange, embroidered chest logo. Made in small batches in Porto. Sizes S to XXL.',
       plan: { tiers: [{ units: 15, startPrice: 38 }, { units: 25, startPrice: 44 }], finalPrice: 55, makerSharePct: 10 },
@@ -37,6 +38,7 @@ const SEEDS: Seed[] = [
     photo: 'mug.jpg',
     input: {
       name: 'Hand-Thrown Mug',
+      makerName: 'Clay & Kiln',
       symbol: 'MUG',
       description: 'A 350ml stoneware mug, thrown on the wheel and finished in a cream glaze with a single sunset band. Dishwasher safe. Every mug is slightly different.',
       plan: { tiers: [{ units: 20, startPrice: 24 }, { units: 40, startPrice: 29 }], finalPrice: 36, makerSharePct: 10 },
@@ -47,6 +49,7 @@ const SEEDS: Seed[] = [
     photo: 'keyboard.jpg',
     input: {
       name: 'Aurora 65 Keyboard',
+      makerName: 'Northkey Labs',
       symbol: 'AURORA',
       description: 'A 65% hot-swappable mechanical keyboard with a CNC aluminium case, gasket mount and pre-lubed switches. Limited run of 25.',
       plan: { tiers: [{ units: 10, startPrice: 120 }, { units: 15, startPrice: 140 }], finalPrice: 165, makerSharePct: 10 },
