@@ -15,6 +15,7 @@ import {
   readCampaignLive,
   readJsonBody,
   readTrustSignals,
+  publicOrigins as resolvePublicOriginsAll,
   resolvePublicOrigin,
   scoreSignals,
   siteHosts,
@@ -39,6 +40,7 @@ export const connection = (): Connection => getConnection();
 // Origin for URLs that leave the app (token metadata, Blink icons). Throws a ConfigError when
 // PUBLIC_BASE_URL is missing or not public https off localnet, so nothing immutable gets a bad URL.
 export const publicOrigin = (req?: Request) => resolvePublicOrigin(process.env, getNetwork().name, req?.url);
+export const publicOrigins = (req?: Request) => resolvePublicOriginsAll(process.env, getNetwork().name, req?.url);
 
 // The maker's sign-in to the orders page: ordersMessage for one of this site's hosts (siteHosts) and the
 // campaign, signed by the campaign's maker in the last few minutes. Returns the campaign; 404 or 403 otherwise.

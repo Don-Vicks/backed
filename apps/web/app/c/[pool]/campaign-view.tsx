@@ -8,7 +8,7 @@ import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { Check, Coins, Copy, ExternalLink, Hourglass, Lock, Minus, Plus, ShieldCheck, Timer } from "lucide-react";
+import { Check, Coins, Copy, ExternalLink, Hourglass, Lock, Minus, Plus, ShieldCheck, Timer, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,8 @@ import { api, quoteErrorMessage, ReportedError, useSignAndSend, type BuiltTx } f
 import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { RedeemPanel } from "@/components/redeem-panel";
+import { CurveChart } from "@/components/curve-chart";
+import { OnChainCard } from "@/components/onchain-card";
 import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
@@ -84,7 +86,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
               <ShieldCheck aria-hidden="true" /> Maker trust level {c.trust.tier}
             </Badge>
           </div>
-          <h1 className="mt-3 font-heading text-5xl tracking-tight sm:text-6xl">{c.campaign.name}</h1>
+          <h1 className="mt-4 font-heading text-4xl tracking-[-0.035em] sm:text-5xl">{c.campaign.name}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             by{" "}
             <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
@@ -109,7 +111,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
       </div>
 
       <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">
-        <div className="rounded-xl border border-border bg-card p-5">
+        <div className="ring-brand-gradient rounded-xl border p-5 shadow-[0_30px_80px_-45px_rgba(110,69,255,0.6)]">
           <div className="flex items-baseline justify-between">
             <span className="text-sm text-muted-foreground">{live.status === "reselling" ? "Final pre-order price" : "Price now"}</span>
             <span className="font-mono text-3xl tabular-nums">{usd(live.priceUsdc)}</span>
@@ -155,6 +157,9 @@ function Loaded({ c }: { c: CampaignWithLive }) {
               );
             })}
           </ol>
+          <div className="mt-4">
+            <CurveChart plan={plan} unitsSold={live.unitsSold} graduated={live.status !== "funding"} />
+          </div>
         </section>
 
         <section aria-labelledby="terms-title" className="rounded-xl border border-border bg-card p-5">
@@ -170,6 +175,8 @@ function Loaded({ c }: { c: CampaignWithLive }) {
             Verify the config on-chain <ExternalLink aria-hidden="true" className="size-3.5" />
           </a>
         </section>
+
+        <OnChainCard c={c} />
       </div>
     </div>
   );
@@ -608,7 +615,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
 
       {live.status === "funded" && (
         <div className="rounded-xl border border-primary/50 bg-card p-5">
-          <p className="font-heading text-2xl">Goal reached</p>
+          <h2 className="font-heading text-2xl">Goal reached</h2>
           <p className="mt-1 text-sm text-muted-foreground">Graduate the campaign to fund the maker and open the resale market. Anyone can do it; your wallet pays the network fee and rent (about 0.033 SOL).</p>
           <Button className="mt-4 w-full" onClick={graduate} disabled={!!busy}>{busy === "migrate" ? "Graduating…" : "Graduate now"}</Button>
         </div>
@@ -705,6 +712,13 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
         {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
         {copied ? "Link copied" : publicKey ? "Copy your referral link" : "Copy link"}
       </Button>
+      {live.status === "funding" && (
+        <Button asChild variant="ghost" className="-mt-3">
+          <Link href={`/c/${c.pool}/blink`}>
+            <Zap aria-hidden="true" /> See it as a Blink
+          </Link>
+        </Button>
+      )}
       {publicKey && balances.data?.hasUsdcAccount === false && (
         <p className="-mt-2 text-center text-xs text-muted-foreground">Referral fees are paid in USDC: you start earning them once your wallet holds USDC.</p>
       )}

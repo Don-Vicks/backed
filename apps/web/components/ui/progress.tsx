@@ -13,15 +13,16 @@ function Progress({
     <ProgressPrimitive.Root
       data-slot="progress"
       className={cn(
-        "relative flex h-1 w-full items-center overflow-x-hidden rounded-full bg-muted",
+        "relative flex h-1.5 w-full items-center overflow-x-hidden rounded-full bg-secondary",
         className
       )}
       {...props}
     >
+      {/* Grows by width, so the filled part always shows the whole brand gradient. */}
       <ProgressPrimitive.Indicator
         data-slot="progress-indicator"
-        className="size-full flex-1 bg-primary transition-all"
-        style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
+        className="h-full rounded-full bg-brand-gradient transition-all"
+        style={{ width: `${Math.min(100, Math.max(0, value || 0))}%` }}
       />
     </ProgressPrimitive.Root>
   )

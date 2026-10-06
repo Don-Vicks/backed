@@ -13,19 +13,19 @@ export function CampaignCard({ c }: { c: CampaignWithLive }) {
   return (
     <Link
       href={`/c/${c.pool}`}
-      className="group flex flex-col overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      className="group flex flex-col overflow-hidden rounded-2xl border border-border bg-card transition-all duration-300 hover:-translate-y-0.5 hover:ring-brand-gradient hover:shadow-[0_24px_60px_-30px_rgba(110,69,255,0.55)] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
-      <div className="aspect-[16/9] bg-muted">
+      <div className="aspect-[16/9] bg-muted bg-[radial-gradient(80%_90%_at_20%_0%,rgba(110,69,255,0.22),transparent_60%),radial-gradient(70%_80%_at_100%_100%,rgba(245,75,0,0.16),transparent_60%)]">
         {c.campaign.image ? (
           // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URLs on arbitrary hosts
           <img src={imageSrc(c.campaign.image)} alt="" className="h-full w-full object-cover" />
         ) : (
-          <div className="flex h-full items-center justify-center font-heading text-5xl text-muted-foreground">{c.campaign.symbol}</div>
+          <div className="flex h-full items-center justify-center font-heading text-5xl tracking-[-0.04em] text-foreground/85">{c.campaign.symbol}</div>
         )}
       </div>
       <div className="flex flex-1 flex-col gap-3 p-4">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="font-heading text-2xl leading-tight">{c.campaign.name}</h3>
+          <h3 className="font-heading text-xl leading-tight">{c.campaign.name}</h3>
           <Badge variant={live?.status === "funding" ? "secondary" : "default"}>{live ? STATUS_LABEL[live.status] : "—"}</Badge>
         </div>
         {live ? (

@@ -98,7 +98,8 @@ export function CreateForm() {
   }, [campaign.plan]);
 
   // Trust tier + on-chain field mapping from the server (debounced).
-  const previewInput = useDebounced(JSON.stringify({ campaign, maker: publicKey?.toBase58() }), 450);
+  const previewKey = JSON.stringify({ campaign, maker: publicKey?.toBase58() });
+  const previewInput = useDebounced(previewKey, 450);
   const previewQuery = useQuery({
     queryKey: ["preview", previewInput],
     queryFn: () => api<PreviewResponse & { caps: Record<string, number> }>("/api/preview", JSON.parse(previewInput)),

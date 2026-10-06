@@ -32,7 +32,7 @@ export function ShippingForm({
       }}
     >
       <div>
-        <p className="font-heading text-2xl">Where should it ship?</p>
+        <h2 className="font-heading text-2xl">Where should it ship?</h2>
         <p className="text-sm text-muted-foreground">
           Next, your wallet burns 1 voucher for your {productName}. Only the maker sees these details; they never go on-chain.
         </p>

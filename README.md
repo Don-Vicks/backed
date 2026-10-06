@@ -12,17 +12,17 @@ No custom program. Every rule comes from DBC config, DAMM v2 and SPL token burns
 
 Built for the Colosseum **Crypto World's Fair** and Meteora's **Best use of DBC** track.
 
-**Try it live (devnet):** <https://web-production-e2262.up.railway.app>. **See it work:** [the walkthrough](docs/walkthrough.md) follows one campaign from create to shipped order, with screenshots of the real app on a validator running the mainnet Meteora programs. The [demo script](docs/demo-script.md) is the 3-minute video version.
+**Try it live (devnet):** <https://backed.up.railway.app>. **Replicate and test it:** [docs/replicate.md](docs/replicate.md), from a one-minute try to the full chain and browser suites. **See it work:** [the walkthrough](docs/walkthrough.md) follows one campaign from create to shipped order, with screenshots of the real app on a validator running the mainnet Meteora programs. The [demo script](docs/demo-script.md) is the 3-minute video version.
 
 ### For judges
 
 | Criterion | Where to look |
 |---|---|
 | **Depth of Meteora integration** | The product *is* a DBC config:<br>• tiers = `curve[]` segments<br>• goal = `migrationQuoteThreshold`<br>• upfront budget = migration fee<br>• anti-bot = fee scheduler<br>• production money = `creatorLiquidityVestingInfo`<br>• resale royalty = Customizable DAMM v2 pool<br>• backer floor = permanent locked liquidity<br>• whole units = `SwapMode.ExactOut`<br>• last buy = `PartialFill`<br>• referrals, creator and partner fee claims, pool and partner metadata<br>See [How Backed uses DBC](#how-backed-uses-dbc). |
-| **Technical execution** | CI runs typecheck, lint, 188 unit tests and the build, and the full lifecycle on a validator loaded with the **mainnet** DBC and DAMM v2 binaries ([`ci.yml`](.github/workflows/ci.yml), [`__tests__/localnet`](packages/core/src/__tests__/localnet)).<br>Creation is maker-paid and the platform never signs. Every swap has a slippage minimum. Inputs pass zod schemas and an allowlist, and endpoints are rate-limited. Storage is SQLite with encrypted shipping data, and redemptions are memo-bound. |
-| **Originality** | Pre-order crowdfunding where resale pays the maker. The bonding curve is the early-bird pricing, graduation is "funded", and the DAMM v2 pool is a royalty-paying resale market with a permanent floor. |
+| **Technical execution** | CI runs typecheck, lint, 188 unit tests and the build, then the full lifecycle on a validator loaded with the **mainnet** DBC and DAMM v2 binaries: once through the SDK ([`__tests__/localnet`](packages/core/src/__tests__/localnet)) and once clicked through the real app in Chromium ([`e2e/lifecycle.spec.ts`](apps/web/e2e/lifecycle.spec.ts)), from launch to a shipped order ([`ci.yml`](.github/workflows/ci.yml)).<br>Creation is maker-paid and the platform never signs. Every swap has a slippage minimum. Inputs pass zod schemas and an allowlist, and endpoints are rate-limited. Storage is SQLite with encrypted shipping data, and redemptions are memo-bound. |
+| **Originality & taste** | Pre-order crowdfunding where resale pays the maker. The bonding curve is the early-bird pricing, graduation is "funded", and the DAMM v2 pool is a royalty-paying resale market with a permanent floor. The app wears Meteora's own design language (its v2 palette, type and gradient; see [brand.md](brand.md)) and draws each campaign's real DBC price curve. |
 | **Impact** | Tokenized pre-orders as a new asset class: makers get funded without giving up resale, and early fans pay less. The economics are worked through in [Maker trust tier](#maker-trust-tier) and the payout panel. |
-| **Traction** | Live on devnet at <https://web-production-e2262.up.railway.app>, with a full lifecycle proven there ([Proof on devnet](#proof-on-devnet)). Mainnet needs only `NETWORK=mainnet`, a funded fee-claimer wallet and a real campaign ([Deploy](#deploy-railway)). |
+| **Traction** | Live on devnet at <https://backed.up.railway.app>, with a full lifecycle proven there ([Proof on devnet](#proof-on-devnet)). Mainnet needs only `NETWORK=mainnet`, a funded fee-claimer wallet and a real campaign ([Deploy](#deploy-railway)). |
 
 ---
 
@@ -90,7 +90,7 @@ A new or throwaway wallet can still run a campaign, but it takes less upfront an
 
 ## Proof on devnet
 
-**Live app (devnet): <https://web-production-e2262.up.railway.app>.** Connect Phantom, Solflare or Backpack on devnet and press **Get test USDC**. One campaign below ran its whole lifecycle through the deployed app's API (`packages/core/src/scripts/api-smoke.ts` with `WEB_URL` set to the live URL): [campaign page](https://web-production-e2262.up.railway.app/c/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk) · [DBC pool](https://solscan.io/account/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk?cluster=devnet) · [config](https://solscan.io/account/HErqhdimKwb3spkjEmfdMvxWtHAsuifu8uUgV4L88SS5?cluster=devnet) · [DAMM v2 resale pool](https://solscan.io/account/EoTKorP57G4C3jjr8Y5KXXHvZVSATCTFBRaTXgAMoffP?cluster=devnet).
+**Live app (devnet): <https://backed.up.railway.app>.** Connect Phantom, Solflare or Backpack on devnet and press **Get test USDC**. One campaign below ran its whole lifecycle through the deployed app's API (`packages/core/src/scripts/api-smoke.ts` with `WEB_URL` set to the live URL): [campaign page](https://backed.up.railway.app/c/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk) · [DBC pool](https://solscan.io/account/35VWhx5hzBSqNWzoF6GNHjG2678Dnh7JNuSuYzmRjgwk?cluster=devnet) · [config](https://solscan.io/account/HErqhdimKwb3spkjEmfdMvxWtHAsuifu8uUgV4L88SS5?cluster=devnet) · [DAMM v2 resale pool](https://solscan.io/account/EoTKorP57G4C3jjr8Y5KXXHvZVSATCTFBRaTXgAMoffP?cluster=devnet).
 
 | Step | Transaction |
 |---|---|
@@ -122,6 +122,7 @@ Also measured on devnet: the drop-bot fee on a 2 USDC buy was **40% at launch an
 
 ```
 apps/web            Next.js 16 app: pages + API routes (the API builds unsigned transactions)
+  e2e/              Playwright: every feature in Chromium with keypair wallets, on localnet
 packages/core       All Solana logic, shared by the scripts and the web server
   pricing.ts        pure tier → goal/units math (also used in the browser)
   engine.ts         campaignToConfig(): campaign + trust tier → DBC ConfigParameters
@@ -144,12 +145,12 @@ packages/core       All Solana logic, shared by the scripts and the web server
   localnet.ts       what a local validator clones from mainnet, and the localnet seed
   scripts/          lifecycle proof, launch, inspect, localnet seed, reconcile, API smoke and negative tests, platform claims, partner listing
 scripts/localnet    start/stop/dump a validator with the mainnet Meteora programs
-.github/workflows   CI: check (typecheck, lint, unit tests, build) and localnet (chain suites)
+.github/workflows   CI: check (typecheck, lint, unit tests, build) and localnet (chain suites, then the browser suite)
 ```
 
 - **Wallet flow.** The server builds each transaction and the browser wallet signs it. Every wallet transaction carries a compute-unit price (p75 of recent fees on its writable accounts, capped by `PRIORITY_FEE_MAX_MICROLAMPORTS`; none on localnet). Campaign creation is paid and signed by the maker's wallet (payer and pool creator); the server only signs with the fresh config and mint keys, never the platform key. The server builds the campaign from an allowlist of fields: name ≤ 32 bytes, ticker `A–Z0–9` ≤ 10, description ≤ 1000, https image ≤ 200, whole units, at most 4 tiers, and the fixed launch fee (15% → 1% over 1, 2 or 5 min), with the goal at most 10,000,000 USDC and the final price at most 100× the first tier's. A create too large for one transaction goes out as createConfig then createPool in one approval; if only the first lands, **Finish launch** (`POST /api/campaigns/<pool>/resume`) creates the pool on the config the maker already paid for, with a fresh mint.
 - **Graduation** can be triggered by anyone once the goal is reached, and the clicking wallet pays (about 0.033 SOL, mostly rent). The platform-paid path is reserved for an operator sending `Authorization: Bearer $ADMIN_TOKEN`. If Meteora's keeper graduates the pool first, the app says so.
-- **Blinks.** Every campaign URL `/c/<pool>` is also a Solana Action (`/actions.json` maps it to `/api/actions/back/<pool>`). Shared links show **Back 1 · $X**, **Back 2 · $Y** and a whole-number **units** field in X or any Blink client, priced live with fees included; while the launch fee is above 5% the description says how high it is and when it falls. The `?ref=` referral carries through. Links shared before units existed (`?amount=`) still work. Funded campaigns return a disabled Action that points to the resale market.
+- **Blinks.** Every campaign URL `/c/<pool>` is also a Solana Action (`/actions.json` maps it to `/api/actions/back/<pool>`). Shared links show **Back 1 · $X**, **Back 2 · $Y** and a whole-number **units** field in X or any Blink client, priced live with fees included; while the launch fee is above 5% the description says how high it is and when it falls. The `?ref=` referral carries through. Links shared before units existed (`?amount=`) still work. Funded campaigns return a disabled Action that points to the resale market. **See it as a Blink** (`/c/<pool>/blink`) renders the card with Dialect's open-source renderer (`@dialectlabs/blinks`) and the connected wallet, so it can be shown and used without X; unfurling on X itself needs the domain in Dialect's registry.
 - **Redemption** opens once the campaign graduates. `POST /api/redemptions/prepare` checks the shipping details and the voucher balance and returns a burn of one whole voucher carrying an SPL Memo `backed:redeem:<id>` signed by the owner; it stores nothing, so anyone asking in someone else's name changes nothing. The wallet signs it and the page sends it back with the shipping details (`POST /api/redemptions/submit`). The server checks it is exactly that burn, signed by that wallet alone, simulates it, keeps the shipping details encrypted as a pending redemption, sends the burn, waits for it and records the order, all in one request. The order is recorded only for that burn (the memo's id, the wallet as burn authority, this campaign's mint, exactly the units), so a burn signature seen on-chain cannot be claimed with someone else's address. Burns inside a transaction that calls the curve or the resale pool (a maker unlocking production funds) and burns signed by the pool's creator never count. If the server loses the confirmation, the pending row keeps the burn's signature: `GET /api/redemptions/pending` finds it once it has landed and the page finishes it (`POST /api/redemptions/confirm`) on the next visit; rows whose burn failed or expired are dropped. Pending rows are kept 30 days and never evicted early: at the cap, new redemptions wait. Shipping details never go on-chain.
 - **Maker orders.** The maker signs a message naming this site's host and the campaign (exact text, dated within the last 5 minutes, not in the future) to list orders, download a CSV (cells that a spreadsheet would run as a formula are neutralised) and mark orders shipped, which deletes their shipping details.
 
@@ -158,6 +159,8 @@ Stack: `@meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, `@meteora-ag/cp-amm-sdk@1
 ---
 
 ## Run it
+
+Step by step, with prerequisites, expected output and troubleshooting: **[docs/replicate.md](docs/replicate.md)**. The short version:
 
 Needs Node 22.22 (`engines.node`, which Railway's Railpack reads before `.node-version`), pnpm 10 (`packageManager`) and a Solana CLI wallet with some devnet SOL (used to fund the test wallets).
 
@@ -184,6 +187,7 @@ pnpm core:seed:demo                                   # three realistic campaign
 pnpm core:campaigns list | remove <pool>... [--yes]    # list this environment's campaigns, or remove test ones (dry run without --yes; only edits the app's list)
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)
 pnpm --filter @preorder/core api-negative            # bad input, status gates and rate limits against a localnet server at WEB_URL: no 5xx
+bash apps/web/e2e/run-localnet.sh                     # browser suite: seeds wallets, builds and starts the app on localnet, runs Playwright (args pass through)
 pnpm --filter @preorder/core platform:claim [--unsigned] [--keep-leftover] [pool ...]   # collect the platform's fees and leftover
 pnpm --filter @preorder/core partner:metadata [--unsigned]                              # one-off: the platform's on-chain partner listing
 ```
@@ -236,7 +240,7 @@ bash scripts/localnet/stop.sh              # stops only a validator this script 
 CI (`.github/workflows/ci.yml`) runs two jobs on every PR and push to `main`:
 
 - **check** runs install with the frozen lockfile, both typechecks, lint, unit tests and a devnet production build. It needs no secrets.
-- **localnet** runs the whole localnet suite on a fresh validator. It uses the pinned Solana CLI (v4.3.0 from `release.anza.xyz`, cached) and program and account dumps from mainnet, cached per week and per lockfile (saved right after the dump, so a red test run does not dump again).
+- **localnet** runs the whole localnet suite on a fresh validator, then the browser suite on the same validator: `apps/web/e2e/run-localnet.sh` seeds wallets and a mock USDC, builds and starts the app with a seconds-long vesting schedule, and Playwright drives one campaign through every feature in Chromium with keypair-backed Wallet Standard wallets (launch, referral buy, exit, a buy through the campaign's Blink, the capped last buy, graduation, resale with the price-impact guard, budget withdrawal, fee claim, unlock, redemption and shipping, link previews, the Blink, phone layouts). On failure the report and traces are uploaded as an artifact. It uses the pinned Solana CLI (v4.3.0 from `release.anza.xyz`, cached) and program and account dumps from mainnet, cached per week and per lockfile (saved right after the dump, so a red test run does not dump again).
 
 ### Deploy (Railway)
 
