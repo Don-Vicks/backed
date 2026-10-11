@@ -17,6 +17,7 @@ export const DEFAULT_DROP_BOT_WINDOW_SEC = 120
 export const NAME_MAX_BYTES = 32
 export const SYMBOL_PATTERN = /^[A-Z0-9]{1,10}$/
 export const DESCRIPTION_MAX_CHARS = 1000
+export const MAKER_NAME_MAX_CHARS = 40
 export const IMAGE_URL_MAX_CHARS = 200
 const MAX_UNITS_PER_TIER = 1_000_000
 const MIN_PRICE = 0.01
@@ -64,6 +65,8 @@ export function campaignFromInput(input: unknown, uri: string): Campaign {
   if (!SYMBOL_PATTERN.test(symbol)) throw new Error('ticker must be 1–10 letters or digits')
   const description = optionalString(input.description, 'description')
   if (description.length > DESCRIPTION_MAX_CHARS) throw new Error(`description must be at most ${DESCRIPTION_MAX_CHARS} characters`)
+  const makerName = optionalString(input.makerName, 'maker name')
+  if (makerName.length > MAKER_NAME_MAX_CHARS) throw new Error(`maker name must be at most ${MAKER_NAME_MAX_CHARS} characters`)
   const image = optionalString(input.image, 'image URL')
   if (image) {
     let url: URL | null = null
@@ -120,6 +123,7 @@ export function campaignFromInput(input: unknown, uri: string): Campaign {
     uri,
     description,
     image: image || undefined,
+    ...(makerName && { makerName }),
     plan,
     dropBot: { startFeeBps: DROP_BOT_START_FEE_BPS, windowSec: requested.dropBot.windowSec },
     normalFeeBps: NORMAL_FEE_BPS,

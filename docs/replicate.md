@@ -5,7 +5,7 @@ Each level below builds on the one before; stop at any level. Times are for a la
 | Level | What you get | Needs | Time |
 |---|---|---|---|
 | [0. Try it live](#0-try-it-live) | The deployed app on devnet | A browser wallet | 5 min |
-| [1. Install and fast checks](#1-install-and-fast-checks) | Typecheck, lint, 189 unit tests | Node, pnpm | 5 min |
+| [1. Install and fast checks](#1-install-and-fast-checks) | Typecheck, lint, 193 unit tests | Node, pnpm | 5 min |
 | [2. Chain tests on a local validator](#2-chain-tests-on-a-local-validator) | Every on-chain flow against the **mainnet** Meteora programs | + Solana CLI | 10 min |
 | [3. Browser tests](#3-browser-tests) | Every feature clicked through in Chromium | + Chromium | 5 min |
 | [4. Run the app yourself](#4-run-the-app-yourself) | Your own app on the local chain or devnet | + a browser wallet | 10 min |
@@ -28,15 +28,15 @@ Prerequisites:
 - **Linux or macOS**
 
 ```bash
-git clone https://github.com/Don-Vicks/preorder-curves.git
-cd preorder-curves
+git clone https://github.com/Don-Vicks/backed.git
+cd backed
 corepack enable
 pnpm install --frozen-lockfile
 
 pnpm -C packages/core exec tsc --noEmit                                       # typecheck the Solana core
 pnpm --dir apps/web exec next typegen && pnpm --dir apps/web exec tsc --noEmit # typecheck the web app
 pnpm --filter @preorder/web lint                                              # lint
-pnpm core:test                                                                # 189 unit tests
+pnpm core:test                                                                # 193 unit tests
 ```
 
 The unit tests need no network or chain. They cover:
@@ -44,7 +44,7 @@ The unit tests need no network or chain. They cover:
 - trust tiers, vesting schedules, request schemas
 - caches, the maker sign-in, sealed shipping details, the CSV export, config and the store
 
-They should end with `# pass 189` and `# fail 0`.
+They should end with `# pass 193` and `# fail 0`.
 
 ## 2. Chain tests on a local validator
 

@@ -25,6 +25,7 @@ import { OnChainCard } from "@/components/onchain-card";
 import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
+import { imageSrc } from "@/lib/image-src";
 import type { BuyQuote, CampaignWithLive, SellQuote, UnitsQuote } from "@/lib/types";
 
 export function CampaignView({ pool }: { pool: string }) {
@@ -81,21 +82,30 @@ function Loaded({ c }: { c: CampaignWithLive }) {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={live.status === "funding" ? "secondary" : "default"}>{statusLabel}</Badge>
-            <Badge variant="outline">
-              <ShieldCheck aria-hidden="true" /> Maker tier {c.trust.tier}
+            <Badge variant="outline" title="Scored from the maker’s wallet history on Solana. Higher levels can take more money upfront and get the rest sooner.">
+              <ShieldCheck aria-hidden="true" /> Maker trust level {c.trust.tier}
             </Badge>
           </div>
           <h1 className="mt-4 font-heading text-4xl tracking-[-0.035em] sm:text-5xl">{c.campaign.name}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             by{" "}
-            <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
-              {short(c.maker)}
-            </a>
+            {c.campaign.makerName ? (
+              <>
+                <span className="font-medium text-foreground">{c.campaign.makerName}</span>{" "}
+                <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" title="The maker’s wallet on Solana" className="font-mono text-xs underline-offset-4 hover:underline">
+                  ({short(c.maker)})
+                </a>
+              </>
+            ) : (
+              <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
+                {short(c.maker)}
+              </a>
+            )}
             {c.listing?.official && (
               <>
                 {" · "}
                 <a href={explorerAccount(c.listing.address)} target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">
-                  Listed on-chain
+                  Verified on Solana
                 </a>
               </>
             )}
@@ -104,7 +114,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
 
         {c.campaign.image && (
           // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL
-          <img src={c.campaign.image} alt={c.campaign.name} className="aspect-[16/9] w-full rounded-xl border border-border object-cover" />
+          <img src={imageSrc(c.campaign.image)} alt={c.campaign.name} className="aspect-[16/9] w-full rounded-xl border border-border object-cover" />
         )}
         {c.campaign.description && <p className="text-lg text-muted-foreground">{c.campaign.description}</p>}
       </div>
@@ -131,6 +141,8 @@ function Loaded({ c }: { c: CampaignWithLive }) {
       </aside>
 
       <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-2">
+        <HowItWorks c={c} />
+
         <section aria-labelledby="tiers-title" className="rounded-xl border border-border bg-card p-5">
           <h2 id="tiers-title" className="font-heading text-2xl">Early-bird tiers</h2>
           <ol className="mt-3 divide-y divide-border">
@@ -161,21 +173,69 @@ function Loaded({ c }: { c: CampaignWithLive }) {
 
         <section aria-labelledby="terms-title" className="rounded-xl border border-border bg-card p-5">
           <h2 id="terms-title" className="font-heading text-2xl">Locked-in terms</h2>
-          <p className="text-sm text-muted-foreground">Set on-chain at launch. Nobody, including the maker, can change them.</p>
+          <p className="text-sm text-muted-foreground">Fixed when the campaign launched. Nobody, including the maker, can change them.</p>
           <ul className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-            <Term icon={<Timer aria-hidden="true" />} title="Drop-bot window" body={`Fee starts at ${c.campaign.dropBot.startFeeBps / 100}% and falls to ${c.campaign.normalFeeBps / 100}% over ${Math.round(c.campaign.dropBot.windowSec / 60)} min.`} />
-            <Term icon={<Lock aria-hidden="true" />} title="Limited edition" body={`At most ${units(c.totalUnits)} vouchers will ever exist. No one can mint more.`} />
-            <Term icon={<ShieldCheck aria-hidden="true" />} title="Maker’s upfront share" body={`${plan.makerSharePct}% of the raise at graduation (tier ${c.trust.tier} cap ${c.trust.maxMakerSharePct}%).`} />
+            <Term icon={<Timer aria-hidden="true" />} title="Launch-rush protection" body={`For the first ${Math.round(c.campaign.dropBot.windowSec / 60)} min, buying costs an extra fee that starts at ${c.campaign.dropBot.startFeeBps / 100}% and falls to ${c.campaign.normalFeeBps / 100}%, so bots can’t grab the cheap items.`} />
+            <Term icon={<Lock aria-hidden="true" />} title="Limited edition" body={`At most ${units(c.totalUnits)} vouchers will ever exist. Nobody can create more.`} />
+            <Term icon={<ShieldCheck aria-hidden="true" />} title="Maker’s upfront share" body={`${plan.makerSharePct}% of the money raised is paid to the maker when the goal is reached. The rest is released after shipping. (Trust level ${c.trust.tier} allows up to ${c.trust.maxMakerSharePct}%.)`} />
             <ResaleTerms c={c} />
           </ul>
           <a href={explorerAccount(c.config)} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex items-center gap-1 text-sm text-primary underline-offset-4 hover:underline">
-            Verify the config on-chain <ExternalLink aria-hidden="true" className="size-3.5" />
+            Check these terms on Solana <ExternalLink aria-hidden="true" className="size-3.5" />
           </a>
         </section>
 
         <OnChainCard c={c} />
       </div>
     </div>
+  );
+}
+
+// The whole deal in three plain sentences, for someone who has never seen a bonding curve.
+function HowItWorks({ c }: { c: CampaignWithLive }) {
+  const live = c.live!;
+  const funded = live.status !== "funding";
+  const days = c.campaign.shipDays;
+  const steps: { title: string; body: string; done: boolean }[] = [
+    {
+      title: funded ? "Backed" : "You back it",
+      body: funded
+        ? "Backers paid in early, and the earliest paid the least. Each pre-order is a voucher for one item."
+        : `You pay today’s price of ${usd(live.priceUsdc)} and get a voucher for one item. The price rises as more people join, so earlier is cheaper.`,
+      done: funded,
+    },
+    {
+      title: funded ? "Goal reached" : `At ${usd(live.goalUsdc, Number.isInteger(live.goalUsdc) ? 0 : 2)} raised, it’s funded`,
+      body: funded
+        ? `${c.campaign.name} is funded. The maker has their production money and is making it.`
+        : `The maker gets paid and starts making ${c.campaign.name}. Until then, you can sell your voucher back at the current price.`,
+      done: funded,
+    },
+    {
+      title: days ? `It ships within ${days} days of the goal` : "You claim your item",
+      body: days
+        ? `${live.status === "reselling" ? "Redeem your voucher below" : "After the goal you redeem your voucher"} and enter your address to get your item. Prefer not to wait? Resell the voucher to someone else.`
+        : "The maker didn’t set a ship date on this older campaign. After the goal you redeem your voucher and enter your address to get your item.",
+      done: false,
+    },
+  ];
+  return (
+    <section aria-labelledby="how-title" className="rounded-xl border border-border bg-card p-5">
+      <h2 id="how-title" className="font-heading text-2xl">How this pre-order works</h2>
+      <ol className="mt-3 grid gap-4">
+        {steps.map((st, i) => (
+          <li key={st.title} className="flex gap-3">
+            <span className={`mt-0.5 grid size-7 shrink-0 place-items-center rounded-full font-mono text-xs ${st.done ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>
+              {st.done ? <Check aria-hidden="true" className="size-3.5" /> : i + 1}
+            </span>
+            <span>
+              <span className="block font-medium">{st.title}</span>
+              <span className="text-sm text-muted-foreground">{st.body}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -186,7 +246,7 @@ function ResaleTerms({ c }: { c: CampaignWithLive }) {
     // The config read failed (e.g. a rate-limited RPC): unknown is not the same as "all locked".
     return (
       <>
-        <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="How resale liquidity is split and locked is fixed in this campaign’s on-chain config. Verify it below." />
+        <Term icon={<Lock aria-hidden="true" />} title="Resale market" body="How the resale market’s money is split and locked was fixed at launch. You can check it below." />
         <RoyaltyTerm c={c} />
       </>
     );
@@ -206,12 +266,12 @@ function ResaleTerms({ c }: { c: CampaignWithLive }) {
       <Term
         icon={<Hourglass aria-hidden="true" />}
         title="Ship window"
-        body={`${ship}The maker’s ${t.creatorVestingPct}% of resale liquidity pays for production. It unlocks in steps from ${formatAfterGoal(firstReleaseSec(t.vesting))} to ${formatAfterGoal(vestingEndSec(t.vesting))}. Until then it backs the resale market.`}
+        body={`${ship}The maker’s production money (${t.creatorVestingPct}% of the resale pool) is released in steps from ${formatAfterGoal(firstReleaseSec(t.vesting))} to ${formatAfterGoal(vestingEndSec(t.vesting))}. Until then it stays in the pool, backing the resale market.`}
       />
       <Term
         icon={<Lock aria-hidden="true" />}
-        title="Resale floor"
-        body={`${floor}% of resale liquidity is locked forever, so vouchers always have a market. Every position earns its share of resale fees.`}
+        title="Guaranteed resale buyer"
+        body={`${floor}% of the resale money is locked forever, so there is always someone to sell to.`}
       />
       <RoyaltyTerm c={c} />
     </>
@@ -225,16 +285,16 @@ function RoyaltyTerm({ c }: { c: CampaignWithLive }) {
   const t = c.terms;
   if (!fee) return null;
   const charge = `Every resale pays a ${fee.poolFeeBps / 100}% fee in USDC${fee.dynamicFee ? ", more when the price moves fast" : ""}.`;
-  if (!t) return <Term icon={<Coins aria-hidden="true" />} title="Resale royalty" body={`${charge} After Meteora’s protocol share, it goes to the resale pool’s liquidity positions, the maker’s included.`} />;
+  if (!t) return <Term icon={<Coins aria-hidden="true" />} title="Resale royalty" body={`${charge} After a small protocol share, the rest goes to those providing the resale market’s money, the maker included.`} />;
   const maker = t.creatorPermanentPct + t.creatorVestingPct + t.creatorUnlockedPct;
   const split = t.creatorVestingPct
-    ? `the maker’s positions earn ${maker}% of what is left at graduation and ${Math.round((t.creatorPermanentPct * 100) / (t.creatorPermanentPct + t.partnerPermanentPct))}% once fully unlocked`
-    : `the maker’s positions earn ${maker}% of what is left`;
+    ? `the maker earns ${maker}% of what is left once funding closes, and ${Math.round((t.creatorPermanentPct * 100) / (t.creatorPermanentPct + t.partnerPermanentPct))}% once fully unlocked`
+    : `the maker earns ${maker}% of what is left`;
   return (
     <Term
       icon={<Coins aria-hidden="true" />}
       title="Resale royalty"
-      body={`${charge} After Meteora’s protocol share, ${split}.`}
+      body={`${charge} After a small protocol share, ${split}.`}
     />
   );
 }
@@ -412,16 +472,16 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
   async function graduate() {
     if (!publicKey) return setVisible(true);
     setBusy("migrate");
-    const alreadyDone = (id?: string | number) => toast.success("Already graduated. The resale market is open.", { id });
+    const alreadyDone = (id?: string | number) => toast.success("Funding is already closed. The resale market is open.", { id });
     const readFresh = () => api<{ campaign: CampaignWithLive }>(`/api/campaigns/${c.pool}?fresh=1`).catch(() => null);
     try {
       const build = () => api<Partial<BuiltTx> & { already?: boolean }>(`/api/campaigns/${c.pool}/migrate`, { wallet: publicKey.toBase58() });
       const built = await build();
       if (built.already || !built.tx) alreadyDone();
       else {
-        await signAndSend(built as BuiltTx, "Graduate to the resale market", async () => {
+        await signAndSend(built as BuiltTx, "Close funding and open the resale market", async () => {
           const again = await build();
-          if (again.already || !again.tx) throw new Error("Already graduated"); // handled below as already done
+          if (again.already || !again.tx) throw new Error("Already closed"); // handled below as already done
           return again as BuiltTx;
         });
         await readFresh(); // the server's cache now shows the resale market to everyone
@@ -551,7 +611,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
                     )}
                     ≈ <span className="font-mono text-foreground">{units(quote.vouchers)}</span> vouchers (at least {units(quote.minVouchers)}) · fee{" "}
                     <span className={`font-mono ${quote.feePct > 5 ? "text-primary" : ""}`}>{quote.feePct.toFixed(1)}%</span>
-                    {quote.feePct > 5 && " (drop-bot window still open)"}
+                    {quote.feePct > 5 && " (launch-rush fee, still falling)"}
                   </>
                 ) : null}
               </p>
@@ -565,8 +625,8 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
       {live.status === "funded" && (
         <div className="rounded-xl border border-primary/50 bg-card p-5">
           <h2 className="font-heading text-2xl">Goal reached</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Graduate the campaign to fund the maker and open the resale market. Anyone can do it; your wallet pays the network fee and rent (about 0.033 SOL).</p>
-          <Button className="mt-4 w-full" onClick={graduate} disabled={!!busy}>{busy === "migrate" ? "Graduating…" : "Graduate now"}</Button>
+          <p className="mt-1 text-sm text-muted-foreground">The goal is met. Close the funding round to pay the maker and open the resale market. Anyone can do this; your wallet covers a small network fee (about 0.033 SOL).</p>
+          <Button className="mt-4 w-full" onClick={graduate} disabled={!!busy}>{busy === "migrate" ? "Closing funding…" : "Close funding & open resale"}</Button>
         </div>
       )}
 
@@ -582,8 +642,7 @@ function ActionPanel({ c }: { c: CampaignWithLive }) {
         <div className="rounded-xl border border-border bg-card p-5">
           <p className="font-medium">On-chain listing</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Publish the campaign’s name, page and image in its DBC pool metadata, so anyone reading the pool on chain finds this page. You pay a little SOL
-            for the account.
+            Publish this campaign’s name, page and image on Solana so it can be found and verified. It costs a small amount of SOL.
           </p>
           <Button className="mt-4 w-full" variant="secondary" onClick={publishListing} disabled={!!busy}>
             {busy === "listing" ? "Publishing…" : "Publish listing"}

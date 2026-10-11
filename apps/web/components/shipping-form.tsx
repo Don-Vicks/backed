@@ -34,7 +34,7 @@ export function ShippingForm({
       <div>
         <h2 className="font-heading text-2xl">Where should it ship?</h2>
         <p className="text-sm text-muted-foreground">
-          Next, your wallet burns 1 voucher for your {productName}. Only the maker sees these details; they never go on-chain.
+          Next, your wallet burns 1 voucher for your {productName}. Only the maker sees these details; they are never published.
         </p>
       </div>
       <div className="grid gap-2">

@@ -17,7 +17,7 @@ Backed is pre-orders for real products, priced on a Meteora Dynamic Bonding Curv
 There's no custom program: every rule is DBC config, DAMM v2 and SPL burns. The whole lifecycle is tested in CI against the mainnet DBC and DAMM v2 binaries on a local validator, once through the SDK and once clicked through the app in a real browser, from launch to a shipped order. The app is dressed in Meteora's own design language and draws each campaign's DBC price curve.
 
 **Project Github Link**
-https://github.com/Don-Vicks/preorder-curves (to replicate and test it: [`docs/replicate.md`](replicate.md))
+https://github.com/Don-Vicks/backed (to replicate and test it: [`docs/replicate.md`](replicate.md))
 
 **Project Website**
 https://backed.up.railway.app (devnet; press "Get test USDC" after connecting a wallet)

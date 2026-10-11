@@ -29,7 +29,7 @@ const publicBase = process.env.PUBLIC_BASE_URL || (process.env.RAILWAY_PUBLIC_DO
 export const metadata: Metadata = {
   metadataBase: publicBase ? new URL(publicBase) : undefined,
   title: BRAND,
-  description: "Back it early, pay less. Pre-orders for real products, priced on Meteora's Dynamic Bonding Curve.",
+  description: "Back it early, pay less. Pre-orders for real products, the price rises as more people join, and the maker earns on every resale.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

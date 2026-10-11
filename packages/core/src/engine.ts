@@ -70,6 +70,7 @@ export type Campaign = {
   uri: string // metadata JSON (name, image, description)
   description?: string
   image?: string
+  makerName?: string // how the maker wants to be shown (a name or brand); display only, never on-chain
   plan: TierPlan
   dropBot: {
     startFeeBps: number // fee at launch, for bots rushing the drop

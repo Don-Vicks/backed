@@ -1,5 +1,5 @@
 {
-  "name": "preorder-curves",
+  "name": "backed",
   "private": true,
   "packageManager": "pnpm@10.28.0",
   "engines": {
@@ -16,6 +16,9 @@
     "core:inspect": "pnpm --filter @preorder/core inspect",
     "core:seed:localnet": "pnpm --filter @preorder/core seed:localnet",
     "core:test": "pnpm --filter @preorder/core test",
-    "core:test:localnet": "pnpm --filter @preorder/core test:localnet"
+    "core:test:localnet": "pnpm --filter @preorder/core test:localnet",
+    "core:seed:demo": "pnpm --filter @preorder/core seed:demo",
+    "core:seed:activity": "pnpm --filter @preorder/core seed:activity",
+    "core:campaigns": "pnpm --filter @preorder/core campaigns"
   }
 }

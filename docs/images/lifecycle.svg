@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-labelledby="t d">
+  <title id="t">Backed campaign lifecycle</title>
+  <desc id="d">A campaign goes from launch on a Meteora Dynamic Bonding Curve, to backers buying along the curve, to the goal being reached and the maker funded, to a DAMM v2 resale market, to redeeming a voucher for the item.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14142a"/>
+      <stop offset="1" stop-color="#0d0d13"/>
+    </linearGradient>
+    <linearGradient id="g" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#6E45FF"/>
+      <stop offset="0.55" stop-color="#F54B00"/>
+      <stop offset="1" stop-color="#F5BD00"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8664FF"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Inter', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .step { font-size: 13px; letter-spacing: 1.5px; fill: #9595B2; font-weight: 600; }
+    .title { font-size: 22px; fill: #F9F9FB; font-weight: 700; }
+    .body { font-size: 15px; fill: #B7B7CF; }
+    .tag { font-size: 12.5px; fill: #F5BD00; font-weight: 600; letter-spacing: 0.4px; }
+    .head { font-size: 15px; fill: #9595B2; letter-spacing: 3px; font-weight: 600; }
+  </style>
+
+  <rect width="1280" height="400" rx="24" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1278" height="398" rx="23" fill="none" stroke="#23233A" stroke-width="2"/>
+  <text x="640" y="48" text-anchor="middle" class="head">FROM LAUNCH TO DOORSTEP</text>
+
+  <!-- connectors -->
+  <g stroke="#8664FF" stroke-width="2.5" fill="none" marker-end="url(#arrow)" opacity="0.9">
+    <line x1="250" y1="210" x2="270" y2="210"/>
+    <line x1="500" y1="210" x2="520" y2="210"/>
+    <line x1="750" y1="210" x2="770" y2="210"/>
+    <line x1="1000" y1="210" x2="1020" y2="210"/>
+  </g>
+
+  <!-- 1 -->
+  <g transform="translate(30,80)">
+    <rect width="220" height="260" rx="18" fill="#12121C" stroke="#23233A" stroke-width="1.5"/>
+    <text x="22" y="38" class="step">01 · LAUNCH</text>
+    <text x="22" y="74" class="title">Maker sets</text>
+    <text x="22" y="100" class="title">the rules</text>
+    <text x="22" y="134" class="body">Tiers, goal, ship date</text>
+    <text x="22" y="156" class="body">and resale royalty become</text>
+    <text x="22" y="178" class="body">one fixed Meteora config.</text>
+    <text x="22" y="226" class="tag">DBC CONFIG</text>
+  </g>
+
+  <!-- 2 -->
+  <g transform="translate(280,80)">
+    <rect width="220" height="260" rx="18" fill="#12121C" stroke="#23233A" stroke-width="1.5"/>
+    <text x="22" y="38" class="step">02 · BACK</text>
+    <text x="22" y="74" class="title">Early backers</text>
+    <text x="22" y="100" class="title">pay less</text>
+    <text x="22" y="134" class="body">The price climbs the curve</text>
+    <text x="22" y="156" class="body">as units sell. A launch fee</text>
+    <text x="22" y="178" class="body">makes sniping costly.</text>
+    <path d="M22 232 C 70 232, 110 214, 198 196" stroke="url(#g)" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <circle cx="198" cy="196" r="6" fill="#F5BD00"/>
+  </g>
+
+  <!-- 3 -->
+  <g transform="translate(530,80)">
+    <rect width="220" height="260" rx="18" fill="#12121C" stroke="#23233A" stroke-width="1.5"/>
+    <text x="22" y="38" class="step">03 · FUNDED</text>
+    <text x="22" y="74" class="title">Goal reached,</text>
+    <text x="22" y="100" class="title">maker paid</text>
+    <text x="22" y="134" class="body">The goal is the graduation</text>
+    <text x="22" y="156" class="body">threshold. A capped upfront</text>
+    <text x="22" y="178" class="body">share is paid out.</text>
+    <text x="22" y="226" class="tag">MIGRATION THRESHOLD</text>
+  </g>
+
+  <!-- 4 -->
+  <g transform="translate(780,80)">
+    <rect width="220" height="260" rx="18" fill="#12121C" stroke="#23233A" stroke-width="1.5"/>
+    <text x="22" y="38" class="step">04 · RESALE</text>
+    <text x="22" y="74" class="title">A market that</text>
+    <text x="22" y="100" class="title">pays the maker</text>
+    <text x="22" y="134" class="body">Vouchers trade on a DAMM v2</text>
+    <text x="22" y="156" class="body">pool. A fifth is locked for</text>
+    <text x="22" y="178" class="body">good; the rest vests.</text>
+    <text x="22" y="226" class="tag">DAMM V2 · ROYALTY</text>
+  </g>
+
+  <!-- 5 -->
+  <g transform="translate(1030,80)">
+    <rect width="220" height="260" rx="18" fill="#12121C" stroke="url(#g)" stroke-width="2"/>
+    <text x="22" y="38" class="step">05 · REDEEM</text>
+    <text x="22" y="74" class="title">Burn a voucher,</text>
+    <text x="22" y="100" class="title">get the item</text>
+    <text x="22" y="134" class="body">Shipping details stay</text>
+    <text x="22" y="156" class="body">encrypted. Only the maker</text>
+    <text x="22" y="178" class="body">can read them.</text>
+    <text x="22" y="226" class="tag">SPL BURN + MEMO</text>
+  </g>
+</svg>
