@@ -80,44 +80,45 @@ function Loaded({ c }: { c: CampaignWithLive }) {
     // panel in a sticky right column beside both.
     <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr] lg:grid-rows-[auto_1fr]">
       <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-1">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={live.status === "funding" ? "secondary" : "default"}>{statusLabel}</Badge>
-            <Badge variant="outline" title="Scored from the maker’s wallet history on Solana. Higher levels can take more money upfront and get the rest sooner.">
-              <ShieldCheck aria-hidden="true" /> Maker trust level {c.trust.tier}
-            </Badge>
+        <div className="grid items-center gap-6 sm:grid-cols-[minmax(0,15rem)_1fr]">
+          {c.campaign.image && (
+            // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL
+            <img src={imageSrc(c.campaign.image)} alt={c.campaign.name} className="aspect-[16/10] w-full rounded-2xl border border-border object-cover sm:aspect-square shadow-[0_30px_80px_-40px_rgba(110,69,255,0.5)]" />
+          )}
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={live.status === "funding" ? "secondary" : "default"}>{statusLabel}</Badge>
+              <Badge variant="outline" title="Scored from the maker’s wallet history on Solana. Higher levels can take more money upfront and get the rest sooner.">
+                <ShieldCheck aria-hidden="true" /> Maker trust level {c.trust.tier}
+              </Badge>
+            </div>
+            <h1 className="mt-4 font-heading text-4xl tracking-[-0.035em] sm:text-5xl">{c.campaign.name}</h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              by{" "}
+              {c.campaign.makerName ? (
+                <>
+                  <span className="font-medium text-foreground">{c.campaign.makerName}</span>{" "}
+                  <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" title="The maker’s wallet on Solana" className="font-mono text-xs underline-offset-4 hover:underline">
+                    ({short(c.maker)})
+                  </a>
+                </>
+              ) : (
+                <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
+                  {short(c.maker)}
+                </a>
+              )}
+              {c.listing?.official && (
+                <>
+                  {" · "}
+                  <a href={explorerAccount(c.listing.address)} target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">
+                    Verified on Solana
+                  </a>
+                </>
+              )}
+            </p>
+            {c.campaign.description && <p className="mt-4 text-muted-foreground">{c.campaign.description}</p>}
           </div>
-          <h1 className="mt-4 font-heading text-4xl tracking-[-0.035em] sm:text-5xl">{c.campaign.name}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            by{" "}
-            {c.campaign.makerName ? (
-              <>
-                <span className="font-medium text-foreground">{c.campaign.makerName}</span>{" "}
-                <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" title="The maker’s wallet on Solana" className="font-mono text-xs underline-offset-4 hover:underline">
-                  ({short(c.maker)})
-                </a>
-              </>
-            ) : (
-              <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
-                {short(c.maker)}
-              </a>
-            )}
-            {c.listing?.official && (
-              <>
-                {" · "}
-                <a href={explorerAccount(c.listing.address)} target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">
-                  Verified on Solana
-                </a>
-              </>
-            )}
-          </p>
         </div>
-
-        {c.campaign.image && (
-          // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL
-          <img src={imageSrc(c.campaign.image)} alt={c.campaign.name} className="aspect-[16/9] w-full rounded-xl border border-border object-cover" />
-        )}
-        {c.campaign.description && <p className="text-lg text-muted-foreground">{c.campaign.description}</p>}
       </div>
 
       <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">

@@ -2,18 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  AreaSeries,
-  CandlestickSeries,
-  ColorType,
-  CrosshairMode,
-  HistogramSeries,
-  LineStyle,
-  createChart,
-  createSeriesMarkers,
-  type IChartApi,
-  type UTCTimestamp,
-} from "lightweight-charts";
+import { AreaSeries, ColorType, CrosshairMode, HistogramSeries, LineStyle, createChart, type UTCTimestamp } from "lightweight-charts";
 import { ExternalLink } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/client";
@@ -21,45 +10,15 @@ import { explorerTx, short, unitsShort, usd } from "@/lib/format";
 import type { CampaignWithLive, Trade } from "@/lib/types";
 
 // Meteora night, as lightweight-charts wants it (it draws on canvas, so no CSS variables).
-const C = { text: "#9595B2", grid: "#1C1C2C", border: "#23233A", up: "#24C98D", down: "#F04438", orange: "#F54B00", violet: "#8664FF", gold: "#F5BD00" };
+const C = { text: "#9595B2", grid: "rgba(35,35,58,0.55)", violet: "#8664FF", orange: "#F54B00", gold: "#F5BD00" };
 
-const INTERVALS = [
-  { label: "1m", sec: 60 },
-  { label: "5m", sec: 300 },
-  { label: "15m", sec: 900 },
-  { label: "1h", sec: 3600 },
-  { label: "4h", sec: 14_400 },
-  { label: "1D", sec: 86_400 },
+const RANGES = [
+  { label: "1H", sec: 3600 },
+  { label: "24H", sec: 86_400 },
+  { label: "7D", sec: 604_800 },
+  { label: "All", sec: Infinity },
 ] as const;
-
-// The smallest interval that fits the last 40 trades in about 60 candles; older history scrolls left.
-function autoInterval(all: Trade[]) {
-  const trades = all.slice(-40);
-  if (trades.length < 2) return INTERVALS[3].sec;
-  const span = trades[trades.length - 1].time - trades[0].time;
-  return (INTERVALS.find((i) => span / i.sec <= 60) ?? INTERVALS[INTERVALS.length - 1]).sec;
-}
-
-type Candle = { time: UTCTimestamp; open: number; high: number; low: number; close: number; buy: number; sell: number };
-
-function candles(trades: Trade[], sec: number): Candle[] {
-  const out: Candle[] = [];
-  for (const t of trades) {
-    const time = (Math.floor(t.time / sec) * sec) as UTCTimestamp;
-    const last = out[out.length - 1];
-    if (last && last.time === time) {
-      last.high = Math.max(last.high, t.price);
-      last.low = Math.min(last.low, t.price);
-      last.close = t.price;
-      last[t.side] += t.usdc;
-    } else {
-      // Each candle opens where the last one closed, so gaps between trades read as flat, not as jumps.
-      const open = last ? last.close : t.price;
-      out.push({ time, open, high: Math.max(open, t.price), low: Math.min(open, t.price), close: t.price, buy: t.side === "buy" ? t.usdc : 0, sell: t.side === "sell" ? t.usdc : 0 });
-    }
-  }
-  return out;
-}
+type Range = (typeof RANGES)[number]["label"];
 
 function ago(sec: number) {
   const d = Math.max(0, Date.now() / 1000 - sec);
@@ -69,9 +28,15 @@ function ago(sec: number) {
   return `${Math.floor(d / 86_400)}d`;
 }
 
-function PriceChart({ trades, mode, sec, goalPrice, nowPrice }: { trades: Trade[]; mode: "candles" | "line"; sec: number; goalPrice: number; nowPrice: number }) {
+// One point per trade, times nudged a second apart where two share one (the chart needs them strictly rising).
+function points(trades: Trade[]) {
+  const out: { time: UTCTimestamp; t: Trade }[] = [];
+  for (const t of trades) out.push({ time: Math.max(t.time, (out[out.length - 1]?.time ?? 0) + 1) as UTCTimestamp, t });
+  return out;
+}
+
+function PriceChart({ trades, goalPrice, nowPrice }: { trades: Trade[]; goalPrice: number; nowPrice: number }) {
   const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -79,77 +44,60 @@ function PriceChart({ trades, mode, sec, goalPrice, nowPrice }: { trades: Trade[
     const chart = createChart(el, {
       autoSize: true,
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: C.text, fontFamily: "var(--font-mono), ui-monospace, monospace", fontSize: 11, attributionLogo: false },
-      grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
-      rightPriceScale: { borderColor: C.border, scaleMargins: { top: 0.12, bottom: 0.26 } },
-      timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false, rightOffset: 2, fixLeftEdge: true, fixRightEdge: true },
-      crosshair: { mode: CrosshairMode.Normal, vertLine: { color: C.violet, labelBackgroundColor: C.violet }, horzLine: { color: C.violet, labelBackgroundColor: C.violet } },
+      grid: { vertLines: { visible: false }, horzLines: { color: C.grid } },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.14, bottom: 0.22 } },
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true },
+      crosshair: {
+        mode: CrosshairMode.Magnet,
+        vertLine: { color: "rgba(134,100,255,0.5)", width: 1, style: LineStyle.Solid, labelBackgroundColor: C.violet },
+        horzLine: { color: "rgba(134,100,255,0.35)", labelBackgroundColor: C.violet },
+      },
+      handleScroll: false,
+      handleScale: false,
       localization: { priceFormatter: (p: number) => usd(p) },
     });
-    chartRef.current = chart;
 
-    const data = candles(trades, sec);
-    // Line mode plots every trade on its own (times nudged a second apart where two share one), so a thin
-    // market reads as a few clear points instead of a few fat candles.
-    const ticks: { time: UTCTimestamp; t: Trade }[] = [];
-    for (const t of trades) {
-      const prev = ticks[ticks.length - 1]?.time ?? 0;
-      ticks.push({ time: Math.max(t.time, prev + 1) as UTCTimestamp, t });
-    }
-    const price =
-      mode === "candles"
-        ? chart.addSeries(CandlestickSeries, { upColor: C.up, downColor: C.down, borderUpColor: C.up, borderDownColor: C.down, wickUpColor: C.up, wickDownColor: C.down })
-        : chart.addSeries(AreaSeries, { lineColor: C.orange, topColor: "rgba(245,75,0,0.28)", bottomColor: "rgba(110,69,255,0.02)", lineWidth: 2, pointMarkersVisible: true, pointMarkersRadius: 3 });
-    if (mode === "candles") price.setData(data.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
-    else {
-      const points = ticks.map(({ time, t }) => ({ time, value: t.price }));
-      // Carry the line to now at the live price, so a quiet market still reads as current.
-      const now = Math.floor(Date.now() / 1000) as UTCTimestamp;
-      if (points.length && now > points[points.length - 1].time) points.push({ time: now, value: nowPrice });
-      price.setData(points);
-    }
-    price.createPriceLine({ price: goalPrice, color: C.gold, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: "Goal price" });
+    const ticks = points(trades);
+    const price = chart.addSeries(AreaSeries, {
+      lineColor: C.orange,
+      lineWidth: 2,
+      topColor: "rgba(245,75,0,0.30)",
+      bottomColor: "rgba(110,69,255,0.00)",
+      crosshairMarkerRadius: 5,
+      crosshairMarkerBorderColor: "#F9F9FB",
+      crosshairMarkerBackgroundColor: C.orange,
+      priceLineColor: C.orange,
+      priceLineStyle: LineStyle.Dotted,
+    });
+    const data = ticks.map(({ time, t }) => ({ time, value: t.price }));
+    // Carry the line to now at the live price, so a quiet market still reads as current.
+    const now = Math.floor(Date.now() / 1000) as UTCTimestamp;
+    if (data.length && now > data[data.length - 1].time) data.push({ time: now, value: nowPrice });
+    price.setData(data);
+    price.createPriceLine({ price: goalPrice, color: C.gold, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: "Goal" });
 
+    // Each trade's size underneath: green buys, red sells.
     const volume = chart.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
     chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } });
-    const green = "rgba(36,201,141,0.35)";
-    const red = "rgba(240,68,56,0.35)";
-    volume.setData(
-      mode === "candles"
-        ? data.map((d) => ({ time: d.time, value: d.buy + d.sell, color: d.buy >= d.sell ? green : red }))
-        : ticks.map(({ time, t }) => ({ time, value: t.usdc, color: t.side === "buy" ? green : red })),
-    );
+    volume.setData(ticks.map(({ time, t }) => ({ time, value: t.usdc, color: t.side === "buy" ? "rgba(36,201,141,0.4)" : "rgba(240,68,56,0.4)" })));
 
-    // Buy and sell arrows on candles while there are few enough to read (line mode colours its points instead).
-    if (mode === "candles" && data.length <= 80) {
-      createSeriesMarkers(
-        price,
-        data.flatMap((d) => [
-          ...(d.buy > 0 ? [{ time: d.time, position: "belowBar" as const, color: C.up, shape: "arrowUp" as const, text: "" }] : []),
-          ...(d.sell > 0 ? [{ time: d.time, position: "aboveBar" as const, color: C.down, shape: "arrowDown" as const, text: "" }] : []),
-        ]),
-      );
-    }
-    // The latest 60 bars (drag for older ones), framed once the chart has its real width: autoSize
-    // measures after the first paint, and framing before it leaves the right side empty.
-    const bars = mode === "candles" ? data.length : ticks.length + 1;
-    const frame = () => (bars > 60 ? chart.timeScale().setVisibleLogicalRange({ from: bars - 60, to: bars + 1 }) : chart.timeScale().fitContent());
+    // Framed once the chart has its real width: autoSize measures after the first paint.
+    const frame = () => chart.timeScale().fitContent();
     frame();
     const observer = new ResizeObserver(frame);
     observer.observe(el);
     return () => {
       observer.disconnect();
       chart.remove();
-      chartRef.current = null;
     };
-  }, [trades, mode, sec, goalPrice, nowPrice]);
+  }, [trades, goalPrice, nowPrice]);
 
-  return <div ref={ref} className="h-72 w-full sm:h-80" role="img" aria-label={`Voucher price chart, ${trades.length} trades`} />;
+  return <div ref={ref} className="h-64 w-full sm:h-80" role="img" aria-label={`Voucher price chart, ${trades.length} trades`} />;
 }
 
 export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNode }) {
   const live = c.live!;
-  const [modePick, setMode] = useState<"candles" | "line" | null>(null);
-  const [pick, setPick] = useState<number | null>(null);
+  const [range, setRange] = useState<Range>("All");
   const [tabPick, setTab] = useState<"price" | "curve" | null>(null);
   const { data, isPending, dataUpdatedAt } = useQuery({
     queryKey: ["trades", c.pool],
@@ -157,49 +105,54 @@ export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNod
     refetchInterval: 15_000,
   });
   const trades = useMemo(() => data?.trades ?? [], [data]);
-  const sec = pick ?? autoInterval(trades);
-  // Candles once there is enough history to fill them; a line before that.
-  const mode = modePick ?? (candles(trades, sec).length >= 15 ? "candles" : "line");
+  // The trades in range, plus the one just before it, so the line starts at the price the range opened on.
+  const shown = useMemo(() => {
+    const from = dataUpdatedAt / 1000 - RANGES.find((r) => r.label === range)!.sec;
+    const i = trades.findIndex((t) => t.time >= from);
+    if (i === -1) return trades.slice(-1);
+    return trades.slice(Math.max(0, i - 1));
+  }, [trades, range, dataUpdatedAt]);
   // A campaign with no trades yet opens on its bonding curve, which already says what it will cost.
   const tab = tabPick ?? (data && trades.length < 2 ? "curve" : "price");
+  const rangeChange = shown.length ? (live.priceUsdc - shown[0].price) / shown[0].price : null;
 
   const stats = useMemo(() => {
     const dayAgo = dataUpdatedAt / 1000 - 86_400; // as of the last read, so the memo stays pure
-    const day = trades.filter((t) => t.time >= dayAgo);
-    const first = trades[0]?.price;
-    const backers = new Set(trades.filter((t) => t.side === "buy").map((t) => t.wallet)).size;
     return {
-      change: first ? (live.priceUsdc - first) / first : null,
-      volume24: day.reduce((a, t) => a + t.usdc, 0),
+      volume24: trades.filter((t) => t.time >= dayAgo).reduce((a, t) => a + t.usdc, 0),
       volumeAll: trades.reduce((a, t) => a + t.usdc, 0),
-      backers,
+      backers: new Set(trades.filter((t) => t.side === "buy").map((t) => t.wallet)).size,
     };
-  }, [trades, live.priceUsdc, dataUpdatedAt]);
+  }, [trades, dataUpdatedAt]);
 
-  const chip = (active: boolean, label: string, onClick: () => void) => (
-    <button
-      key={label}
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`rounded px-2 py-1 font-mono text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${active ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}
-    >
-      {label}
-    </button>
+  const up = (rangeChange ?? 0) >= 0;
+  const stat = (label: string, value: ReactNode) => (
+    <div className="px-5 py-3">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 font-mono text-sm tabular-nums">{value}</dd>
+    </div>
   );
 
   return (
-    <section aria-labelledby="market-title" className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
+    <section aria-labelledby="market-title" className="overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="flex flex-wrap items-start justify-between gap-4 px-5 pt-5">
         <div>
-          <h2 id="market-title" className="font-heading text-2xl">Market</h2>
-          <span className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+          <h2 id="market-title" className="flex items-center gap-2 text-sm text-muted-foreground">
             <span className="relative flex size-2" aria-hidden="true">
               <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70 motion-reduce:animate-none" />
               <span className="relative inline-flex size-2 rounded-full bg-success" />
             </span>
-            {live.status === "reselling" ? "Trading on Meteora DAMM v2" : "Trading on Meteora’s bonding curve"}
-          </span>
+            Voucher price · {live.status === "reselling" ? "Meteora DAMM v2" : "Meteora bonding curve"}
+          </h2>
+          <p className="mt-1 flex items-baseline gap-3">
+            <span className="font-mono text-4xl tracking-tight tabular-nums">{usd(live.priceUsdc)}</span>
+            {tab === "price" && rangeChange !== null && shown.length > 1 && (
+              <span className={`rounded-md px-1.5 py-0.5 font-mono text-xs tabular-nums ${up ? "bg-success/15 text-success" : "bg-destructive/15 text-destructive"}`}>
+                {up ? "▲" : "▼"} {Math.abs(rangeChange * 100).toFixed(2)}%
+                <span className="ml-1 text-muted-foreground">{range === "All" ? "all time" : range}</span>
+              </span>
+            )}
+          </p>
         </div>
         <div role="tablist" aria-label="Chart" className="flex gap-1 rounded-lg bg-muted p-1">
           {(["price", "curve"] as const).map((id) => (
@@ -217,59 +170,47 @@ export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNod
         </div>
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-b border-border px-5 py-4 text-sm sm:grid-cols-4">
-        <div>
-          <dt className="text-muted-foreground" title="Change since the first trade">Price</dt>
-          <dd className="font-mono text-lg tabular-nums">
-            {usd(live.priceUsdc)}
-            {stats.change !== null && (
-              <span className={`ml-2 text-xs ${stats.change >= 0 ? "text-success" : "text-destructive"}`}>
-                {stats.change >= 0 ? "+" : ""}
-                {(stats.change * 100).toFixed(1)}%
-              </span>
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">24h volume</dt>
-          <dd className="font-mono text-lg tabular-nums">{usd(stats.volume24, 0)}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Trades</dt>
-          <dd className="font-mono text-lg tabular-nums">{trades.length}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Backers</dt>
-          <dd className="font-mono text-lg tabular-nums">{stats.backers}</dd>
-        </div>
-      </dl>
-
       {tab === "curve" ? (
         <div className="p-5">{curve}</div>
       ) : (
-        <div className="px-2 pt-2 pb-1 sm:px-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1">
-            <div className="flex gap-0.5">{mode === "candles" ? INTERVALS.map((i) => chip(sec === i.sec, i.label, () => setPick(i.sec))) : <span className="py-1 text-xs text-muted-foreground">Every trade</span>}</div>
-            <div className="flex gap-0.5">
-              {chip(mode === "candles", "Candles", () => setMode("candles"))}
-              {chip(mode === "line", "Line", () => setMode("line"))}
-            </div>
+        <div className="pt-2">
+          <div className="flex justify-end gap-0.5 px-5" role="group" aria-label="Time range">
+            {RANGES.map((r) => (
+              <button
+                key={r.label}
+                type="button"
+                aria-pressed={range === r.label}
+                onClick={() => setRange(r.label)}
+                className={`rounded-md px-2.5 py-1 font-mono text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${range === r.label ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                {r.label}
+              </button>
+            ))}
           </div>
-          {isPending ? (
-            <Skeleton className="m-2 h-72 sm:h-80" />
-          ) : trades.length === 0 ? (
-            <div className="grid h-72 place-items-center text-center text-sm text-muted-foreground sm:h-80">
-              <p>
-                No trades yet.
-                <br />
-                The first backer sets the first candle at {usd(live.priceUsdc)}.
-              </p>
-            </div>
-          ) : (
-            <PriceChart trades={trades} mode={mode} sec={sec} goalPrice={c.campaign.plan.finalPrice} nowPrice={live.priceUsdc} />
-          )}
+          <div className="px-2">
+            {isPending ? (
+              <Skeleton className="mx-3 my-2 h-64 sm:h-80" />
+            ) : trades.length === 0 ? (
+              <div className="grid h-64 place-items-center text-center text-sm text-muted-foreground sm:h-80">
+                <p>
+                  No trades yet.
+                  <br />
+                  The first backer pays {usd(live.priceUsdc)}.
+                </p>
+              </div>
+            ) : (
+              <PriceChart trades={shown} goalPrice={c.campaign.plan.finalPrice} nowPrice={live.priceUsdc} />
+            )}
+          </div>
         </div>
       )}
+
+      <dl className="grid grid-cols-2 divide-border border-t border-border sm:grid-cols-4 sm:divide-x">
+        {stat("24h volume", usd(stats.volume24, 0))}
+        {stat("All-time volume", usd(stats.volumeAll, 0))}
+        {stat("Trades", trades.length)}
+        {stat("Backers", stats.backers)}
+      </dl>
 
       {tab === "price" && trades.length > 0 && (
         <div className="border-t border-border">
@@ -288,9 +229,12 @@ export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNod
               </thead>
               <tbody className="font-mono tabular-nums">
                 {[...trades].reverse().slice(0, 25).map((t) => (
-                  <tr key={t.sig} className="border-t border-border/60">
+                  <tr key={t.sig} className="border-t border-border/60 transition-colors hover:bg-muted/40">
                     <td className="px-5 py-2">
-                      <span className={t.side === "buy" ? "text-success" : "text-destructive"}>{t.side === "buy" ? "Buy" : "Sell"}</span>
+                      <span className={`inline-flex items-center gap-1.5 ${t.side === "buy" ? "text-success" : "text-destructive"}`}>
+                        <span aria-hidden="true" className={`size-1.5 rounded-full ${t.side === "buy" ? "bg-success" : "bg-destructive"}`} />
+                        {t.side === "buy" ? "Buy" : "Sell"}
+                      </span>
                       <span className="ml-1.5 font-sans text-xs text-muted-foreground">{t.venue === "curve" ? "curve" : "resale"}</span>
                     </td>
                     <td className="px-2 py-2 text-right">{unitsShort(t.vouchers)}</td>
@@ -307,9 +251,7 @@ export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNod
               </tbody>
             </table>
           </div>
-          <p className="px-5 py-3 text-xs text-muted-foreground">
-            {usd(stats.volumeAll, 0)} traded in total. Prices include fees. Read straight from Solana.
-          </p>
+          <p className="px-5 py-3 text-xs text-muted-foreground">Prices include fees. Every trade is read straight from Solana.</p>
         </div>
       )}
     </section>
