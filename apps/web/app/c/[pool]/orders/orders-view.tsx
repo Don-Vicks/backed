@@ -23,9 +23,10 @@ type Redemption = {
   shipping: { name: string; email: string; address: string; country: string } | null;
 };
 
-// The sign-in is good for 5 minutes on the server; sign again a little before that.
-const SIGN_IN_REUSE_MS = 4 * 60_000;
-type SignIn = { message: string; signature: string; at: number };
+// A sign-in is a server session (30 minutes). It is kept in memory only, so closing the tab or switching
+// wallets ends it on this screen; sign again a minute before it lapses.
+const SESSION_MARGIN_MS = 60_000;
+type Session = { token: string; expiresAt: number };
 
 // Every text cell goes through csvCell, so a shipping name like "=HYPERLINK(…)" stays text.
 function ordersCsv(rows: Redemption[]) {
@@ -36,13 +37,15 @@ function ordersCsv(rows: Redemption[]) {
   );
 }
 
-// The last sign-in while it is still good, else a fresh one for this site's host.
-async function reuseOrSignIn(last: SignIn | null, pool: string, signMessage?: (message: Uint8Array) => Promise<Uint8Array>): Promise<SignIn> {
-  if (last && Date.now() - last.at < SIGN_IN_REUSE_MS) return last;
+// The open session while it is still good, else a new one: the server issues a single-use nonce, the
+// wallet signs it into the message for this site's host, and the signature buys the session.
+async function reuseOrSignIn(last: Session | null, pool: string, signMessage?: (message: Uint8Array) => Promise<Uint8Array>): Promise<Session> {
+  if (last && last.expiresAt - Date.now() > SESSION_MARGIN_MS) return last;
   if (!signMessage) throw new Error("This wallet can’t sign messages. Try Phantom, Solflare or Backpack.");
-  const at = Date.now();
-  const message = ordersMessage(pool, new Date(at).toISOString(), window.location.host);
-  return { message, signature: bs58.encode(await signMessage(new TextEncoder().encode(message))), at };
+  const { nonce } = await api<{ nonce: string }>("/api/redemptions/nonce", { pool });
+  const message = ordersMessage(pool, new Date().toISOString(), window.location.host, nonce);
+  const signature = bs58.encode(await signMessage(new TextEncoder().encode(message)));
+  return api<Session>("/api/redemptions/signin", { pool, message, signature });
 }
 
 // Keyed on the connected wallet: disconnecting or switching wallets drops the orders (and their
@@ -59,13 +62,13 @@ function Orders({ pool }: { pool: string }) {
   const unitCount = rows?.reduce((a, r) => a + r.units, 0) ?? 0;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [signIn, setSignIn] = useState<SignIn | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [shipping, setShipping] = useState<string | null>(null); // the order being marked shipped
 
-  async function signedIn(): Promise<SignIn> {
-    const next = await reuseOrSignIn(signIn, pool, signMessage);
-    setSignIn(next);
-    return next;
+  async function signedIn(): Promise<{ Authorization: string }> {
+    const next = await reuseOrSignIn(session, pool, signMessage);
+    setSession(next);
+    return { Authorization: `Bearer ${next.token}` };
   }
 
   async function load() {
@@ -73,8 +76,8 @@ function Orders({ pool }: { pool: string }) {
     setLoading(true);
     setError(null);
     try {
-      const { message, signature } = await signedIn();
-      const { redemptions } = await api<{ redemptions: Redemption[] }>("/api/redemptions/list", { pool, message, signature });
+      const auth = await signedIn();
+      const { redemptions } = await api<{ redemptions: Redemption[] }>("/api/redemptions/list", { pool }, auth);
       setRows(redemptions);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn’t load orders");
@@ -87,8 +90,8 @@ function Orders({ pool }: { pool: string }) {
     setShipping(order);
     setError(null);
     try {
-      const { message, signature } = await signedIn();
-      await api("/api/redemptions/shipped", { pool, message, signature, order });
+      const auth = await signedIn();
+      await api("/api/redemptions/shipped", { pool, order }, auth);
       setRows((all) => all?.map((r) => (r.signature === order ? { ...r, shipping: null, shippedAt: new Date().toISOString() } : r)) ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn’t mark it shipped");

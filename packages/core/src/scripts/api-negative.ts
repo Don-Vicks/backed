@@ -190,16 +190,40 @@ async function main() {
   expect('redeem pending: unknown campaign', await call('GET', `/api/redemptions/pending?pool=${stranger}&wallet=${pk(backer1)}`, undefined, redeemIp), 404)
   expect('redeem pending: none', await call('GET', `/api/redemptions/pending?pool=${pool}&wallet=${pk(backer1)}`, undefined, redeemIp), 200)
   expect('tx redeem: memo-less burn refused', await call('POST', '/api/tx', { pool, wallet: pk(backer1), kind: 'redeem' }, redeemIp), 400)
-  expect('orders: no message', await call('POST', '/api/redemptions/list', { pool }), 400)
+  expect('orders: no message', await call('POST', '/api/redemptions/signin', { pool }), 400)
+  expect('orders: list without a session', await call('POST', '/api/redemptions/list', { pool }), 401)
+  expect('orders: list with a made-up session', await call('POST', '/api/redemptions/list', { pool }, { authorization: `Bearer ${'A'.repeat(43)}` }), 401)
+  expect('orders: nonce, unknown campaign', await call('POST', '/api/redemptions/nonce', { pool: stranger }, { 'x-forwarded-for': ip() }), 404)
   const host = new URL(BASE).host
-  const signed = (message: string, k = maker) => ({ pool, message, signature: bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), k.secretKey)) })
-  const msg = ordersMessage(pool, new Date().toISOString(), host)
-  expect('orders: wrong signer', await call('POST', '/api/redemptions/list', signed(msg, backer1)), 403)
-  expect('orders: other site', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, new Date().toISOString(), 'evil.example'))), 403)
-  expect('orders: dated ahead', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, new Date(Date.now() + 9 * 60_000).toISOString(), host))), 403)
-  expect('orders: undated', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, 'NaN', host))), 403)
-  expect('orders: substring', await call('POST', '/api/redemptions/list', signed(`gm ${pool}\nIssued at: ${new Date().toISOString()}`)), 403)
-  expect('orders: maker', await call('POST', '/api/redemptions/list', signed(msg)), 200)
+  const sign = (message: string, k = maker) => bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), k.secretKey))
+  const nonce = async () => (await call('POST', '/api/redemptions/nonce', { pool }, { 'x-forwarded-for': ip() })).json.nonce as string
+  // Signs a message built by `build(nonce)` and trades it for a session (a fresh nonce each time).
+  const signIn = async (build: (n: string) => string, k = maker) => {
+    const message = build(await nonce())
+    return call('POST', '/api/redemptions/signin', { pool, message, signature: sign(message, k) }, { 'x-forwarded-for': ip() })
+  }
+  const now = () => new Date().toISOString()
+  expect('orders: wrong signer', await signIn((n) => ordersMessage(pool, now(), host, n), backer1), 403)
+  expect('orders: other site', await signIn((n) => ordersMessage(pool, now(), 'evil.example', n)), 403)
+  expect('orders: dated ahead', await signIn((n) => ordersMessage(pool, new Date(Date.now() + 9 * 60_000).toISOString(), host, n)), 403)
+  expect('orders: undated', await signIn((n) => ordersMessage(pool, 'NaN', host, n)), 403)
+  expect('orders: substring', await signIn(() => `gm ${pool}\nIssued at: ${now()}`), 403)
+  expect('orders: made-up nonce', await signIn(() => ordersMessage(pool, now(), host, 'A'.repeat(22))), 403)
+  const opened = expect('orders: maker signs in', await signIn((n) => ordersMessage(pool, now(), host, n)), 200)
+  const session = { authorization: `Bearer ${opened.json.token}` }
+  expect('orders: maker', await call('POST', '/api/redemptions/list', { pool }, session), 200)
+  // A signed message works once: the same one traded again is refused.
+  const spentMessage = ordersMessage(pool, now(), host, await nonce())
+  const spentBody = { pool, message: spentMessage, signature: sign(spentMessage) }
+  expect('orders: sign-in once', await call('POST', '/api/redemptions/signin', spentBody, { 'x-forwarded-for': ip() }), 200)
+  expect('orders: sign-in replayed', await call('POST', '/api/redemptions/signin', spentBody, { 'x-forwarded-for': ip() }), 403)
+  // A session belongs to the maker wallet that signed it, and to one campaign.
+  const other = await call('POST', '/api/redemptions/list', { pool: stranger }, session)
+  expect('orders: session for another campaign', other, 404, 403)
+  expect('orders: sign out', await call('POST', '/api/redemptions/signout', {}, session), 200)
+  expect('orders: list after sign out', await call('POST', '/api/redemptions/list', { pool }, session), 401)
+  const reopened = expect('orders: maker signs in again', await signIn((n) => ordersMessage(pool, now(), host, n)), 200)
+  const makerSession = { authorization: `Bearer ${reopened.json.token}` }
 
   // --- fund to the goal: funded state
   const buy = expect('tx buy: to the goal', await tx({ kind: 'buy', usdc: 40 }), 200)
@@ -252,9 +276,9 @@ async function main() {
     expect('redeem confirm: again', await confirm({ id: prep.json.id, signature: burn }), 200)
     const forged = expect('redeem prepare: hijacker, backer’s wallet', await prepare({ shipping: { ...shipping, name: 'Mallory' } }), 200, 400)
     if (forged.status === 200) expect('redeem confirm: hijack with the backer’s burn', await confirm({ id: forged.json.id, signature: burn }), 404)
-    const list = expect('orders: maker after a redemption', await call('POST', '/api/redemptions/list', signed(ordersMessage(pool, new Date().toISOString(), host))), 200)
+    const list = expect('orders: maker after a redemption', await call('POST', '/api/redemptions/list', { pool }, makerSession), 200)
     if (list.json.redemptions?.[0]?.shipping?.name !== 'Ada') rows.push({ label: 'orders: shows the owner’s shipping', status: 0, want: [1], note: JSON.stringify(list.json.redemptions) })
-    const shipped = (order: string) => call('POST', '/api/redemptions/shipped', { ...signed(ordersMessage(pool, new Date().toISOString(), host)), order })
+    const shipped = (order: string) => call('POST', '/api/redemptions/shipped', { pool, order }, makerSession)
     expect('orders: mark shipped', await shipped(burn), 200)
     expect('orders: mark shipped, unknown order', await shipped(createSig), 404)
   }

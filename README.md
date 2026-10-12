@@ -158,7 +158,7 @@ docs/               Guides, the walkthrough and the images in this README
 - **Trust-minimized, not trustless.** A maker can take the upfront share and never ship. The trust tier limits how much they can take upfront and how long the rest waits. Vesting is time-based: DBC and DAMM v2 cannot release liquidity when goods ship, so after the ship window a maker who disappears leaves backers a 20% permanent market floor, not a refund.
 - **Exit ≠ refund.** Selling back before the goal pays the current curve price, which can be more or less than the price paid.
 - **Single-server storage.** The store is SQLite on one volume, so the app runs as one replica. Shipping details are encrypted at rest (and deleted once the maker marks an order shipped), but the server holds the key and decrypts them for the maker.
-- **Maker sign-in is short-lived, not single-use.** A signed orders message works for 5 minutes on this site only; there is no server nonce or session cookie yet.
+- **Maker sign-in is single-use, with a 30-minute session.** The server issues a one-time nonce, the maker signs it, and the signature buys a session token that is kept in memory, never in a cookie. A leaked signature cannot be replayed, but a stolen token works until it expires or the maker signs out.
 - **Trust signals are simple.** Wallet age, activity and first funder can be gamed with aged wallets, and activity with a month of daily self-transfers. They are one input, shown openly, and not a verdict; an attestation (X OAuth or SAS) is an open decision.
 
 ## Roadmap
@@ -166,7 +166,6 @@ docs/               Guides, the walkthrough and the images in this README
 - A first real mainnet campaign with a real maker
 - A Shopify plugin, so any store can offer pre-orders with a built-in resale market
 - Maker attestation (X OAuth or SAS) as an extra trust signal
-- Shorter sign-in sessions for the maker's orders page (single-use nonce)
 
 ## Business model
 

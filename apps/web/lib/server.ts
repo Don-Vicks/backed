@@ -2,14 +2,15 @@ import "server-only";
 import { randomBytes } from "crypto";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import {
+  bearerToken,
   clientIp,
   getCampaign,
   getConnection,
   getMetadata,
   getNetwork,
   HttpError,
+  maker as makerForSession,
   MAX_BODY_BYTES,
-  ordersMessage,
   parseWith,
   RATE_LIMITS,
   readCampaignLive,
@@ -24,7 +25,6 @@ import {
   trustFixture,
   trustRpcUrl,
   ttlCache,
-  verifyWalletMessage,
   withPriorityFee,
   type BodyOf,
   type BodySchema,
@@ -42,21 +42,21 @@ export const connection = (): Connection => getConnection();
 export const publicOrigin = (req?: Request) => resolvePublicOrigin(process.env, getNetwork().name, req?.url);
 export const publicOrigins = (req?: Request) => resolvePublicOriginsAll(process.env, getNetwork().name, req?.url);
 
-// The maker's sign-in to the orders page: ordersMessage for one of this site's hosts (siteHosts) and the
-// campaign, signed by the campaign's maker in the last few minutes. Returns the campaign; 404 or 403 otherwise.
-export function requireMakerSignIn(req: Request, body: { pool: PublicKey; message: string; signature: string }): CampaignRecord {
-  const record = getCampaign(body.pool.toBase58());
+// The maker's session on the orders page: a bearer token from /api/redemptions/signin for this campaign,
+// whose wallet is the campaign's maker. Returns the campaign; 404, 401 or 403 otherwise.
+export function requireMakerSession(req: Request, pool: PublicKey): CampaignRecord {
+  const record = getCampaign(pool.toBase58());
   if (!record) throw new HttpError("Campaign not found", 404);
-  // The page signs for the host it is open on, which the message starts with.
-  const hosts = siteHosts(process.env, getNetwork().name, req.url);
-  const domain = hosts.find((h) => body.message.startsWith(`${h} `));
-  if (!domain) throw new HttpError(`That sign-in is for another site. Open the orders page on ${hosts[0]} and sign in again.`, 403);
-  try {
-    verifyWalletMessage(body.message, body.signature, new PublicKey(record.maker), (issuedAt) => ordersMessage(record.pool, issuedAt, domain));
-  } catch (e) {
-    throw new HttpError(e instanceof Error ? e.message : "Not authorized", 403);
-  }
+  if (makerForSession(record.pool, bearerToken(req.headers.get("authorization"))) !== record.maker) throw new HttpError("Not authorized", 403);
   return record;
+}
+
+// The host a sign-in message names, which must be one of this site's hosts (siteHosts).
+export function signInDomain(req: Request, message: string): string {
+  const hosts = siteHosts(process.env, getNetwork().name, req.url);
+  const domain = hosts.find((h) => message.startsWith(`${h} `));
+  if (!domain) throw new HttpError(`That sign-in is for another site. Open the orders page on ${hosts[0]} and sign in again.`, 403);
+  return domain;
 }
 
 export function metadataResponse(id: string) {

@@ -139,6 +139,27 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    // The maker's sign-in: single-use nonces the server issues, and the short sessions a signed nonce
+    // buys. Only a hash of a session token is stored, so a copy of the database cannot open orders.
+    name: '0004_maker_sessions',
+    sql: `
+      CREATE TABLE signin_nonces (
+        nonce TEXT PRIMARY KEY,
+        pool TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX signin_nonces_created_at ON signin_nonces(created_at);
+      CREATE TABLE maker_sessions (
+        token_hash TEXT PRIMARY KEY,
+        pool TEXT NOT NULL,
+        maker TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX maker_sessions_expires_at ON maker_sessions(expires_at);
+    `,
+  },
 ]
 
 // node:sqlite prints an ExperimentalWarning on first load (Node 22); keep it out of the logs.
