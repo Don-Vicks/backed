@@ -27,6 +27,8 @@ pnpm core:inspect <pool | config | resale pool>       # decode a DBC config/pool
 pnpm build && pnpm start                              # production build + server of the web app, from the repo root
 pnpm core:launch --campaign examples/hoodie.json      # create a campaign from JSON
 pnpm core:reconcile                                   # list pending campaigns that landed, expire ones that never will
+pnpm core:backup                                      # write a store backup now and list the ones kept
+pnpm core:backup restore <file>                       # restore a backup over the database (stop the server first)
 pnpm core:seed:demo                                   # three realistic campaigns with photos (a hoodie, a mug, a keyboard); needs PUBLIC_BASE_URL; not on mainnet
 pnpm core:campaigns list | remove <pool>... [--yes]    # list this environment's campaigns, or remove test ones (dry run without --yes; only edits the app's list)
 cd packages/core && npx ts-node src/scripts/api-smoke.ts   # drive the full flow through the web API at WEB_URL (localnet, or devnet with PUBLIC_BASE_URL)

@@ -41,7 +41,8 @@ import { MEMO_PROGRAM_ID, REDEEM_MEMO_PREFIX, buildRedeemTx } from '../chain'
 
 const sign = (kp: Keypair, msg: string) => bs58.encode(nacl.sign.detached(new TextEncoder().encode(msg), kp.secretKey))
 const DOMAIN = 'backed.example'
-const expected = (at: string) => ordersMessage('POOL', at, DOMAIN)
+const NONCE = 'nonce-nonce-nonce-1'
+const expected = (at: string) => ordersMessage('POOL', at, DOMAIN, NONCE)
 const iso = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString()
 
 test('maker sign-in: a fresh message for this site and pool passes', () => {
@@ -76,8 +77,8 @@ test('maker sign-in: only the exact message counts, not one that contains it', (
   // The old check: any text that mentions the pool and ends with a date.
   assert.throws(check(`Sign up for our airdrop! POOL\nIssued at: ${at}`), /not for this page/)
   assert.throws(check(`Hello\n${expected(at)}`), /not for this page/)
-  assert.throws(check(ordersMessage('POOL', at, 'evil.example')), /not for this page/, 'signed for another site')
-  assert.throws(check(ordersMessage('OTHER', at, DOMAIN)), /not for this page/, 'signed for another campaign')
+  assert.throws(check(ordersMessage('POOL', at, 'evil.example', NONCE)), /not for this page/, 'signed for another site')
+  assert.throws(check(ordersMessage('OTHER', at, DOMAIN, NONCE)), /not for this page/, 'signed for another campaign')
   assert.throws(check(`${expected(at)}\n`), /not for this page/)
 })
 

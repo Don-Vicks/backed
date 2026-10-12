@@ -152,6 +152,39 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    // The maker's sign-in: single-use nonces the server issues, and the short sessions a signed nonce
+    // buys. Only a hash of a session token is stored, so a copy of the database cannot open orders.
+    name: '0005_maker_sessions',
+    sql: `
+      CREATE TABLE signin_nonces (
+        nonce TEXT PRIMARY KEY,
+        pool TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX signin_nonces_created_at ON signin_nonces(created_at);
+      CREATE TABLE maker_sessions (
+        token_hash TEXT PRIMARY KEY,
+        pool TEXT NOT NULL,
+        maker TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX maker_sessions_expires_at ON maker_sessions(expires_at);
+    `,
+  },
+  {
+    // The public half of a maker's inbox key (inbox-crypto.ts): backers seal shipping details to it.
+    // Set once per campaign, so orders already sealed to it never lose their key.
+    name: '0006_inbox_keys',
+    sql: `
+      CREATE TABLE inbox_keys (
+        pool TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL,
+        registered_at INTEGER NOT NULL
+      );
+    `,
+  },
 ]
 
 // node:sqlite prints an ExperimentalWarning on first load (Node 22); keep it out of the logs.

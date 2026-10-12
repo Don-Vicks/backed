@@ -1,4 +1,4 @@
-import { getCampaign, HttpError, prepareRedemption, schemas } from "@preorder/core";
+import { getCampaign, HttpError, prepareRedemption, getInboxKey, schemas, shippingFor } from "@preorder/core";
 import { connection, errorResponse, finalizeForWallet, rateLimit, readJson, requestLog, serialize } from "@/lib/server";
 
 // Step 1 of a redemption: the burn transaction for the wallet to sign, whose memo names a new redemption
@@ -8,10 +8,13 @@ export async function POST(req: Request) {
   const log = requestLog("POST /api/redemptions/prepare");
   try {
     rateLimit(req, "tx");
-    const { pool, wallet } = await readJson(req, schemas.redeemPrepare);
+    const { pool, wallet, shipping } = await readJson(req, schemas.redeemPrepare);
     log.wallet = wallet.toBase58();
     const record = getCampaign(pool.toBase58());
     if (!record) throw new HttpError("Campaign not found", 404);
+    // Plain details are only checked here (nothing is kept) and only when the maker has no inbox key; with
+    // one, the browser checks and seals them and prepare is sent none.
+    if (shipping || !getInboxKey(record.pool)) shippingFor(record.pool, { shipping });
     // 409 before graduation or for the pool's creator, 400 without a whole voucher; RPC errors are 500s.
     const { id, tx } = await prepareRedemption(connection(), record, wallet);
     return Response.json({ id, ...serialize(await finalizeForWallet(tx, wallet)) });

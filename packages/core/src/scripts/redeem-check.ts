@@ -36,10 +36,18 @@ async function main() {
   // A hijacker claims the holder's burn for a redemption of their own: only the burn sent for it counts.
   const forged = (await post('/api/redemptions/prepare', { pool, wallet: holder.publicKey.toBase58(), shipping: { ...shipping, name: 'Mallory' } })).body
   console.log('hijack        →', await post('/api/redemptions/confirm', { id: forged.id, signature: bs58.encode(tx.signature!) }))
-  const msg = ordersMessage(pool, new Date().toISOString(), new URL(BASE).host)
-  const signAs = (kp: typeof w.maker) => bs58.encode(nacl.sign.detached(new TextEncoder().encode(msg), kp.secretKey))
-  const asMaker = await post('/api/redemptions/list', { pool, message: msg, signature: signAs(w.maker) })
+  const signIn = async (kp: typeof w.maker) => {
+    const { nonce } = (await post('/api/redemptions/nonce', { pool })).body
+    const message = ordersMessage(pool, new Date().toISOString(), new URL(BASE).host, nonce)
+    return post('/api/redemptions/signin', { pool, message, signature: bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), kp.secretKey)) })
+  }
+  const list = async (token?: string) => {
+    const res = await fetch(`${BASE}/api/redemptions/list`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ pool }) })
+    return { status: res.status, body: await res.json().catch(() => ({})) }
+  }
+  const asMaker = await list((await signIn(w.maker)).body.token)
   console.log('maker list    →', asMaker.status, asMaker.body.redemptions?.map((r: any) => `${r.shipping?.name} ×${r.units}`))
-  console.log('non-maker     →', (await post('/api/redemptions/list', { pool, message: msg, signature: signAs(w.backer1) })).status)
+  console.log('non-maker     →', (await signIn(w.backer1)).status)
+  console.log('no session    →', (await list()).status)
 }
 main().catch((e) => { console.error('FAILED', e.stack ?? e); process.exit(1) })

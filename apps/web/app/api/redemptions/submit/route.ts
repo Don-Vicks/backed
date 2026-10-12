@@ -1,4 +1,4 @@
-import { getCampaign, HttpError, schemas, submitRedemption } from "@preorder/core";
+import { getCampaign, HttpError, schemas, shippingFor, submitRedemption } from "@preorder/core";
 import { connection, errorResponse, logLine, rateLimit, readJson, requestLog } from "@/lib/server";
 
 // Step 2: the burn from prepare, signed by the wallet, with the shipping details. The server keeps them
@@ -9,10 +9,10 @@ export async function POST(req: Request) {
   const log = requestLog("POST /api/redemptions/submit");
   try {
     rateLimit(req, "tx");
-    const { pool, id, tx, shipping } = await readJson(req, schemas.redeemSubmit);
+    const { pool, id, tx, shipping, sealed } = await readJson(req, schemas.redeemSubmit);
     const record = getCampaign(pool.toBase58());
     if (!record) throw new HttpError("Campaign not found", 404);
-    const { redemption, already } = await submitRedemption(connection(), record, Buffer.from(tx, "base64"), id, shipping);
+    const { redemption, already } = await submitRedemption(connection(), record, Buffer.from(tx, "base64"), id, shippingFor(record.pool, { shipping, sealed }));
     log.wallet = redemption.wallet;
     log.sig = redemption.signature;
     if (!already) logLine("info", { reqId: log.reqId, route: log.route, wallet: log.wallet, sig: log.sig, pool: record.pool, id, units: redemption.units, event: "redemption" });
