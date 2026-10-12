@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { imageSrc } from "@/lib/image-src";
-import { usd, units } from "@/lib/format";
+import { usd, unitsShort } from "@/lib/format";
 import type { CampaignWithLive } from "@/lib/types";
 
 const STATUS_LABEL = { funding: "Funding", funded: "Goal reached", reselling: "Reselling" } as const;
@@ -42,7 +42,7 @@ export function CampaignCard({ c }: { c: CampaignWithLive }) {
               </div>
               <div>
                 <dt className="text-muted-foreground">Sold</dt>
-                <dd className="font-mono tabular-nums">{units(live.unitsSold)} / {unitsTotal}</dd>
+                <dd className="font-mono tabular-nums">{unitsShort(live.unitsSold)} / {unitsTotal}</dd>
               </div>
             </dl>
           </>

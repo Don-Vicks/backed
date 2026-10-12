@@ -342,7 +342,7 @@ export function CreateForm() {
       </form>
 
       <aside className="lg:sticky lg:top-24 lg:self-start" aria-label="Live preview">
-        <CampaignPreview name={name} makerName={makerName} description={description} image={imagePreview ?? image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
+        <CampaignPreview plan={pricing.ok ? (campaign.plan as TierPlan) : null} name={name} makerName={makerName} description={description} image={imagePreview ?? image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
       </aside>
     </div>
   );

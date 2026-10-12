@@ -12,6 +12,12 @@ export function units(n: number) {
   return n.toLocaleString("en-US", { maximumFractionDigits: n < 10 ? 2 : 1 });
 }
 
+// Unit counts in summaries (cards, totals): whole when within a hair of one, else one decimal, so 0.98 reads 1 and 2.93 reads 2.9.
+export function unitsShort(n: number) {
+  const r = Math.round(n);
+  return Math.abs(n - r) < 0.05 ? r.toLocaleString("en-US") : n.toLocaleString("en-US", { maximumFractionDigits: 1 });
+}
+
 // Vouchers a buy delivers, rounded down so a count is never overstated: 2.000018 reads 2, 5.999986 reads 5.99.
 export function unitsDown(n: number) {
   return (Math.floor(n * 100 + 1e-9) / 100).toLocaleString("en-US", { maximumFractionDigits: 2 });

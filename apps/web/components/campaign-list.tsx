@@ -1,19 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CampaignCard } from "@/components/campaign-card";
-import { api } from "@/lib/client";
-import type { CampaignWithLive } from "@/lib/types";
+import { useCampaigns } from "@/components/featured-campaign";
 
 export function CampaignList() {
-  const { data, isPending, isError, error, refetch } = useQuery({
-    queryKey: ["campaigns"],
-    queryFn: () => api<{ campaigns: CampaignWithLive[] }>("/api/campaigns"),
-    refetchInterval: 10_000,
-  });
+  const { data, isPending, isError, error, refetch } = useCampaigns();
 
   if (isPending) {
     return (

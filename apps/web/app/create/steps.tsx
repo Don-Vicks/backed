@@ -4,7 +4,7 @@
 // the launch logic (build, sign, resume, recover) stays in create-form.tsx.
 import type { ReactNode } from "react";
 import { Check, Minus, Plus } from "lucide-react";
-import { MAX_TIERS } from "@preorder/core/src/pricing";
+import { MAX_TIERS, type TierPlan } from "@preorder/core/src/pricing";
 import {
   DESCRIPTION_MAX_CHARS,
   DROP_BOT_START_FEE_BPS,
@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhotoField } from "@/components/photo-field";
+import { CurveChart } from "@/components/curve-chart";
 import { Progress } from "@/components/ui/progress";
 import { imageSrc } from "@/lib/image-src";
 import { units, usd } from "@/lib/format";
@@ -42,7 +43,7 @@ export function deriveTicker(name: string): string {
 export function StepIndicator({ step, maxStep, onGo }: { step: number; maxStep: number; onGo: (n: number) => void }) {
   return (
     <nav aria-label="Progress">
-      <ol className="flex flex-wrap gap-x-4 gap-y-2">
+      <ol className="grid grid-cols-4 gap-2">
         {STEP_LABELS.map((label, i) => {
           const n = i + 1;
           const current = n === step;
@@ -54,16 +55,19 @@ export function StepIndicator({ step, maxStep, onGo }: { step: number; maxStep: 
                 onClick={() => onGo(n)}
                 disabled={n > maxStep}
                 aria-current={current ? "step" : undefined}
-                className="flex min-h-10 items-center gap-2 rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+                className="group flex w-full flex-col gap-2 rounded-md pt-1 text-left text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
               >
-                <span
-                  className={`grid size-7 shrink-0 place-items-center rounded-full font-mono text-xs ${
-                    current ? "bg-primary text-primary-foreground" : done ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  {done ? <Check aria-hidden="true" className="size-3.5" /> : n}
+                <span aria-hidden="true" className={`h-1 w-full rounded-full transition-colors duration-500 ${current || done ? "bg-brand-gradient" : "bg-muted"}`} />
+                <span className="flex items-start gap-1.5">
+                  <span
+                    className={`mt-px grid size-5 shrink-0 place-items-center rounded-full font-mono text-[11px] ${
+                      current ? "bg-primary text-primary-foreground" : done ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {done ? <Check aria-hidden="true" className="size-3" /> : n}
+                  </span>
+                  <span className={`text-xs leading-snug sm:text-sm ${current ? "font-medium text-foreground" : "hidden text-muted-foreground md:inline"}`}>{label}</span>
                 </span>
-                <span className={`${current ? "font-medium text-foreground" : "hidden text-muted-foreground sm:inline"}`}>{label}</span>
               </button>
             </li>
           );
@@ -443,6 +447,7 @@ export function ReviewStep(p: {
 // The live preview -------------------------------------------------------------------------------
 
 export function CampaignPreview(p: {
+  plan: TierPlan | null;
   name: string;
   makerName: string;
   description: string;
@@ -497,6 +502,7 @@ export function CampaignPreview(p: {
         {p.pricing && (
           <div className="border-t border-border pt-3">
             <p className="mb-1 text-xs text-muted-foreground">Price ladder: the earlier you back, the less you pay</p>
+            {p.plan && <div className="-mx-1 mb-2"><CurveChart plan={p.plan} unitsSold={0} /></div>}
             <ol className="grid gap-1 text-sm">
               {p.pricing.segments.map((s, i) => (
                 <li key={i} className="flex items-baseline justify-between gap-3">

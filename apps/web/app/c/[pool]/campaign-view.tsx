@@ -22,7 +22,7 @@ import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { RedeemPanel } from "@/components/redeem-panel";
 import { CurveChart } from "@/components/curve-chart";
 import { OnChainCard } from "@/components/onchain-card";
-import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, usd } from "@/lib/format";
+import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, unitsShort, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
 import { imageSrc } from "@/lib/image-src";
@@ -133,7 +133,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
             </div>
             <div>
               <dt className="text-muted-foreground">Pre-orders sold</dt>
-              <dd className="font-mono tabular-nums">{units(live.unitsSold)} / {unitsTotal}</dd>
+              <dd className="font-mono tabular-nums">{unitsShort(live.unitsSold)} / {unitsTotal}</dd>
             </div>
           </dl>
         </div>
