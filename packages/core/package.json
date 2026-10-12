@@ -10,6 +10,7 @@
     "test": "node -r ts-node/register --test src/__tests__/*.test.ts",
     "launch": "ts-node src/scripts/launch.ts",
     "reconcile": "ts-node src/scripts/reconcile.ts",
+    "backup": "ts-node src/scripts/backup.ts",
     "inspect": "ts-node src/scripts/inspect.ts",
     "seed:localnet": "ts-node src/scripts/seed-localnet.ts",
     "api-negative": "ts-node src/scripts/api-negative.ts",

@@ -1,5 +1,5 @@
 // Runs once when the server starts. Checks SHIPPING_KEY, opens the store and starts the pending-campaign
-// reconcile job on the Node.js runtime.
+// reconcile and backup jobs on the Node.js runtime.
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   const { db, getNetwork, shippingKeyStatus } = await import("@preorder/core");
@@ -16,4 +16,6 @@ export async function register() {
   }
   const { startReconcileJob } = await import("./lib/reconcile-job");
   startReconcileJob();
+  const { startBackupJob } = await import("./lib/backup-job");
+  startBackupJob();
 }

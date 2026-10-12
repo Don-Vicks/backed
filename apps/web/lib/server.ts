@@ -18,6 +18,7 @@ import {
   readTrustSignals,
   publicOrigins as resolvePublicOriginsAll,
   resolvePublicOrigin,
+  sendAlert,
   scoreSignals,
   siteHosts,
   SwapError,
@@ -173,6 +174,8 @@ export function errorResponse(e: unknown, log?: RequestLog, opts: { field?: "err
     err: e instanceof Error ? e.message : String(e),
     ...(!known && e instanceof Error && { stack: e.stack }),
   });
+  // One throttled message per route, so an outage is one alert, not one per request.
+  void sendAlert(`5xx:${log?.route ?? "unknown"}`, `${status} on ${log?.route ?? "an API route"} (ref ${reqId}): ${e instanceof Error ? e.message : String(e)}`.slice(0, 500));
   const message = known ? (e as Error).message : "Something went wrong on our side.";
   return Response.json({ [field]: `${message} (ref ${reqId})`, requestId: reqId }, { status, headers: opts.headers });
 }
