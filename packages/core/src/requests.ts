@@ -140,9 +140,12 @@ export const schemas = {
     slippageBps: slippage,
   }),
   faucet: z.object({ wallet: addressSchema('wallet') }),
-  redeemPrepare: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet'), shipping }),
+  // shipping is sent in the clear only for a campaign whose maker has no inbox key; otherwise the
+  // browser seals it (redeemSubmit.sealed) and prepare gets nothing.
+  redeemPrepare: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet'), shipping: shipping.optional() }),
   // The burn prepare built for `id`, signed by the wallet, with the shipping details it is for.
-  redeemSubmit: z.object({ pool: addressSchema('pool'), id: redemptionId, tx: signedTx, shipping }),
+  redeemSubmit: z.object({ pool: addressSchema('pool'), id: redemptionId, tx: signedTx, shipping: shipping.optional(), sealed: z.string({ error: 'sealed must be text' }).max(3000, { error: 'sealed is too large' }).optional() }),
+  ordersInbox: ordersPool.extend({ publicKey: z.string({ error: 'publicKey is missing' }).regex(/^[A-Za-z0-9_-]{43}$/, { error: 'publicKey is not an inbox key' }) }),
   redeemConfirm: z.object({ id: redemptionId, signature: signatureSchema }),
   redeemPending: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet') }),
   ordersNonce: ordersPool,

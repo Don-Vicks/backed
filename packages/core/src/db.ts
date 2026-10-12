@@ -160,6 +160,18 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX maker_sessions_expires_at ON maker_sessions(expires_at);
     `,
   },
+  {
+    // The public half of a maker's inbox key (inbox-crypto.ts): backers seal shipping details to it.
+    // Set once per campaign, so orders already sealed to it never lose their key.
+    name: '0005_inbox_keys',
+    sql: `
+      CREATE TABLE inbox_keys (
+        pool TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL,
+        registered_at INTEGER NOT NULL
+      );
+    `,
+  },
 ]
 
 // node:sqlite prints an ExperimentalWarning on first load (Node 22); keep it out of the logs.

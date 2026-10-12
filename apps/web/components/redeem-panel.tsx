@@ -8,6 +8,7 @@ import { CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ShippingForm, type ShippingDetails } from "@/components/shipping-form";
+import { checkShipping, sealToMaker } from "@preorder/core/src/inbox-crypto";
 import { api, ApiError, ReportedError, useSignAndSend, type BuiltTx } from "@/lib/client";
 import type { CampaignWithLive } from "@/lib/types";
 
@@ -80,14 +81,22 @@ export function RedeemPanel({ c, vouchers, onDone }: { c: CampaignWithLive; vouc
     setNotice(null);
     let maybeBurned = false;
     try {
-      const prepare = () => api<BuiltTx & { id: string }>("/api/redemptions/prepare", { pool: c.pool, wallet, shipping });
+      // With an inbox key the details are checked and sealed to the maker here; the server only ever sees ciphertext.
+      let details: { shipping: ShippingDetails } | { sealed: string };
+      if (c.inboxKey) {
+        const clean = { name: shipping.name.trim(), email: shipping.email.trim(), address: shipping.address.trim(), country: shipping.country.trim() };
+        const problem = checkShipping(clean);
+        if (problem) throw new Error(problem);
+        details = { sealed: sealToMaker(clean, c.inboxKey) };
+      } else details = { shipping };
+      const prepare = () => api<BuiltTx & { id: string }>("/api/redemptions/prepare", { pool: c.pool, wallet, ...("shipping" in details ? details : {}) });
       let built = await prepare();
       // The server sends the signed burn and records the order once it lands. A 4xx (or a 500) means
       // nothing was burned; a 503, a gateway error or no answer at all means it may have been.
       const submit = async (signed: Transaction) => {
         try {
           const tx = signed.serialize().toString("base64");
-          return (await api<{ signature: string }>("/api/redemptions/submit", { pool: c.pool, id: built.id, tx, shipping })).signature;
+          return (await api<{ signature: string }>("/api/redemptions/submit", { pool: c.pool, id: built.id, tx, ...details })).signature;
         } catch (e) {
           if (!(e instanceof ApiError) || e.status > 500) maybeBurned = true;
           throw e;
@@ -151,6 +160,7 @@ export function RedeemPanel({ c, vouchers, onDone }: { c: CampaignWithLive; vouc
         <ShippingForm
           key={formKey}
           productName={c.campaign.name}
+          private={!!c.inboxKey}
           submitting={submitting}
           error={error}
           onSubmit={redeem}

@@ -10,12 +10,14 @@ export type ShippingDetails = { name: string; email: string; address: string; co
 // wallet then signs names them, so nobody else can claim that burn with other details.
 export function ShippingForm({
   productName,
+  private: sealed,
   submitting,
   error,
   onSubmit,
   onCancel,
 }: {
   productName: string;
+  private: boolean; // sealed to the maker in this browser, so the platform cannot read it
   submitting: boolean;
   error: string | null;
   onSubmit: (shipping: ShippingDetails) => void;
@@ -34,7 +36,7 @@ export function ShippingForm({
       <div>
         <h2 className="font-heading text-2xl">Where should it ship?</h2>
         <p className="text-sm text-muted-foreground">
-          Next, your wallet burns 1 voucher for your {productName}. Only the maker sees these details; they are never published.
+          Next, your wallet burns 1 voucher for your {productName}. {sealed ? "Your details are encrypted in your browser for the maker; Backed’s servers can’t read them." : "Only the maker sees these details; they are never published."}
         </p>
       </div>
       <div className="grid gap-2">

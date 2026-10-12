@@ -1,4 +1,4 @@
-import { campaignListing, getCampaign, poolListingAddress, readLpTerms, readPoolListingCached, readResaleConfig } from "@preorder/core";
+import { campaignListing, getCampaign, getInboxKey, poolListingAddress, readLpTerms, readPoolListingCached, readResaleConfig } from "@preorder/core";
 import { connection, errorResponse, liveOrUnavailable, publicOrigins, rateLimit, requestLog } from "@/lib/server";
 
 // ?fresh=1 skips the cache (rate-limited): the page asks for it right after a graduation, to show it.
@@ -24,7 +24,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/campaigns/[pool]
         .then((l) => l && { ...l, address: poolListingAddress(record.pool).toBase58(), official: publicOrigins(req).some((o) => l.website === campaignListing(record, o).website) })
         .catch(() => undefined),
     ]);
-    return Response.json({ campaign: { ...record, live, terms, resaleFee, listing } });
+    return Response.json({ campaign: { ...record, live, terms, resaleFee, listing, inboxKey: getInboxKey(record.pool) } });
   } catch (e) {
     return errorResponse(e, log);
   }

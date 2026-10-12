@@ -39,3 +39,12 @@ scripts/localnet    start/stop/dump a validator with the mainnet Meteora program
 - **Maker orders.** The maker asks the server for a single-use nonce (`/api/redemptions/nonce`), signs a message naming this site's host, the campaign and the nonce (exact text, dated within the last 5 minutes, not in the future), and trades it for a 30-minute session token (`/api/redemptions/signin`). The nonce is spent by a valid signature, so a leaked signature cannot be replayed. The token is random, stored only as a hash, and sent as a bearer header; `/api/redemptions/signout` ends it. With it the maker can list orders, download a CSV (cells that a spreadsheet would run as a formula are neutralised) and mark orders shipped, which deletes their shipping details.
 
 Stack: `@meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, `@meteora-ag/cp-amm-sdk@1.5.0`, `@solana/web3.js` v1, Next.js 16, React 19, Tailwind 4, shadcn/ui, Solana wallet adapter.
+
+## Private shipping details
+
+A maker can turn on **private addresses** on the orders page. Their wallet signs a fixed message (`inboxMessage`, naming the campaign and the site) and the signature seeds an X25519 key pair (`inboxKeyPair`); ed25519 signatures are deterministic, so the same wallet gets the same key on any device and the private half is never stored. The public half is registered once per campaign (`/api/redemptions/inbox`, immutable after that, so orders sealed to it never lose their key) and served with the campaign.
+
+When a campaign has an inbox key the backer's browser validates the details (`checkShipping`) and seals them to it with a NaCl box under a fresh ephemeral key (`sealToMaker`), and the server accepts only that (`shippingFor` refuses plain details). The server stores the ciphertext as it is and hands it to the maker's browser, which opens it (`openFromBackers`). Backed's database, logs and backups never hold the plain address. Without an inbox key the older path applies: plain details over TLS, sealed at rest under `SHIPPING_KEY`.
+
+What this does not do: the maker still sees the address (they must ship it), a maker whose wallet is compromised loses it, and a site that tricks the wallet into signing the exact `inboxMessage` for this host could derive the key, which is why the message says so plainly. Orders placed before a maker turned this on stay server-sealed.
+

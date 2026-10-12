@@ -5,8 +5,9 @@ import { useState } from "react";
 import bs58 from "bs58";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { ArrowLeft, Download, Lock, PackageCheck } from "lucide-react";
+import { ArrowLeft, Download, Lock, PackageCheck, ShieldCheck } from "lucide-react";
 import { toCsv } from "@preorder/core/src/csv";
+import { encodeInboxKey, inboxKeyPair, inboxMessage, openFromBackers } from "@preorder/core/src/inbox-crypto";
 import { ordersMessage } from "@preorder/core/src/messages";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
@@ -19,6 +20,7 @@ type Redemption = {
   createdAt: string;
   shippedAt?: string;
   unreadable?: true;
+  sealed?: string; // sealed to the maker's inbox key; opened here, in the browser
   // null once shipped, or when no configured key opens it (SHIPPING_KEY changed without SHIPPING_KEY_PREVIOUS).
   shipping: { name: string; email: string; address: string; country: string } | null;
 };
@@ -48,6 +50,28 @@ async function reuseOrSignIn(last: Session | null, pool: string, signMessage?: (
   return api<Session>("/api/redemptions/signin", { pool, message, signature });
 }
 
+type SignMessage = (message: Uint8Array) => Promise<Uint8Array>;
+type Inbox = ReturnType<typeof inboxKeyPair>;
+
+// The maker's inbox key pair: the wallet signs a fixed message and the signature seeds the key, so the
+// same wallet gets the same key on any device and the server never holds the private half.
+async function deriveInbox(pool: string, signMessage?: SignMessage): Promise<Inbox> {
+  if (!signMessage) throw new Error("This wallet can’t sign messages. Try Phantom, Solflare or Backpack.");
+  return inboxKeyPair(await signMessage(new TextEncoder().encode(inboxMessage(pool, window.location.host))));
+}
+
+// Opens the orders sealed to the inbox key; one that doesn't open is shown as unreadable, the rest still show.
+function openOrders(rows: Redemption[], inbox: Inbox): Redemption[] {
+  return rows.map((r) => {
+    if (!r.sealed) return r;
+    try {
+      return { ...r, sealed: undefined, shipping: openFromBackers(r.sealed, inbox.secretKey) };
+    } catch {
+      return { ...r, unreadable: true };
+    }
+  });
+}
+
 // Keyed on the connected wallet: disconnecting or switching wallets drops the orders (and their
 // shipping details) from the screen along with the sign-in.
 export function OrdersView({ pool }: { pool: string }) {
@@ -63,6 +87,9 @@ function Orders({ pool }: { pool: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
+  const [inboxKey, setInboxKey] = useState<string | null>(null); // the registered key, when the maker has turned on private addresses
+  const [inbox, setInbox] = useState<Inbox | null>(null);
+  const [enabling, setEnabling] = useState(false);
   const [shipping, setShipping] = useState<string | null>(null); // the order being marked shipped
 
   async function signedIn(): Promise<{ Authorization: string }> {
@@ -77,12 +104,39 @@ function Orders({ pool }: { pool: string }) {
     setError(null);
     try {
       const auth = await signedIn();
-      const { redemptions } = await api<{ redemptions: Redemption[] }>("/api/redemptions/list", { pool }, auth);
-      setRows(redemptions);
+      const { redemptions, inboxKey: key } = await api<{ redemptions: Redemption[]; inboxKey: string | null }>("/api/redemptions/list", { pool }, auth);
+      setInboxKey(key);
+      // Orders sealed to the inbox key open here with a key only this wallet can make.
+      let opened = redemptions;
+      if (key && redemptions.some((r) => r.sealed)) {
+        const pair = inbox ?? (await deriveInbox(pool, signMessage));
+        if (encodeInboxKey(pair.publicKey) !== key) throw new Error("This wallet’s inbox key doesn’t match the one registered for this campaign.");
+        setInbox(pair);
+        opened = openOrders(redemptions, pair);
+      }
+      setRows(opened);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn’t load orders");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Registers the inbox key so backers seal their details to it from now on.
+  async function enableInbox() {
+    setEnabling(true);
+    setError(null);
+    try {
+      const auth = await signedIn();
+      const pair = inbox ?? (await deriveInbox(pool, signMessage));
+      const publicKey = encodeInboxKey(pair.publicKey);
+      await api("/api/redemptions/inbox", { pool, publicKey }, auth);
+      setInbox(pair);
+      setInboxKey(publicKey);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn’t turn on private addresses");
+    } finally {
+      setEnabling(false);
     }
   }
 
@@ -114,6 +168,18 @@ function Orders({ pool }: { pool: string }) {
       <p className="mt-2 max-w-xl text-muted-foreground">
         Each order is backed by a voucher burn on-chain. Only the campaign’s maker wallet can see shipping details, and marking an order shipped deletes them.
       </p>
+
+      {rows !== null && !inboxKey && (
+        <div className="mt-6 rounded-xl border border-primary/40 bg-card p-5">
+          <p className="flex items-center gap-2 font-medium"><ShieldCheck aria-hidden="true" className="size-4 text-primary" /> Keep addresses private from Backed’s servers</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Turn this on and backers’ shipping details are encrypted in their browser for you alone; only this wallet can open them. Orders placed before you turn it on stay as they are.
+            Your wallet signs one message to make the key; it costs nothing.
+          </p>
+          <Button className="mt-3" variant="secondary" onClick={enableInbox} disabled={enabling}>{enabling ? "Waiting for signature…" : "Turn on private addresses"}</Button>
+          {error && <p className="mt-3 text-sm text-destructive" role="alert">{error}</p>}
+        </div>
+      )}
 
       {rows === null ? (
         <div className="mt-8 rounded-xl border border-border bg-card p-6">

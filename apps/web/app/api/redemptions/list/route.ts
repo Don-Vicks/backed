@@ -1,4 +1,4 @@
-import { listRedemptions, schemas } from "@preorder/core";
+import { getInboxKey, listRedemptions, schemas } from "@preorder/core";
 import { errorResponse, readJson, requestLog, requireMakerSession } from "@/lib/server";
 
 // Maker-only: the maker signs in (nonce, then signature) for a short session to see shipping details.
@@ -8,7 +8,7 @@ export async function POST(req: Request) {
     const body = await readJson(req, schemas.ordersList);
     const record = requireMakerSession(req, body.pool);
     log.wallet = record.maker;
-    return Response.json({ redemptions: listRedemptions(record.pool) });
+    return Response.json({ redemptions: listRedemptions(record.pool), inboxKey: getInboxKey(record.pool) });
   } catch (e) {
     return errorResponse(e, log);
   }
