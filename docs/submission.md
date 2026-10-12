@@ -14,13 +14,15 @@ Backed is pre-orders for real products, priced on a Meteora Dynamic Bonding Curv
 - Backers buy whole units (ExactOut swaps with slippage minimums), can exit at the curve price before the goal, and redeem by burning a voucher. The burn's memo binds it to their encrypted shipping details.
 - The platform is the DBC partner and claims its side from chain.
 
+**Who it's for first:** limited merch drops for crypto communities (hackathon teams, DAOs, creator communities). Their buyers already hold wallets and USDC, so there's no onboarding barrier, and limited runs are exactly where resale happens. Next: email sign-in, card checkout and sponsored fees so shoppers without a wallet can back too.
+
 There's no custom program: every rule is DBC config, DAMM v2 and SPL burns. The whole lifecycle is tested in CI against the mainnet DBC and DAMM v2 binaries on a local validator, once through the SDK and once clicked through the app in a real browser, from launch to a shipped order. The app is dressed in Meteora's own design language and draws each campaign's DBC price curve.
 
 **Project Github Link**
 https://github.com/Don-Vicks/backed (to replicate and test it: [`docs/replicate.md`](replicate.md))
 
 **Project Website**
-https://backed.up.railway.app (devnet; press "Get test USDC" after connecting a wallet)
+https://backed.up.railway.app (devnet; press "Get test USDC" after connecting a wallet). Real devnet transactions for a full campaign: [`docs/proof-on-devnet.md`](proof-on-devnet.md)
 
 **Project X Link**
 (optional)
