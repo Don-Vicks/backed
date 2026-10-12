@@ -26,6 +26,7 @@ const PUBLIC_RPC_DEFAULTS: Record<string, string> = {
 if (!(NETWORK in PUBLIC_RPC_DEFAULTS)) throw new Error(`NETWORK must be localnet, devnet or mainnet, got ${NETWORK}`);
 
 const nextConfig: NextConfig = {
+  devIndicators: false, // the dev-only badge sits over the page in demos and screenshots
   env: {
     NEXT_PUBLIC_NETWORK: NETWORK,
     NEXT_PUBLIC_RPC_URL: process.env.PUBLIC_RPC_URL || PUBLIC_RPC_DEFAULTS[NETWORK],

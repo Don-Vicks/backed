@@ -258,7 +258,7 @@ export function CreateForm() {
   return (
     <div className="grid gap-8 lg:grid-cols-[1.1fr_1fr]">
       <form
-        className="flex flex-col gap-8"
+        className="flex flex-col gap-8 rounded-2xl border border-border bg-card/50 p-5 backdrop-blur sm:p-8"
         onSubmit={(e) => {
           e.preventDefault();
           if (!onFinalStep) {
@@ -342,7 +342,7 @@ export function CreateForm() {
       </form>
 
       <aside className="lg:sticky lg:top-24 lg:self-start" aria-label="Live preview">
-        <CampaignPreview name={name} makerName={makerName} description={description} image={imagePreview ?? image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
+        <CampaignPreview plan={pricing.ok ? (campaign.plan as TierPlan) : null} name={name} makerName={makerName} description={description} image={imagePreview ?? image} pricing={pricing.ok} shipDays={shipDays} tier={tier} />
       </aside>
     </div>
   );

@@ -4,7 +4,7 @@
 // the launch logic (build, sign, resume, recover) stays in create-form.tsx.
 import type { ReactNode } from "react";
 import { Check, Minus, Plus } from "lucide-react";
-import { MAX_TIERS } from "@preorder/core/src/pricing";
+import { MAX_TIERS, type TierPlan } from "@preorder/core/src/pricing";
 import {
   DESCRIPTION_MAX_CHARS,
   DROP_BOT_START_FEE_BPS,
@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhotoField } from "@/components/photo-field";
+import { CurveChart } from "@/components/curve-chart";
 import { Progress } from "@/components/ui/progress";
 import { imageSrc } from "@/lib/image-src";
 import { units, usd } from "@/lib/format";
@@ -42,7 +43,7 @@ export function deriveTicker(name: string): string {
 export function StepIndicator({ step, maxStep, onGo }: { step: number; maxStep: number; onGo: (n: number) => void }) {
   return (
     <nav aria-label="Progress">
-      <ol className="flex flex-wrap gap-x-4 gap-y-2">
+      <ol className="grid grid-cols-4 gap-2">
         {STEP_LABELS.map((label, i) => {
           const n = i + 1;
           const current = n === step;
@@ -54,16 +55,19 @@ export function StepIndicator({ step, maxStep, onGo }: { step: number; maxStep: 
                 onClick={() => onGo(n)}
                 disabled={n > maxStep}
                 aria-current={current ? "step" : undefined}
-                className="flex min-h-10 items-center gap-2 rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+                className="group flex w-full flex-col gap-2 rounded-md pt-1 text-left text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
               >
-                <span
-                  className={`grid size-7 shrink-0 place-items-center rounded-full font-mono text-xs ${
-                    current ? "bg-primary text-primary-foreground" : done ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  {done ? <Check aria-hidden="true" className="size-3.5" /> : n}
+                <span aria-hidden="true" className={`h-1 w-full rounded-full transition-colors duration-500 ${current || done ? "bg-brand-gradient" : "bg-muted"}`} />
+                <span className="flex items-start gap-1.5">
+                  <span
+                    className={`mt-px grid size-5 shrink-0 place-items-center rounded-full font-mono text-[11px] ${
+                      current ? "bg-primary text-primary-foreground" : done ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {done ? <Check aria-hidden="true" className="size-3" /> : n}
+                  </span>
+                  <span className={`text-xs leading-snug sm:text-sm ${current ? "font-medium text-foreground" : "hidden text-muted-foreground md:inline"}`}>{label}</span>
                 </span>
-                <span className={`${current ? "font-medium text-foreground" : "hidden text-muted-foreground sm:inline"}`}>{label}</span>
               </button>
             </li>
           );
@@ -76,7 +80,7 @@ export function StepIndicator({ step, maxStep, onGo }: { step: number; maxStep: 
 function StepHeading({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div>
-      <h2 className="font-heading text-4xl tracking-tight">{title}</h2>
+      <h2 className="font-heading text-3xl tracking-tight sm:text-4xl">{title}</h2>
       {children && <p className="mt-1 text-muted-foreground">{children}</p>}
     </div>
   );
@@ -443,6 +447,7 @@ export function ReviewStep(p: {
 // The live preview -------------------------------------------------------------------------------
 
 export function CampaignPreview(p: {
+  plan: TierPlan | null;
   name: string;
   makerName: string;
   description: string;
@@ -455,15 +460,22 @@ export function CampaignPreview(p: {
   const last = p.pricing?.segments[p.pricing.segments.length - 1];
   const initials = (p.name.trim().match(/[A-Za-z0-9]+/g) ?? ["?"]).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card">
-      <p className="border-b border-border px-4 py-2 text-xs tracking-wide text-muted-foreground uppercase">What backers will see</p>
+    <div className="overflow-hidden rounded-2xl ring-brand-gradient bg-card shadow-[0_40px_120px_-50px_rgba(110,69,255,0.5)]">
+      <p className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs tracking-wide text-muted-foreground uppercase">
+        <span className="relative flex size-2" aria-hidden="true">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60 motion-reduce:animate-none" />
+          <span className="relative inline-flex size-2 rounded-full bg-primary" />
+        </span>
+        Live preview · what backers will see
+      </p>
       <div className="aspect-[16/9] bg-muted">
         {p.image.trim() ? (
           // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL on an arbitrary host
           <img src={imageSrc(p.image.trim())} alt="" className="h-full w-full object-cover" />
         ) : (
-          <div className="flex h-full items-center justify-center font-heading text-6xl text-muted-foreground" aria-hidden="true">
-            {initials}
+          <div className="relative flex h-full flex-col items-center justify-center gap-3 bg-[radial-gradient(70%_90%_at_20%_0%,rgba(110,69,255,0.28),transparent_60%),radial-gradient(60%_80%_at_100%_100%,rgba(245,75,0,0.22),transparent_60%)]" aria-hidden="true">
+            <span className="text-brand-gradient font-heading text-6xl tracking-[-0.04em]">{initials}</span>
+            <span className="text-xs text-muted-foreground">Add a photo in step 1</span>
           </div>
         )}
       </div>
@@ -497,6 +509,7 @@ export function CampaignPreview(p: {
         {p.pricing && (
           <div className="border-t border-border pt-3">
             <p className="mb-1 text-xs text-muted-foreground">Price ladder: the earlier you back, the less you pay</p>
+            {p.plan && <div className="-mx-1 mb-2"><CurveChart plan={p.plan} unitsSold={0} /></div>}
             <ol className="grid gap-1 text-sm">
               {p.pricing.segments.map((s, i) => (
                 <li key={i} className="flex items-baseline justify-between gap-3">

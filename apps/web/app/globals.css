@@ -179,3 +179,9 @@
 .wallet-adapter-modal-button-close { background: var(--secondary); }
 .wallet-adapter-button { font-family: var(--font-inter), sans-serif; }
 .wallet-adapter-modal-list .wallet-adapter-button:not([disabled]):hover { background: var(--accent); }
+
+/* The featured campaign's countdown bar, under its switcher chip. */
+@keyframes featured-timer {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}

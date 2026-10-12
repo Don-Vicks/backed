@@ -65,33 +65,44 @@ test("a wallet with nothing gets test USDC from the faucet", async () => {
   await succeeded(page, /USDC/);
 });
 
-test("the maker sees the DBC config and the curve, then launches", async () => {
+test("the maker steps through the create form, sees the DBC config, then launches", async () => {
   const { page, wallet } = actors.maker;
+  const next = () => page.getByRole("button", { name: /^Continue/ }).click();
   await page.goto("/create");
-  await expect(page.getByText(/Tier A/).first()).toBeVisible();
+  // Step 1: the product.
   await page.fill("#name", "E2E Hoodie");
-  await page.fill("#symbol", "E2EH");
+  await page.fill("#makerName", "E2E Studio");
   await page.fill("#description", "Browser test campaign.");
+  await next();
+  // Step 2: the price tiers.
   await page.fill("#units-0", "3");
   await page.fill("#price-0", "4");
   if (!(await page.locator("#units-1").count())) await page.getByRole("button", { name: /Add tier/ }).click();
   await page.fill("#units-1", "4");
   await page.fill("#price-1", "5");
   await page.fill("#final", "6");
+  await next();
+  // Step 3: the payout, the maker's trust level and the advanced settings.
+  await expect(page.getByText(/^Level A · up to/).first()).toBeVisible();
+  await page.getByText(/^Advanced settings/).click();
+  await page.fill("#symbol", "E2EH");
   await page.fill("#royalty", "5");
-  // The server's config preview catches up with the form (it is debounced).
+  await next();
+  // Step 4: the review, with the exact DBC mapping (the server's preview is debounced).
+  await page.getByText(/how this becomes an on-chain contract/).click();
   await expect(page.locator("li").filter({ hasText: "migrationQuoteThreshold" })).toContainText("$35.33");
   await expect(page.locator("li").filter({ hasText: "migratedPoolFee" })).toContainText("5%");
   await expect(page.getByText("creatorLiquidityVestingInfo")).toBeVisible();
-  await expect(page.getByRole("img", { name: /Pre-order price curve/ })).toBeVisible();
   await shot(page, "01-create");
 
-  await page.getByRole("button", { name: /^Launch/ }).click();
+  await page.getByRole("button", { name: /^Launch campaign/ }).click();
   await page.waitForURL(/\/c\/[1-9A-HJ-NP-Za-km-z]{32,44}/, { timeout: 120_000 });
   pool = new URL(page.url()).pathname.split("/c/")[1];
   expect(wallet.log.filter((l) => l === "signTransaction").length).toBeGreaterThanOrEqual(1);
   await expect(page.getByRole("heading", { name: "E2E Hoodie" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "On-chain" })).toBeVisible();
+  await expect(page.getByRole("img", { name: /Pre-order price curve/ })).toBeVisible();
+  await expect(page.getByText("E2E Studio").first()).toBeVisible();
   await noErrorToasts(page);
   await shot(page, "02-launched");
 });
@@ -138,14 +149,14 @@ test("the stepper stops at the units left, and the last buy completes the goal",
   await expect(backButton(page)).toBeVisible();
   await backButton(page).click();
   await succeeded(page, /Back/);
-  await expect(page.getByRole("button", { name: "Graduate now" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Close funding & open resale" })).toBeVisible({ timeout: 30_000 });
   await shot(page, "05-goal-reached");
 });
 
-test("anyone graduates the campaign into the DAMM v2 resale market", async () => {
+test("anyone closes funding, graduating the campaign into the DAMM v2 resale market", async () => {
   const { page } = actors.backer3;
-  await page.getByRole("button", { name: "Graduate now" }).click();
-  await succeeded(page, /Graduat/);
+  await page.getByRole("button", { name: "Close funding & open resale" }).click();
+  await succeeded(page, /Close funding/);
   graduatedAt = Date.now();
   await expect(page.getByRole("heading", { name: "Resale market" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("DAMM v2 resale pool", { exact: true })).toBeVisible();

@@ -167,7 +167,13 @@ docs/               Guides, the walkthrough and the images in this README
 - A Shopify plugin, so any store can offer pre-orders with a built-in resale market
 - Maker attestation (X OAuth or SAS) as an extra trust signal
 - Shorter sign-in sessions for the maker's orders page (single-use nonce)
+- Backer protection beyond the ship-date schedule: let backers who never receive their item hold back the maker's next unlock
+- Onboarding for shoppers without a wallet: email sign-in with an embedded wallet, card checkout, and sponsored network fees
 
 ## Business model
 
 Backed is the DBC **partner** on every campaign. It earns the partner half of curve trading fees (after Meteora's 20% protocol fee) and the fees on its 5% permanently locked share of each resale pool. `pnpm --filter @preorder/core platform:claim` collects both, and `/platform` shows them. Makers pay nothing upfront. First users are merch drops, indie hardware and game-key pre-orders, and hackathon teams. Later, a Shopify plugin so any store can offer pre-orders with a built-in resale market.
+
+## License
+
+[MIT](LICENSE)

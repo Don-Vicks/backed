@@ -207,3 +207,18 @@ export function pruneStore(now = Date.now()) {
     faucetClaims: pruneFaucetClaims(FAUCET_RETENTION_MS, now),
   }
 }
+
+// A campaign's trade history (see the 0004_trade_history migration). `trades` is opaque here: the web
+// app reads and writes it whole.
+export type TradeHistory<T = unknown> = { newest?: string; updatedAt: number; trades: T[] }
+
+export function getTradeHistory<T>(pool: string): TradeHistory<T> | undefined {
+  const row = db().prepare('SELECT newest, updated_at, data FROM trade_history WHERE pool = ?').get(pool) as { newest: string | null; updated_at: number; data: string } | undefined
+  return row && { newest: row.newest ?? undefined, updatedAt: row.updated_at, trades: JSON.parse(row.data) as T[] }
+}
+
+export function saveTradeHistory<T>(pool: string, history: TradeHistory<T>) {
+  db()
+    .prepare('INSERT INTO trade_history (pool, newest, updated_at, data) VALUES (?, ?, ?, ?) ON CONFLICT(pool) DO UPDATE SET newest = excluded.newest, updated_at = excluded.updated_at, data = excluded.data')
+    .run(pool, history.newest ?? null, history.updatedAt, JSON.stringify(history.trades))
+}

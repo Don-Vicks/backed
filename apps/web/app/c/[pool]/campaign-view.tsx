@@ -21,8 +21,9 @@ import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { RedeemPanel } from "@/components/redeem-panel";
 import { CurveChart } from "@/components/curve-chart";
+import { MarketChart } from "@/components/market-chart";
 import { OnChainCard } from "@/components/onchain-card";
-import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, usd } from "@/lib/format";
+import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, unitsShort, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
 import { MAX_UNITS_PER_BUY, splitVouchers } from "@preorder/core/src/voucher-units";
 import { imageSrc } from "@/lib/image-src";
@@ -79,44 +80,45 @@ function Loaded({ c }: { c: CampaignWithLive }) {
     // panel in a sticky right column beside both.
     <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr] lg:grid-rows-[auto_1fr]">
       <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-1">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={live.status === "funding" ? "secondary" : "default"}>{statusLabel}</Badge>
-            <Badge variant="outline" title="Scored from the maker’s wallet history on Solana. Higher levels can take more money upfront and get the rest sooner.">
-              <ShieldCheck aria-hidden="true" /> Maker trust level {c.trust.tier}
-            </Badge>
+        <div className="grid items-center gap-6 sm:grid-cols-[minmax(0,15rem)_1fr]">
+          {c.campaign.image && (
+            // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL
+            <img src={imageSrc(c.campaign.image)} alt={c.campaign.name} className="aspect-[16/10] w-full rounded-2xl border border-border object-cover sm:aspect-square shadow-[0_30px_80px_-40px_rgba(110,69,255,0.5)]" />
+          )}
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={live.status === "funding" ? "secondary" : "default"}>{statusLabel}</Badge>
+              <Badge variant="outline" title="Scored from the maker’s wallet history on Solana. Higher levels can take more money upfront and get the rest sooner.">
+                <ShieldCheck aria-hidden="true" /> Maker trust level {c.trust.tier}
+              </Badge>
+            </div>
+            <h1 className="mt-4 font-heading text-4xl tracking-[-0.035em] sm:text-5xl">{c.campaign.name}</h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              by{" "}
+              {c.campaign.makerName ? (
+                <>
+                  <span className="font-medium text-foreground">{c.campaign.makerName}</span>{" "}
+                  <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" title="The maker’s wallet on Solana" className="font-mono text-xs underline-offset-4 hover:underline">
+                    ({short(c.maker)})
+                  </a>
+                </>
+              ) : (
+                <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
+                  {short(c.maker)}
+                </a>
+              )}
+              {c.listing?.official && (
+                <>
+                  {" · "}
+                  <a href={explorerAccount(c.listing.address)} target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">
+                    Verified on Solana
+                  </a>
+                </>
+              )}
+            </p>
+            {c.campaign.description && <p className="mt-4 text-muted-foreground">{c.campaign.description}</p>}
           </div>
-          <h1 className="mt-4 font-heading text-4xl tracking-[-0.035em] sm:text-5xl">{c.campaign.name}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            by{" "}
-            {c.campaign.makerName ? (
-              <>
-                <span className="font-medium text-foreground">{c.campaign.makerName}</span>{" "}
-                <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" title="The maker’s wallet on Solana" className="font-mono text-xs underline-offset-4 hover:underline">
-                  ({short(c.maker)})
-                </a>
-              </>
-            ) : (
-              <a href={explorerAccount(c.maker)} target="_blank" rel="noopener noreferrer" className="font-mono underline-offset-4 hover:underline">
-                {short(c.maker)}
-              </a>
-            )}
-            {c.listing?.official && (
-              <>
-                {" · "}
-                <a href={explorerAccount(c.listing.address)} target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">
-                  Verified on Solana
-                </a>
-              </>
-            )}
-          </p>
         </div>
-
-        {c.campaign.image && (
-          // eslint-disable-next-line @next/next/no-img-element -- maker-supplied URL
-          <img src={imageSrc(c.campaign.image)} alt={c.campaign.name} className="aspect-[16/9] w-full rounded-xl border border-border object-cover" />
-        )}
-        {c.campaign.description && <p className="text-lg text-muted-foreground">{c.campaign.description}</p>}
       </div>
 
       <aside className="flex flex-col gap-4 lg:sticky lg:top-24 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">
@@ -133,7 +135,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
             </div>
             <div>
               <dt className="text-muted-foreground">Pre-orders sold</dt>
-              <dd className="font-mono tabular-nums">{units(live.unitsSold)} / {unitsTotal}</dd>
+              <dd className="font-mono tabular-nums">{unitsShort(live.unitsSold)} / {unitsTotal}</dd>
             </div>
           </dl>
         </div>
@@ -141,35 +143,40 @@ function Loaded({ c }: { c: CampaignWithLive }) {
       </aside>
 
       <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-2">
+        <MarketChart
+          c={c}
+          curve={
+            <>
+              <p className="text-sm text-muted-foreground">Every backer pays the price on this curve: Meteora’s Dynamic Bonding Curve, one segment per early-bird tier.</p>
+              <div className="mt-3">
+                <CurveChart plan={plan} unitsSold={live.unitsSold} graduated={live.status !== "funding"} />
+              </div>
+              <ol className="mt-2 divide-y divide-border" aria-label="Early-bird tiers">
+                {plan.tiers.map((t, i) => {
+                  const end = plan.tiers[i + 1]?.startPrice ?? plan.finalPrice;
+                  const current = live.status === "funding" && i === live.tierIndex;
+                  const done = live.status !== "funding" || i < live.tierIndex;
+                  return (
+                    <li key={i} className="flex items-center justify-between gap-3 py-3">
+                      <span className="flex items-center gap-3">
+                        <span className={`grid size-7 place-items-center rounded-full font-mono text-xs ${current ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                          {done && !current ? <Check aria-hidden="true" className="size-3.5" /> : i + 1}
+                        </span>
+                        <span>
+                          <span className="font-medium whitespace-nowrap">Tier {i + 1} · {t.units} units</span>
+                          {current && <span className="ml-2 text-xs text-primary">Current tier</span>}
+                        </span>
+                      </span>
+                      <span className="font-mono text-sm whitespace-nowrap tabular-nums">{usd(t.startPrice)} → {usd(end)}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </>
+          }
+        />
         <HowItWorks c={c} />
 
-        <section aria-labelledby="tiers-title" className="rounded-xl border border-border bg-card p-5">
-          <h2 id="tiers-title" className="font-heading text-2xl">Early-bird tiers</h2>
-          <ol className="mt-3 divide-y divide-border">
-            {plan.tiers.map((t, i) => {
-              const end = plan.tiers[i + 1]?.startPrice ?? plan.finalPrice;
-              const current = live.status === "funding" && i === live.tierIndex;
-              const done = live.status !== "funding" || i < live.tierIndex;
-              return (
-                <li key={i} className="flex items-center justify-between gap-3 py-3">
-                  <span className="flex items-center gap-3">
-                    <span className={`grid size-7 place-items-center rounded-full font-mono text-xs ${current ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-                      {done && !current ? <Check aria-hidden="true" className="size-3.5" /> : i + 1}
-                    </span>
-                    <span>
-                      <span className="font-medium whitespace-nowrap">{t.units} units</span>
-                      {current && <span className="ml-2 text-xs text-primary">Current tier</span>}
-                    </span>
-                  </span>
-                  <span className="font-mono text-sm whitespace-nowrap tabular-nums">{usd(t.startPrice)} → {usd(end)}</span>
-                </li>
-              );
-            })}
-          </ol>
-          <div className="mt-4">
-            <CurveChart plan={plan} unitsSold={live.unitsSold} graduated={live.status !== "funding"} />
-          </div>
-        </section>
 
         <section aria-labelledby="terms-title" className="rounded-xl border border-border bg-card p-5">
           <h2 id="terms-title" className="font-heading text-2xl">Locked-in terms</h2>

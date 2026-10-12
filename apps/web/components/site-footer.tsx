@@ -25,7 +25,7 @@ export function SiteFooter() {
           </a>
           <Link href="/stats" className="transition-colors hover:text-foreground">Stats</Link>
           <a href="https://www.meteora.ag/" target="_blank" rel="noreferrer" className={external}>
-            Built on Meteora <ArrowUpRight aria-hidden="true" className="size-3.5" />
+            <span className="whitespace-nowrap">Built on Meteora</span> <ArrowUpRight aria-hidden="true" className="size-3.5" />
           </a>
         </nav>
       </div>
