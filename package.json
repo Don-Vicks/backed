@@ -13,6 +13,7 @@
     "core:lifecycle": "pnpm --filter @preorder/core lifecycle",
     "core:launch": "pnpm --filter @preorder/core launch",
     "core:reconcile": "pnpm --filter @preorder/core reconcile",
+    "core:backup": "pnpm --filter @preorder/core backup",
     "core:inspect": "pnpm --filter @preorder/core inspect",
     "core:seed:localnet": "pnpm --filter @preorder/core seed:localnet",
     "core:test": "pnpm --filter @preorder/core test",

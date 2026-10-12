@@ -4,7 +4,7 @@ import type { BuyQuote, Campaign, CampaignLive, CampaignRecord, ConfigField, Lis
 // terms, resaleFee: the resale-liquidity split and the resale pool fee, read from the on-chain config (campaign page only).
 // listing: the DBC pool metadata the maker published (null: none yet, undefined: not read); official
 // when it points at this campaign's page.
-export type CampaignWithLive = CampaignRecord & { live: CampaignLive | null; terms?: LpTerms | null; resaleFee?: ResaleConfig | null; listing?: (Listing & { address: string; official: boolean }) | null };
+export type CampaignWithLive = CampaignRecord & { live: CampaignLive | null; terms?: LpTerms | null; resaleFee?: ResaleConfig | null; listing?: (Listing & { address: string; official: boolean }) | null; inboxKey?: string | null };
 // /api/platform: the partner's earnings across campaigns, the claimer new campaigns get, and its listing.
 export type PlatformResponse = PlatformEarnings & { feeClaimer: string | null; treasury: string | null; listing: Listing | null };
 export type PreviewResponse = {

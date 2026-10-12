@@ -112,7 +112,8 @@ const shipping = z.object(
 )
 // A signed transaction, base64: at most 1232 bytes on the wire.
 const signedTx = z.string({ error: 'tx is missing' }).max(1700, { error: 'tx is too large' }).regex(/^[A-Za-z0-9+/]+={0,2}$/, { error: 'tx is not base64' })
-const ordersSignIn = z.object({ pool: addressSchema('pool'), message: text('message', 500), signature: z.string({ error: 'signature is missing' }).max(200) })
+const ordersPool = z.object({ pool: addressSchema('pool') })
+const ordersSignIn = ordersPool.extend({ message: text('message', 500), signature: z.string({ error: 'signature is missing' }).max(200) })
 
 // One schema per route body. Unknown keys are dropped; campaign is checked by campaignFromInput.
 export const schemas = {
@@ -139,13 +140,18 @@ export const schemas = {
     slippageBps: slippage,
   }),
   faucet: z.object({ wallet: addressSchema('wallet') }),
-  redeemPrepare: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet'), shipping }),
+  // shipping is sent in the clear only for a campaign whose maker has no inbox key; otherwise the
+  // browser seals it (redeemSubmit.sealed) and prepare gets nothing.
+  redeemPrepare: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet'), shipping: shipping.optional() }),
   // The burn prepare built for `id`, signed by the wallet, with the shipping details it is for.
-  redeemSubmit: z.object({ pool: addressSchema('pool'), id: redemptionId, tx: signedTx, shipping }),
+  redeemSubmit: z.object({ pool: addressSchema('pool'), id: redemptionId, tx: signedTx, shipping: shipping.optional(), sealed: z.string({ error: 'sealed must be text' }).max(3000, { error: 'sealed is too large' }).optional() }),
+  ordersInbox: ordersPool.extend({ publicKey: z.string({ error: 'publicKey is missing' }).regex(/^[A-Za-z0-9_-]{43}$/, { error: 'publicKey is not an inbox key' }) }),
   redeemConfirm: z.object({ id: redemptionId, signature: signatureSchema }),
   redeemPending: z.object({ pool: addressSchema('pool'), wallet: addressSchema('wallet') }),
-  ordersSignIn: ordersSignIn,
-  ordersShipped: ordersSignIn.extend({ order: signatureSchema }), // order = the burn signature
+  ordersNonce: ordersPool,
+  ordersSignIn: ordersSignIn, // the signed message buys a session (maker-session.ts)
+  ordersList: ordersPool, // authorized by the session's bearer token
+  ordersShipped: ordersPool.extend({ order: signatureSchema }), // order = the burn signature
   blinkPost: z.object({ account: addressSchema('account') }),
   blinkAmount: z.coerce.number({ error: 'Enter an amount in USDC' }).pipe(amountSchema),
 }
@@ -194,6 +200,8 @@ export const RATE_LIMITS = {
   fresh: { capacity: 10, perSec: 1 / 5 },
   // Product photo uploads: a few per minute is plenty for a maker setting up a campaign.
   upload: { capacity: 6, perSec: 1 / 20 },
+  // Asking for a maker sign-in nonce, or trading a signed one for a session.
+  signin: { capacity: 10, perSec: 1 / 6 },
 } as const satisfies Record<string, { capacity: number; perSec: number }>
 
 export type RateLimitName = keyof typeof RATE_LIMITS

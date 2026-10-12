@@ -1,5 +1,5 @@
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { getNetwork, legacyPlaintextFiles, loadKeypair, shippingKeyStatus, storeDurability, storeHealth } from "@preorder/core";
+import { backupAgeSec, getNetwork, legacyPlaintextFiles, loadKeypair, shippingKeyStatus, storeDurability, storeHealth } from "@preorder/core";
 import { connection } from "@/lib/server";
 
 // Deep check for operators and uptime monitors: store writable, RPC reachable and fast, platform key
@@ -25,6 +25,8 @@ async function check() {
     ...health,
     // Off a volume the store sits on the container disk, which a redeploy wipes.
     ...storeDurability(),
+    // Seconds since the newest backup in DATA_DIR/backups (null: none yet).
+    backupAgeSec: backupAgeSec(),
     // Legacy redemptions JSON (plaintext shipping details) still on disk: delete it once checked.
     ...(plaintextFiles.length ? { plaintextFiles } : {}),
   };

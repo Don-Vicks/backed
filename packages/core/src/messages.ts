@@ -4,6 +4,9 @@ import { BRAND } from './brand'
 // The maker's sign-in to the orders page. It names the site's host, so a signature collected by any
 // other site does not work here: the server rebuilds this exact text for its own host and accepts
 // nothing else (verifyWalletMessage).
-export function ordersMessage(pool: string, issuedAt: string, domain: string) {
-  return `${domain} asks you to sign in to ${BRAND}.\nView orders for campaign ${pool}\nIssued at: ${issuedAt}`
+//
+// The nonce is issued by the server for one campaign and works once (maker-session.ts), so a signature
+// that leaks can neither be replayed nor used a second time.
+export function ordersMessage(pool: string, issuedAt: string, domain: string, nonce: string) {
+  return `${domain} asks you to sign in to ${BRAND}.\nView orders for campaign ${pool}\nNonce: ${nonce}\nIssued at: ${issuedAt}`
 }

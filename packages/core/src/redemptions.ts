@@ -17,6 +17,7 @@ import { openJsonAny, sealJson, shippingKeys } from './seal'
 import { getCampaign, type CampaignRecord } from './store'
 import { HttpError } from './errors'
 import { friendlyTxError } from './tx-errors'
+import { SEALED_PREFIX } from './inbox-crypto'
 
 export type Shipping = { name: string; email: string; address: string; country: string }
 // Shipping details at rest: sealJson output (AES-256-GCM under SHIPPING_KEY), bound to the burn signature
@@ -51,7 +52,9 @@ export type Redemption = {
 // What the maker sees: shipping opened. null once shipped, or when no configured key opens it
 // (SHIPPING_KEY changed without SHIPPING_KEY_PREVIOUS), which sets unreadable and error; the other
 // rows still show.
-export type RedemptionView = Omit<Redemption, 'shipping'> & { shipping: Shipping | null; unreadable?: true; error?: string }
+// `sealed`: details a backer sealed to the maker's inbox key (inbox-crypto.ts); the server cannot open
+// them, so they go to the maker's browser as they are and shipping stays null here.
+export type RedemptionView = Omit<Redemption, 'shipping'> & { shipping: Shipping | null; sealed?: string; unreadable?: true; error?: string }
 export type ListedRedemption = RedemptionView
 
 const UNIT = BigInt(10 ** VOUCHER_DECIMALS)
@@ -87,10 +90,11 @@ const fromRow = (r: RedemptionRow): Redemption => ({
 // The maker's orders, newest first, with shipping details opened.
 export function listRedemptions(pool: string): RedemptionView[] {
   const rows = db().prepare('SELECT * FROM redemptions WHERE pool = ? ORDER BY created_at DESC, rowid DESC').all(pool) as RedemptionRow[]
-  const keys = rows.some((r) => r.shipping_ct) ? shippingKeys() : []
+  const keys = rows.some((r) => r.shipping_ct && !r.shipping_ct.startsWith(SEALED_PREFIX)) ? shippingKeys() : []
   return rows.map((r) => {
     const base = { ...fromRow(r), shipping: null }
     if (!r.shipping_ct) return base
+    if (r.shipping_ct.startsWith(SEALED_PREFIX)) return { ...base, sealed: r.shipping_ct }
     try {
       return { ...base, shipping: openJsonAny<Shipping>(r.shipping_ct, redemptionAad(r.signature), keys) }
     } catch (e) {
@@ -256,7 +260,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // HttpError, means nothing was burned (refused, failed simulation, expired, failed on-chain, an RPC
 // failure before sending); a 503 means the burn may have landed, and the pending row lets
 // findUnfinishedRedemptions finish it. Sending the same signed burn again is harmless.
-export async function submitRedemption(connection: Connection, record: CampaignRecord, raw: Buffer, id: string, shipping: Shipping, now = new Date()) {
+// `shipping` is the plain details (sealed here under SHIPPING_KEY) or details the backer already sealed to
+// the maker's inbox key, which the server keeps as they are.
+export async function submitRedemption(connection: Connection, record: CampaignRecord, raw: Buffer, id: string, shipping: Shipping | string, now = new Date()) {
   let tx: Transaction
   try {
     tx = Transaction.from(raw)
@@ -290,7 +296,7 @@ export async function submitRedemption(connection: Connection, record: CampaignR
       pool: record.pool,
       wallet: wallet.toBase58(),
       units: 1,
-      shipping: sealShipping(shipping, signature),
+      shipping: typeof shipping === 'string' ? shipping : sealShipping(shipping, signature),
       createdAt: now.toISOString(),
       signature,
       // A blockhash that simulates is at most this many blocks from expiry.
