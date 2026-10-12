@@ -139,6 +139,19 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    // Each campaign's voucher trades as read from chain, so the price chart survives a restart and a
+    // refresh only reads the signatures since `newest` (public RPCs allow few transaction reads).
+    name: '0004_trade_history',
+    sql: `
+      CREATE TABLE trade_history (
+        pool TEXT PRIMARY KEY,
+        newest TEXT,
+        updated_at INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+    `,
+  },
 ]
 
 // node:sqlite prints an ExperimentalWarning on first load (Node 22); keep it out of the logs.

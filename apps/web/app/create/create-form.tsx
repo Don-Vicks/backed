@@ -258,7 +258,7 @@ export function CreateForm() {
   return (
     <div className="grid gap-8 lg:grid-cols-[1.1fr_1fr]">
       <form
-        className="flex flex-col gap-8"
+        className="flex flex-col gap-8 rounded-2xl border border-border bg-card/50 p-5 backdrop-blur sm:p-8"
         onSubmit={(e) => {
           e.preventDefault();
           if (!onFinalStep) {

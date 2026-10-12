@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { AreaSeries, ColorType, CrosshairMode, HistogramSeries, LineStyle, createChart, type UTCTimestamp } from "lightweight-charts";
 import { ExternalLink } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/client";
+import { useTrades } from "@/components/sparkline";
 import { explorerTx, short, unitsShort, usd } from "@/lib/format";
 import type { CampaignWithLive, Trade } from "@/lib/types";
 
@@ -99,11 +98,7 @@ export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNod
   const live = c.live!;
   const [range, setRange] = useState<Range>("All");
   const [tabPick, setTab] = useState<"price" | "curve" | null>(null);
-  const { data, isPending, dataUpdatedAt } = useQuery({
-    queryKey: ["trades", c.pool],
-    queryFn: () => api<{ trades: Trade[] }>(`/api/campaigns/${c.pool}/trades`),
-    refetchInterval: 15_000,
-  });
+  const { data, isPending, dataUpdatedAt } = useTrades(c.pool);
   const trades = useMemo(() => data?.trades ?? [], [data]);
   // The trades in range, plus the one just before it, so the line starts at the price the range opened on.
   const shown = useMemo(() => {
@@ -188,7 +183,7 @@ export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNod
             ))}
           </div>
           <div className="px-2">
-            {isPending ? (
+            {isPending || data?.warming ? (
               <Skeleton className="mx-3 my-2 h-64 sm:h-80" />
             ) : trades.length === 0 ? (
               <div className="grid h-64 place-items-center text-center text-sm text-muted-foreground sm:h-80">
