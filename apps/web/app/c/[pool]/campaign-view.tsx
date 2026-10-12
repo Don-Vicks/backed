@@ -21,6 +21,7 @@ import { useDebounced } from "@/lib/use-debounced";
 import { MakerPanel, ResalePanel } from "@/components/resale-panels";
 import { RedeemPanel } from "@/components/redeem-panel";
 import { CurveChart } from "@/components/curve-chart";
+import { MarketChart } from "@/components/market-chart";
 import { OnChainCard } from "@/components/onchain-card";
 import { IS_TEST_NETWORK, explorerAccount, short, units, unitsDown, unitsShort, usd } from "@/lib/format";
 import { firstReleaseSec, formatAfterGoal, vestingEndSec } from "@preorder/core/src/vesting";
@@ -141,6 +142,7 @@ function Loaded({ c }: { c: CampaignWithLive }) {
       </aside>
 
       <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-2">
+        <MarketChart c={c} />
         <HowItWorks c={c} />
 
         <section aria-labelledby="tiers-title" className="rounded-xl border border-border bg-card p-5">

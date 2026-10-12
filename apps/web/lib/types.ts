@@ -17,3 +17,6 @@ export type PreviewResponse = {
   error: string | null;
 };
 export type { BuyQuote, Campaign, CampaignLive, CampaignRecord, ConfigField, Listing, LpTerms, PlatformEarnings, PricingSummary, ResaleConfig, SellQuote, TrustResult, UnitsQuote, VestingSchedule };
+
+// /api/campaigns/[pool]/trades: one voucher swap on the curve or the resale pool, price in USDC per voucher (fees included).
+export type Trade = { sig: string; time: number; side: "buy" | "sell"; venue: "curve" | "resale"; vouchers: number; usdc: number; price: number; wallet: string };
