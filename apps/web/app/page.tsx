@@ -41,7 +41,7 @@ export default function Home() {
           </div>
           <CampaignTotals />
         </div>
-        <div className="animate-in fade-in slide-in-from-bottom-6 duration-1000 motion-reduce:animate-none">
+        <div className="w-full max-w-xl animate-in fade-in slide-in-from-bottom-6 duration-1000 motion-reduce:animate-none lg:max-w-none">
           <FeaturedCampaign />
         </div>
       </section>

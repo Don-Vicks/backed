@@ -142,36 +142,40 @@ function Loaded({ c }: { c: CampaignWithLive }) {
       </aside>
 
       <div className="flex flex-col gap-6 lg:col-start-1 lg:row-start-2">
-        <MarketChart c={c} />
+        <MarketChart
+          c={c}
+          curve={
+            <>
+              <p className="text-sm text-muted-foreground">Every backer pays the price on this curve: Meteora’s Dynamic Bonding Curve, one segment per early-bird tier.</p>
+              <div className="mt-3">
+                <CurveChart plan={plan} unitsSold={live.unitsSold} graduated={live.status !== "funding"} />
+              </div>
+              <ol className="mt-2 divide-y divide-border" aria-label="Early-bird tiers">
+                {plan.tiers.map((t, i) => {
+                  const end = plan.tiers[i + 1]?.startPrice ?? plan.finalPrice;
+                  const current = live.status === "funding" && i === live.tierIndex;
+                  const done = live.status !== "funding" || i < live.tierIndex;
+                  return (
+                    <li key={i} className="flex items-center justify-between gap-3 py-3">
+                      <span className="flex items-center gap-3">
+                        <span className={`grid size-7 place-items-center rounded-full font-mono text-xs ${current ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                          {done && !current ? <Check aria-hidden="true" className="size-3.5" /> : i + 1}
+                        </span>
+                        <span>
+                          <span className="font-medium whitespace-nowrap">Tier {i + 1} · {t.units} units</span>
+                          {current && <span className="ml-2 text-xs text-primary">Current tier</span>}
+                        </span>
+                      </span>
+                      <span className="font-mono text-sm whitespace-nowrap tabular-nums">{usd(t.startPrice)} → {usd(end)}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </>
+          }
+        />
         <HowItWorks c={c} />
 
-        <section aria-labelledby="tiers-title" className="rounded-xl border border-border bg-card p-5">
-          <h2 id="tiers-title" className="font-heading text-2xl">Early-bird tiers</h2>
-          <ol className="mt-3 divide-y divide-border">
-            {plan.tiers.map((t, i) => {
-              const end = plan.tiers[i + 1]?.startPrice ?? plan.finalPrice;
-              const current = live.status === "funding" && i === live.tierIndex;
-              const done = live.status !== "funding" || i < live.tierIndex;
-              return (
-                <li key={i} className="flex items-center justify-between gap-3 py-3">
-                  <span className="flex items-center gap-3">
-                    <span className={`grid size-7 place-items-center rounded-full font-mono text-xs ${current ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-                      {done && !current ? <Check aria-hidden="true" className="size-3.5" /> : i + 1}
-                    </span>
-                    <span>
-                      <span className="font-medium whitespace-nowrap">{t.units} units</span>
-                      {current && <span className="ml-2 text-xs text-primary">Current tier</span>}
-                    </span>
-                  </span>
-                  <span className="font-mono text-sm whitespace-nowrap tabular-nums">{usd(t.startPrice)} → {usd(end)}</span>
-                </li>
-              );
-            })}
-          </ol>
-          <div className="mt-4">
-            <CurveChart plan={plan} unitsSold={live.unitsSold} graduated={live.status !== "funding"} />
-          </div>
-        </section>
 
         <section aria-labelledby="terms-title" className="rounded-xl border border-border bg-card p-5">
           <h2 id="terms-title" className="font-heading text-2xl">Locked-in terms</h2>

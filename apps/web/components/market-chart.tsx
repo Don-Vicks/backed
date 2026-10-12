@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AreaSeries,
@@ -81,33 +81,46 @@ function PriceChart({ trades, mode, sec, goalPrice, nowPrice }: { trades: Trade[
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: C.text, fontFamily: "var(--font-mono), ui-monospace, monospace", fontSize: 11, attributionLogo: false },
       grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
       rightPriceScale: { borderColor: C.border, scaleMargins: { top: 0.12, bottom: 0.26 } },
-      timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false, rightOffset: 4 },
+      timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false, rightOffset: 2, fixLeftEdge: true, fixRightEdge: true },
       crosshair: { mode: CrosshairMode.Normal, vertLine: { color: C.violet, labelBackgroundColor: C.violet }, horzLine: { color: C.violet, labelBackgroundColor: C.violet } },
       localization: { priceFormatter: (p: number) => usd(p) },
     });
     chartRef.current = chart;
 
     const data = candles(trades, sec);
+    // Line mode plots every trade on its own (times nudged a second apart where two share one), so a thin
+    // market reads as a few clear points instead of a few fat candles.
+    const ticks: { time: UTCTimestamp; t: Trade }[] = [];
+    for (const t of trades) {
+      const prev = ticks[ticks.length - 1]?.time ?? 0;
+      ticks.push({ time: Math.max(t.time, prev + 1) as UTCTimestamp, t });
+    }
     const price =
       mode === "candles"
         ? chart.addSeries(CandlestickSeries, { upColor: C.up, downColor: C.down, borderUpColor: C.up, borderDownColor: C.down, wickUpColor: C.up, wickDownColor: C.down })
-        : chart.addSeries(AreaSeries, { lineColor: C.orange, topColor: "rgba(245,75,0,0.32)", bottomColor: "rgba(110,69,255,0.02)", lineWidth: 2 });
+        : chart.addSeries(AreaSeries, { lineColor: C.orange, topColor: "rgba(245,75,0,0.28)", bottomColor: "rgba(110,69,255,0.02)", lineWidth: 2, pointMarkersVisible: true, pointMarkersRadius: 3 });
     if (mode === "candles") price.setData(data.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
     else {
-      const points = data.map((d) => ({ time: d.time, value: d.close }));
+      const points = ticks.map(({ time, t }) => ({ time, value: t.price }));
       // Carry the line to now at the live price, so a quiet market still reads as current.
-      const now = (Math.floor(Date.now() / 1000 / sec) * sec) as UTCTimestamp;
+      const now = Math.floor(Date.now() / 1000) as UTCTimestamp;
       if (points.length && now > points[points.length - 1].time) points.push({ time: now, value: nowPrice });
       price.setData(points);
     }
     price.createPriceLine({ price: goalPrice, color: C.gold, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: "Goal price" });
 
     const volume = chart.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
-    chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-    volume.setData(data.map((d) => ({ time: d.time, value: d.buy + d.sell, color: d.buy >= d.sell ? "rgba(36,201,141,0.45)" : "rgba(240,68,56,0.45)" })));
+    chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } });
+    const green = "rgba(36,201,141,0.35)";
+    const red = "rgba(240,68,56,0.35)";
+    volume.setData(
+      mode === "candles"
+        ? data.map((d) => ({ time: d.time, value: d.buy + d.sell, color: d.buy >= d.sell ? green : red }))
+        : ticks.map(({ time, t }) => ({ time, value: t.usdc, color: t.side === "buy" ? green : red })),
+    );
 
-    // Buy and sell arrows while there are few enough to read.
-    if (data.length <= 80) {
+    // Buy and sell arrows on candles while there are few enough to read (line mode colours its points instead).
+    if (mode === "candles" && data.length <= 80) {
       createSeriesMarkers(
         price,
         data.flatMap((d) => [
@@ -116,10 +129,15 @@ function PriceChart({ trades, mode, sec, goalPrice, nowPrice }: { trades: Trade[
         ]),
       );
     }
-    // The latest 60 candles; drag or scroll for older ones.
-    if (data.length > 60) chart.timeScale().setVisibleLogicalRange({ from: data.length - 60, to: data.length + 3 });
-    else chart.timeScale().fitContent();
+    // The latest 60 bars (drag for older ones), framed once the chart has its real width: autoSize
+    // measures after the first paint, and framing before it leaves the right side empty.
+    const bars = mode === "candles" ? data.length : ticks.length + 1;
+    const frame = () => (bars > 60 ? chart.timeScale().setVisibleLogicalRange({ from: bars - 60, to: bars + 1 }) : chart.timeScale().fitContent());
+    frame();
+    const observer = new ResizeObserver(frame);
+    observer.observe(el);
     return () => {
+      observer.disconnect();
       chart.remove();
       chartRef.current = null;
     };
@@ -128,10 +146,11 @@ function PriceChart({ trades, mode, sec, goalPrice, nowPrice }: { trades: Trade[
   return <div ref={ref} className="h-72 w-full sm:h-80" role="img" aria-label={`Voucher price chart, ${trades.length} trades`} />;
 }
 
-export function MarketChart({ c }: { c: CampaignWithLive }) {
+export function MarketChart({ c, curve }: { c: CampaignWithLive; curve: ReactNode }) {
   const live = c.live!;
-  const [mode, setMode] = useState<"candles" | "line">("candles");
+  const [modePick, setMode] = useState<"candles" | "line" | null>(null);
   const [pick, setPick] = useState<number | null>(null);
+  const [tabPick, setTab] = useState<"price" | "curve" | null>(null);
   const { data, isPending, dataUpdatedAt } = useQuery({
     queryKey: ["trades", c.pool],
     queryFn: () => api<{ trades: Trade[] }>(`/api/campaigns/${c.pool}/trades`),
@@ -139,6 +158,10 @@ export function MarketChart({ c }: { c: CampaignWithLive }) {
   });
   const trades = useMemo(() => data?.trades ?? [], [data]);
   const sec = pick ?? autoInterval(trades);
+  // Candles once there is enough history to fill them; a line before that.
+  const mode = modePick ?? (candles(trades, sec).length >= 15 ? "candles" : "line");
+  // A campaign with no trades yet opens on its bonding curve, which already says what it will cost.
+  const tab = tabPick ?? (data && trades.length < 2 ? "curve" : "price");
 
   const stats = useMemo(() => {
     const dayAgo = dataUpdatedAt / 1000 - 86_400; // as of the last read, so the memo stays pure
@@ -168,14 +191,30 @@ export function MarketChart({ c }: { c: CampaignWithLive }) {
   return (
     <section aria-labelledby="market-title" className="overflow-hidden rounded-xl border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
-        <h2 id="market-title" className="font-heading text-2xl">Market</h2>
-        <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="relative flex size-2" aria-hidden="true">
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70 motion-reduce:animate-none" />
-            <span className="relative inline-flex size-2 rounded-full bg-success" />
+        <div>
+          <h2 id="market-title" className="font-heading text-2xl">Market</h2>
+          <span className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="relative flex size-2" aria-hidden="true">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70 motion-reduce:animate-none" />
+              <span className="relative inline-flex size-2 rounded-full bg-success" />
+            </span>
+            {live.status === "reselling" ? "Trading on Meteora DAMM v2" : "Trading on Meteora’s bonding curve"}
           </span>
-          {live.status === "reselling" ? "Trading on Meteora DAMM v2" : "Trading on Meteora’s bonding curve"}
-        </span>
+        </div>
+        <div role="tablist" aria-label="Chart" className="flex gap-1 rounded-lg bg-muted p-1">
+          {(["price", "curve"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              className={`rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${tab === id ? "bg-secondary text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              {id === "price" ? "Price" : "Bonding curve"}
+            </button>
+          ))}
+        </div>
       </div>
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-b border-border px-5 py-4 text-sm sm:grid-cols-4">
@@ -205,9 +244,12 @@ export function MarketChart({ c }: { c: CampaignWithLive }) {
         </div>
       </dl>
 
+      {tab === "curve" ? (
+        <div className="p-5">{curve}</div>
+      ) : (
         <div className="px-2 pt-2 pb-1 sm:px-3">
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1">
-            <div className="flex gap-0.5">{INTERVALS.map((i) => chip(sec === i.sec, i.label, () => setPick(i.sec)))}</div>
+            <div className="flex gap-0.5">{mode === "candles" ? INTERVALS.map((i) => chip(sec === i.sec, i.label, () => setPick(i.sec))) : <span className="py-1 text-xs text-muted-foreground">Every trade</span>}</div>
             <div className="flex gap-0.5">
               {chip(mode === "candles", "Candles", () => setMode("candles"))}
               {chip(mode === "line", "Line", () => setMode("line"))}
@@ -227,8 +269,9 @@ export function MarketChart({ c }: { c: CampaignWithLive }) {
             <PriceChart trades={trades} mode={mode} sec={sec} goalPrice={c.campaign.plan.finalPrice} nowPrice={live.priceUsdc} />
           )}
         </div>
+      )}
 
-      {trades.length > 0 && (
+      {tab === "price" && trades.length > 0 && (
         <div className="border-t border-border">
           <p className="px-5 pt-4 pb-2 text-sm font-medium">Recent trades</p>
           <div className="max-h-72 overflow-y-auto">
