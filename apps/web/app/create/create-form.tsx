@@ -338,6 +338,7 @@ export function CreateForm() {
             )}
           </div>
           {onFinalStep && publicKey && blocking && <p className="text-sm text-destructive" role="alert">{blocking}</p>}
+          {step === 3 && preview?.error && <p className="text-sm text-destructive" role="alert">{preview.error}</p>}
         </div>
       </form>
 
